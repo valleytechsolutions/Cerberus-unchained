@@ -295,6 +295,22 @@ static void ownership_and_loss(void)
     assert(cerberus_wifi_packet_monitor_active() && packet_monitor_session_id == next.session_id);
     dispatch();
 
+    bridge_reset(); begin();
+    claim = packet_monitor.session;
+    dispatch();
+    next = (cerberus_wifi_packet_monitor_session_start_t){claim + 1U, 36U};
+    assert(cerberus_wifi_packet_monitor_session_start(&next, &reply) == ESP_OK);
+    step(250U, true); /* A normal status poll discovers the retired session. */
+    assert(packet_monitor.phase == WIFI_MONITOR_OFF && packet_monitor.view.state == CERBERUS_WIFI_PACKET_MONITOR_ERROR);
+    assert(packet_monitor.error == ESP_ERR_NOT_FOUND && !atomic_load(&packet_monitor_cancelled));
+    actual_tap(170U, UI_WIFI_CONTROLS_Y); step(0U, true);
+    assert(wifi_mode == UI_WIFI_MODE_PACKET_MONITOR && packet_monitor.phase == WIFI_MONITOR_INFO);
+    step(20U, true); /* Wait for the foreign receiver instead of adopting it. */
+    assert(packet_monitor.phase == WIFI_MONITOR_INFO && !packet_monitor.session && starts == 1U);
+    dispatch(); step(700U, true); step(20U, true);
+    assert(packet_monitor.session == claim + 2U && starts == 2U);
+    close_monitor();
+
     bridge_reset();
     atomic_store(&probe_sniff_radio_reserved, true);
     packet_monitor_start_ui(); step(0U, true); step(20U, true);

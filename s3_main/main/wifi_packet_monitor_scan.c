@@ -88,6 +88,8 @@ static void accept(wifi_packet_monitor_scan_t *s,
         } else if (r->error_code == ESP_ERR_NOT_FOUND) {
             /* The exact session was retired or the peer rebooted. Never adopt
              * or stop the current receiver reported by a later INFO. */
+            s->view.state = CERBERUS_WIFI_PACKET_MONITOR_ERROR;
+            s->view.error_code = r->error_code;
             release(s);
         } else s->next_action_ms = later(now, MONITOR_RETRY_MS);
         return;

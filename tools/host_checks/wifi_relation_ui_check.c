@@ -58,7 +58,6 @@ static unsigned ble_mode,ieee802154_mode;
 static unsigned dashboard_mode,file_mode,qr_mode,usb_mode,log_mode,settings_mode,self_test_mode,script_mode;
 static unsigned touch_calibration_step;
 static bool settings_reset_confirmation,settings_restore_confirmation,ap_station_selecting,ble_attack_selecting;
-static bool packet_monitor_from_target;
 static sentinel_scan_session_t live_session;
 static struct {bool captured,valid;uint8_t saved_generation;int error;} live_records[SENTINEL_SCAN_TOOL_COUNT];
 static cerberus_wifi_scan_status_payload_t wifi_scan_status={.state=CERBERUS_WIFI_SCAN_COMPLETE};
