@@ -96,7 +96,7 @@ static cerberus_wifi_target_view_t wifi_target_view(char identifier[24],char met
         .can_scan_stations=wifi_relation_supported()||(c5_online&&(c5_status.capabilities&CERBERUS_C5_CAP_WIFI_STATIONS)),
         .can_capture=c5_online&&c5_status.firmware_version>=CERBERUS_WIFI_CAPTURE_MIN_FIRMWARE,
         .can_packet_monitor=c5_online&&
-            c5_status.firmware_version>=CERBERUS_WIFI_PACKET_MONITOR_MIN_FIRMWARE&&
+            c5_status.firmware_version>=CERBERUS_WIFI_PACKET_MONITOR_SESSION_MIN_FIRMWARE&&
             cerberus_wifi_packet_monitor_channel_valid(wifi_selected_result.channel),
         .can_csi=c5_online&&c5_status.firmware_version>=CERBERUS_CSI_MIN_FIRMWARE&&
             cerberus_csi_target_valid(&csi_target),
@@ -151,8 +151,6 @@ static void wifi_target_handle_tap(uint16_t x,uint16_t y)
     else if(action==CERBERUS_WIFI_TARGET_PACKET_MONITOR){
         packet_monitor_channel=wifi_selected_result.channel;
         packet_monitor_from_target=true;
-        packet_monitor_attempted=false;
-        packet_monitor_last_poll=0U;
         wifi_mode=UI_WIFI_MODE_PACKET_MONITOR;
         packet_monitor_start_ui();
     }

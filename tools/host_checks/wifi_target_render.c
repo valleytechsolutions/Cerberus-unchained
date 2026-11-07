@@ -32,8 +32,7 @@ static cerberus_keyboard_t wifi_keyboard;
 static char wifi_connection_password[64];
 static unsigned connects,passwords,net_entries,station_entries,capture_entries;
 static uint8_t packet_monitor_channel;
-static bool packet_monitor_from_target,packet_monitor_attempted;
-static uint32_t packet_monitor_last_poll;
+static bool packet_monitor_from_target;
 static unsigned monitor_entries;
 static unsigned csi_entries;
 static unsigned relation_entries;
@@ -128,17 +127,21 @@ int main(int argc,char **argv)
     c5_online=true;wifi_mode=UI_WIFI_MODE_TARGET;
     save(argv[1],"observed-clients");
     wifi_target_handle_tap(30,320);assert(wifi_mode==UI_WIFI_MODE_DETAIL);
-    c5_status.firmware_version=CERBERUS_WIFI_PACKET_MONITOR_MIN_FIRMWARE;
+    c5_status.firmware_version=CERBERUS_WIFI_PACKET_MONITOR_SESSION_MIN_FIRMWARE-1U;
+    v=wifi_target_view(id,metadata);assert(!v.can_packet_monitor);
+    c5_status.firmware_version=CERBERUS_WIFI_PACKET_MONITOR_SESSION_MIN_FIRMWARE;
     wifi_target_handle_tap(30,345);
     assert(wifi_mode==UI_WIFI_MODE_PACKET_MONITOR&&monitor_entries==1&&
         packet_monitor_channel==36U&&packet_monitor_from_target);
     wifi_mode=UI_WIFI_MODE_TARGET;
+    c5_status.firmware_version=CERBERUS_CSI_MIN_FIRMWARE-1U;
     wifi_target_handle_tap(200,345);assert(!csi_entries); /* Older peer: no CSI entry. */
     c5_status.firmware_version=CERBERUS_CSI_MIN_FIRMWARE;
     wifi_target_handle_tap(200,345);assert(csi_entries==1&&wifi_mode==UI_WIFI_MODE_CSI);
     wifi_mode=UI_WIFI_MODE_TARGET;csi_open_error=ESP_ERR_NO_MEM;
     wifi_target_handle_tap(200,345);assert(csi_entries==2&&wifi_mode==UI_WIFI_MODE_TARGET&&strstr(wifi_target_message,"CSI:"));
     csi_open_error=0;wifi_target_message[0]=0;
+    c5_status.firmware_version=CERBERUS_WIFI_PACKET_MONITOR_SESSION_MIN_FIRMWARE;
     for(unsigned channel=169;channel<=177;channel+=4){
         wifi_selected_result.channel=(uint8_t)channel;v=wifi_target_view(id,metadata);
         assert(v.can_csi&&!v.can_packet_monitor);

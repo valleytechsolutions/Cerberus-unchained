@@ -23,7 +23,7 @@ native+=function(ble,"static bool another_radio_operation_is_active(").replace("
 (out/"survey_admission.h").write_text(native)
 dispatch=(root/"c5_firmware/main/main.c").read_text()
 start=dispatch.index("    case CERBERUS_SPI_COMMAND_WIFI_CHANNEL_SURVEY_START:")
-(out/"survey_dispatch.h").write_text(dispatch[start:dispatch.index("    case CERBERUS_SPI_COMMAND_WIFI_PACKET_MONITOR_START:",start)])
+(out/"survey_dispatch.h").write_text(dispatch[start:dispatch.index("    case CERBERUS_SPI_COMMAND_WIFI_PACKET_MONITOR_SESSION_INFO:",start)])
 exe=out/"channel-survey-session.exe"
 subprocess.run([sys.executable,"-m","ziglang","cc","-std=c11","-O1","-Wall","-Wextra","-Werror",
     "-I",str(out),"-I",str(root/"shared"),"-I",str(root/"tools/host_checks/stubs"),"-I",str(root/"c5_firmware/main"),

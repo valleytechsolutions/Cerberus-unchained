@@ -6,7 +6,7 @@
 #include "wardrive_service.h"
 #include "wardrive_log_feedback.h"
 #include "wifi_target_view.h"
-#include "wifi_packet_monitor_core.h"
+#include "wifi_packet_monitor_scan.h"
 #include "wifi_packet_count_scan.h"
 #include "csi_link.h"
 #include "csi_ui.h"
@@ -751,16 +751,15 @@ static uint8_t wifi_channel_survey_claim_band;
 static uint32_t wifi_channel_survey_cleanup_last_poll;
 static esp_err_t wifi_channel_survey_error = ESP_ERR_INVALID_STATE;
 static uint32_t wifi_channel_survey_last_poll;
-static cerberus_wifi_packet_monitor_status_payload_t packet_monitor_status;
-static cerberus_wifi_packet_monitor_sample_payload_t
-    packet_monitor_samples[CERBERUS_WIFI_PACKET_MONITOR_SAMPLES];
-static uint16_t packet_monitor_latest_fetched;
-static uint8_t packet_monitor_channel = 1U;
-static bool packet_monitor_have_fetched;
-static bool packet_monitor_attempted;
+typedef enum {
+    PACKET_MONITOR_NONE, PACKET_MONITOR_CHANNEL, PACKET_MONITOR_RESTART,
+    PACKET_MONITOR_SURVEY, PACKET_MONITOR_BACK_AP, PACKET_MONITOR_BACK_LIST,
+    PACKET_MONITOR_BACK_MENU,
+} packet_monitor_action_t;
+static wifi_packet_monitor_scan_t packet_monitor;
+static packet_monitor_action_t packet_monitor_action;
+static uint8_t packet_monitor_channel = 1U, packet_monitor_next_channel;
 static bool packet_monitor_from_target;
-static esp_err_t packet_monitor_error = ESP_ERR_INVALID_STATE;
-static uint32_t packet_monitor_last_poll;
 static cerberus_c5_wifi_result_t wifi_selected_result;
 static bool wifi_selection_valid;
 static bool dual_wifi_return_to_view;
@@ -2071,152 +2070,6 @@ static uint8_t wifi_channel_survey_band(void)
         : CERBERUS_WIFI_CHANNEL_SURVEY_BAND_5;
 }
 
-static bool packet_monitor_stop_ui(void)
-{
-    if (!packet_monitor_attempted) {
-        return true;
-    }
-    if (packet_monitor_error == ESP_ERR_NOT_SUPPORTED) {
-        packet_monitor_attempted = false;
-        return true;
-    }
-    if (packet_monitor_status.generation == 0U) {
-        packet_monitor_error = c5_spi_link_wifi_packet_monitor_status(
-            &packet_monitor_status);
-        if (packet_monitor_error != ESP_OK) return false;
-        if (packet_monitor_status.state != CERBERUS_WIFI_PACKET_MONITOR_RUNNING ||
-            packet_monitor_status.channel != packet_monitor_channel) {
-            packet_monitor_attempted = false;
-            return true;
-        }
-    }
-    if (packet_monitor_status.generation == 0U) {
-        packet_monitor_attempted = false;
-        return true;
-    }
-    if (packet_monitor_status.state == CERBERUS_WIFI_PACKET_MONITOR_RUNNING ||
-        packet_monitor_status.state == CERBERUS_WIFI_PACKET_MONITOR_ERROR) {
-        packet_monitor_error = c5_spi_link_wifi_packet_monitor_stop(
-            packet_monitor_status.generation, &packet_monitor_status);
-        if (packet_monitor_error != ESP_OK) return false;
-        uint32_t began = (uint32_t)(esp_timer_get_time() / 1000LL);
-        while (packet_monitor_status.state ==
-                CERBERUS_WIFI_PACKET_MONITOR_RUNNING &&
-            (uint32_t)((esp_timer_get_time() / 1000LL) - began) < 1500U) {
-            vTaskDelay(pdMS_TO_TICKS(50));
-            packet_monitor_error = c5_spi_link_wifi_packet_monitor_status(
-                &packet_monitor_status);
-            if (packet_monitor_error != ESP_OK) return false;
-        }
-        if (packet_monitor_status.state == CERBERUS_WIFI_PACKET_MONITOR_RUNNING) {
-            packet_monitor_error = ESP_ERR_TIMEOUT;
-            return false;
-        }
-    }
-    /* Stop acceptance is not completion: the worker can fail to disable RX or
-     * restore the prior channel after the initial reply. Keep cleanup retryable. */
-    if (packet_monitor_status.state == CERBERUS_WIFI_PACKET_MONITOR_ERROR) {
-        packet_monitor_error = packet_monitor_status.error_code != ESP_OK ?
-            (esp_err_t)packet_monitor_status.error_code : ESP_FAIL;
-        return false;
-    }
-    packet_monitor_attempted = false;
-    return true;
-}
-
-static void packet_monitor_start_ui(void)
-{
-    if (packet_monitor_attempted) return;
-    memset(&packet_monitor_status, 0, sizeof(packet_monitor_status));
-    if (c5_status.firmware_version < CERBERUS_WIFI_PACKET_MONITOR_MIN_FIRMWARE) {
-        packet_monitor_attempted = true;
-        packet_monitor_error = ESP_ERR_NOT_SUPPORTED;
-        return;
-    }
-    packet_monitor_attempted = true;
-    memset(packet_monitor_samples, 0, sizeof(packet_monitor_samples));
-    packet_monitor_have_fetched = false;
-    packet_monitor_error = c5_spi_link_wifi_packet_monitor_start(
-        packet_monitor_channel, &packet_monitor_status);
-    packet_monitor_last_poll = (uint32_t)(esp_timer_get_time() / 1000LL);
-    if (packet_monitor_error == ESP_ERR_INVALID_STATE) {
-        /* A prior AP scan may still be releasing the C5. */
-        packet_monitor_attempted = false;
-    } else if (packet_monitor_error == ESP_OK) {
-        packet_monitor_latest_fetched = (uint16_t)(
-            packet_monitor_status.latest_sequence -
-            packet_monitor_status.stored_count);
-        packet_monitor_have_fetched = true;
-    }
-}
-
-static void packet_monitor_refresh(uint32_t now_ms)
-{
-    if (c5_status.firmware_version < CERBERUS_WIFI_PACKET_MONITOR_MIN_FIRMWARE)
-        return;
-    if (!packet_monitor_attempted) {
-        if ((uint32_t)(now_ms - packet_monitor_last_poll) < 700U) return;
-        packet_monitor_start_ui();
-        if (!packet_monitor_attempted) return;
-    }
-    if ((uint32_t)(now_ms - packet_monitor_last_poll) < 500U) return;
-    packet_monitor_last_poll = now_ms;
-    packet_monitor_error = c5_spi_link_wifi_packet_monitor_status(
-        &packet_monitor_status);
-    if (packet_monitor_error != ESP_OK ||
-        packet_monitor_status.generation == 0U) return;
-    if (packet_monitor_status.state == CERBERUS_WIFI_PACKET_MONITOR_ERROR) {
-        packet_monitor_error = packet_monitor_status.error_code != ESP_OK ?
-            (esp_err_t)packet_monitor_status.error_code : ESP_FAIL;
-        return;
-    }
-    if (!packet_monitor_have_fetched) {
-        packet_monitor_latest_fetched = (uint16_t)(
-            packet_monitor_status.latest_sequence -
-            packet_monitor_status.stored_count);
-        packet_monitor_have_fetched = true;
-    }
-    uint16_t missing = (uint16_t)(packet_monitor_status.latest_sequence -
-        packet_monitor_latest_fetched);
-    if (missing > packet_monitor_status.stored_count)
-        packet_monitor_latest_fetched = (uint16_t)(
-            packet_monitor_status.latest_sequence -
-            packet_monitor_status.stored_count);
-    missing = (uint16_t)(packet_monitor_status.latest_sequence -
-        packet_monitor_latest_fetched);
-    if (missing > 4U)
-        packet_monitor_latest_fetched = (uint16_t)(
-            packet_monitor_status.latest_sequence - 4U);
-    for (unsigned fetched = 0U; fetched < 4U &&
-        packet_monitor_latest_fetched != packet_monitor_status.latest_sequence;
-        ++fetched) {
-        uint16_t sequence = (uint16_t)(packet_monitor_latest_fetched + 1U);
-        cerberus_wifi_packet_monitor_sample_payload_t sample = {0};
-        esp_err_t error = c5_spi_link_wifi_packet_monitor_sample(
-            packet_monitor_status.generation, sequence, &sample);
-        if (error != ESP_OK) {
-            packet_monitor_error = error;
-            break;
-        }
-        packet_monitor_samples[sequence % CERBERUS_WIFI_PACKET_MONITOR_SAMPLES] =
-            sample;
-        packet_monitor_latest_fetched = sequence;
-    }
-}
-
-static void packet_monitor_step_channel(int direction)
-{
-    uint16_t candidate = packet_monitor_channel;
-    do {
-        candidate = direction > 0 ? candidate == 165U ? 1U : candidate + 1U :
-            candidate == 1U ? 165U : candidate - 1U;
-    } while (!cerberus_wifi_packet_monitor_channel_valid((uint8_t)candidate));
-    if (!packet_monitor_stop_ui()) return;
-    packet_monitor_channel = (uint8_t)candidate;
-    packet_monitor_last_poll = 0U;
-    packet_monitor_start_ui();
-}
-
 /* The claim is the exact session submitted before START, never a predicted
  * generation. An accepted but lost reply remains cleanup-eligible. */
 static bool wifi_channel_survey_matches_claim(
@@ -2429,6 +2282,8 @@ static void wifi_channel_survey_refresh(uint32_t now_ms)
         (UI_WIFI_VISIBLE_ROWS + 1U));
 }
 
+#include "wifi_packet_monitor_ui.h"
+
 static uint16_t packet_monitor_count(
     const cerberus_wifi_packet_monitor_sample_payload_t *sample,
     unsigned lane)
@@ -2445,12 +2300,12 @@ static esp_err_t draw_packet_monitor_lane(unsigned lane)
     static const uint16_t colors[] = {UI_GOOD, UI_BAD, 0x3DDF};
     uint16_t y = (uint16_t)(96U + lane * 75U);
     uint16_t peak = 1U, current = 0U;
-    uint16_t latest = packet_monitor_status.latest_sequence;
+    uint16_t latest = packet_monitor.view.latest_sequence;
     for (unsigned column = 0U; column < 32U; ++column) {
         uint16_t sequence = (uint16_t)(latest - 31U + column);
         const cerberus_wifi_packet_monitor_sample_payload_t *sample =
-            &packet_monitor_samples[sequence % CERBERUS_WIFI_PACKET_MONITOR_SAMPLES];
-        if (sample->generation != packet_monitor_status.generation ||
+            &packet_monitor.samples[sequence % CERBERUS_WIFI_PACKET_MONITOR_SAMPLES];
+        if (sample->generation != packet_monitor.view.generation ||
             sample->sequence != sequence) continue;
         uint16_t count = packet_monitor_count(sample, lane);
         if (count > peak) peak = count;
@@ -2466,8 +2321,8 @@ static esp_err_t draw_packet_monitor_lane(unsigned lane)
     for (unsigned column = 0U; column < 32U; ++column) {
         uint16_t sequence = (uint16_t)(latest - 31U + column);
         const cerberus_wifi_packet_monitor_sample_payload_t *sample =
-            &packet_monitor_samples[sequence % CERBERUS_WIFI_PACKET_MONITOR_SAMPLES];
-        if (sample->generation != packet_monitor_status.generation ||
+            &packet_monitor.samples[sequence % CERBERUS_WIFI_PACKET_MONITOR_SAMPLES];
+        if (sample->generation != packet_monitor.view.generation ||
             sample->sequence != sequence) continue;
         uint16_t count = packet_monitor_count(sample, lane);
         if (count == 0U) continue;
@@ -2489,19 +2344,22 @@ static esp_err_t draw_wifi_packet_monitor(void)
         packet_monitor_channel <= 14U ? "2.4 GHZ" : "5 GHZ");
     ESP_RETURN_ON_ERROR(draw_centered(51, line, UI_GOOD, 1), TAG,
         "packet monitor heading");
-    if (!packet_monitor_attempted &&
-        packet_monitor_error == ESP_ERR_INVALID_STATE)
+    if (packet_monitor.phase == WIFI_MONITOR_STOP)
+        snprintf(line, sizeof(line), packet_monitor.error == ESP_OK ?
+            "RELEASING C5 RADIO" : "C5 CLEANUP RETRY: %s",
+            esp_err_to_name(packet_monitor.error));
+    else if (packet_monitor.phase == WIFI_MONITOR_INFO || packet_monitor.phase == WIFI_MONITOR_START)
         snprintf(line, sizeof(line), "WAITING FOR C5 RADIO");
-    else if (packet_monitor_error != ESP_OK)
-        snprintf(line, sizeof(line), "C5: %s", esp_err_to_name(packet_monitor_error));
-    else if (packet_monitor_status.state == CERBERUS_WIFI_PACKET_MONITOR_RUNNING)
+    else if (packet_monitor.error != ESP_OK)
+        snprintf(line, sizeof(line), "C5: %s", esp_err_to_name(packet_monitor.error));
+    else if (packet_monitor.view.state == CERBERUS_WIFI_PACKET_MONITOR_RUNNING)
         snprintf(line, sizeof(line), "%u SAMPLES  %luMS ELAPSED",
-            (unsigned)packet_monitor_status.stored_count,
-            (unsigned long)packet_monitor_status.elapsed_ms);
+            (unsigned)packet_monitor.view.stored_count,
+            (unsigned long)packet_monitor.view.elapsed_ms);
     else
         snprintf(line, sizeof(line), "STOPPED / TAP RESTART");
     ESP_RETURN_ON_ERROR(draw_centered(72, line,
-        packet_monitor_error == ESP_OK ? UI_MUTED : UI_BAD, 1), TAG,
+        packet_monitor.error == ESP_OK ? UI_MUTED : UI_BAD, 1), TAG,
         "packet monitor status");
     for (unsigned lane = 0U; lane < 3U; ++lane)
         ESP_RETURN_ON_ERROR(draw_packet_monitor_lane(lane), TAG,
@@ -2514,7 +2372,7 @@ static esp_err_t draw_wifi_packet_monitor(void)
     ESP_RETURN_ON_ERROR(draw_small_button(84, UI_WIFI_CONTROLS_Y, 68, 42,
         "CH +"), TAG, "packet monitor next channel");
     ESP_RETURN_ON_ERROR(draw_small_button(160, UI_WIFI_CONTROLS_Y, 68, 42,
-        packet_monitor_status.state == CERBERUS_WIFI_PACKET_MONITOR_RUNNING ?
+        packet_monitor.view.state == CERBERUS_WIFI_PACKET_MONITOR_RUNNING ?
             "SURVEY" : "RESTART"), TAG, "packet monitor survey/restart");
     return draw_small_button(236, UI_WIFI_CONTROLS_Y, 76, 42,
         packet_monitor_from_target ? "BACK AP" : "AP LIST");
@@ -9186,8 +9044,6 @@ static void handle_wifi_tap(uint16_t x, uint16_t y)
         case 2: wifi_mode = UI_WIFI_MODE_PACKET_MONITOR;
                 packet_monitor_from_target = false;
                 packet_monitor_channel = 1U;
-                packet_monitor_attempted = false;
-                packet_monitor_last_poll = 0U;
                 packet_monitor_start_ui(); break;
         case 3: wifi_mode = UI_WIFI_MODE_BASELINE; wifi_baseline.checked = false;
                 wifi_export_message[0] = '\0'; break;
@@ -9397,24 +9253,14 @@ static void handle_wifi_tap(uint16_t x, uint16_t y)
             return;
         if (x >= 8U && x < 76U) packet_monitor_step_channel(-1);
         else if (x >= 84U && x < 152U) packet_monitor_step_channel(1);
-        else if (x >= 160U && x < 228U) {
-            bool was_running = packet_monitor_status.state ==
-                CERBERUS_WIFI_PACKET_MONITOR_RUNNING;
-            if (!packet_monitor_stop_ui()) return;
-            if (was_running) {
-                wifi_mode = packet_monitor_channel <= 14U ?
-                    UI_WIFI_MODE_CHANNELS_24 : UI_WIFI_MODE_CHANNELS_5;
-                wifi_channel_survey_begin_ui();
-            } else {
-                packet_monitor_last_poll = 0U;
-                packet_monitor_start_ui();
-            }
-        } else if (x >= 236U && x < 312U) {
-            if (!packet_monitor_stop_ui()) return;
-            wifi_mode = packet_monitor_from_target ?
-                UI_WIFI_MODE_TARGET : UI_WIFI_MODE_LIST;
-            if (wifi_mode == UI_WIFI_MODE_LIST) wifi_scan_error = load_wifi_results();
-        } else return;
+        else if (x >= 160U && x < 228U)
+            packet_monitor_request_action(packet_monitor.view.state ==
+                CERBERUS_WIFI_PACKET_MONITOR_RUNNING ?
+                PACKET_MONITOR_SURVEY : PACKET_MONITOR_RESTART);
+        else if (x >= 236U && x < 312U)
+            packet_monitor_request_action(packet_monitor_from_target ?
+                PACKET_MONITOR_BACK_AP : PACKET_MONITOR_BACK_LIST);
+        else return;
         ESP_ERROR_CHECK(draw_detail_page());
         return;
     }
@@ -12407,8 +12253,8 @@ static void handle_tap(uint16_t x, uint16_t y)
                 probe_sniff_back(); ESP_ERROR_CHECK(draw_detail_page());
             } else if (current_page == UI_PAGE_WIFI &&
                 wifi_mode == UI_WIFI_MODE_PACKET_MONITOR) {
-                if (packet_monitor_stop_ui()) wifi_mode =
-                    packet_monitor_from_target ? UI_WIFI_MODE_TARGET : UI_WIFI_MODE_MENU;
+                packet_monitor_request_action(packet_monitor_from_target ?
+                    PACKET_MONITOR_BACK_AP : PACKET_MONITOR_BACK_MENU);
                 ESP_ERROR_CHECK(draw_detail_page());
             } else if (current_page == UI_PAGE_WIFI &&
                 (wifi_mode == UI_WIFI_MODE_CHANNELS_24 ||
@@ -12626,18 +12472,9 @@ void cerberus_ui_run(const cerberus_ui_config_t *config)
             ESP_ERROR_CHECK(draw_detail_page());
         csi_live_tick(current_page == UI_PAGE_WIFI && wifi_mode == UI_WIFI_MODE_CSI && !screen_asleep);
         bool packet_monitor_visible = current_page == UI_PAGE_WIFI &&
-            wifi_mode == UI_WIFI_MODE_PACKET_MONITOR && !screen_asleep &&
-            c5_status.firmware_version >= CERBERUS_WIFI_PACKET_MONITOR_MIN_FIRMWARE;
-        if (packet_monitor_visible) {
-            uint32_t previous_poll = packet_monitor_last_poll;
-            packet_monitor_refresh((uint32_t)now_ms);
-            if (previous_poll != packet_monitor_last_poll)
-                ESP_ERROR_CHECK(draw_detail_page());
-        } else if (packet_monitor_attempted &&
-            (current_page != UI_PAGE_WIFI ||
-             wifi_mode != UI_WIFI_MODE_PACKET_MONITOR || screen_asleep)) {
-            (void)packet_monitor_stop_ui();
-        }
+            wifi_mode == UI_WIFI_MODE_PACKET_MONITOR && !screen_asleep;
+        if (packet_monitor_tick((uint64_t)now_ms, packet_monitor_visible) && packet_monitor_visible)
+            ESP_ERROR_CHECK(draw_detail_page());
         mesh_archive_tick(screen_asleep);
         mesh_ui_tick((uint64_t)now_ms, current_page == UI_PAGE_IEEE802154 &&
             ieee802154_mode == UI_IEEE802154_MODE_MESH && !screen_asleep);

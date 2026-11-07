@@ -20,7 +20,12 @@ subprocess.run([
     sys.executable, "-m", "ziglang", "cc", "-std=c11", "-O1",
     "-Wall", "-Wextra", "-Werror", "-I", str(out),
     "-I", str(root / "c5_firmware/main"), "-I", str(root / "shared"),
+    "-I", str(root / "tools/host_checks/stubs"),
     str(root / "tools/host_checks/wifi_packet_monitor_worker_check.c"),
     "-o", str(exe),
 ], check=True, env=env)
 subprocess.run([str(exe)], check=True, env=env)
+
+# Keep the graph, release and full C5/S3 session checks in the registered suite.
+for check in ("check_wifi_packet_monitor.py", "check_wifi_packet_monitor_cleanup.py"):
+    subprocess.run([sys.executable, str(root / "tools" / check)], check=True)

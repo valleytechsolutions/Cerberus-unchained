@@ -7,13 +7,12 @@ static atomic_bool packet_count_radio_reserved;
 #include <stdio.h>
 #include <string.h>
 
-typedef int esp_err_t;
+#include "esp_err.h"
 typedef unsigned TickType_t;
 typedef int wifi_band_mode_t;
 typedef int wifi_second_chan_t;
 typedef void *TaskHandle_t;
-enum { ESP_OK, ESP_FAIL, ESP_ERR_INVALID_ARG, ESP_ERR_INVALID_STATE,
-    ESP_ERR_TIMEOUT, WIFI_BAND_2G = 2, WIFI_BAND_5G = 5,
+enum { WIFI_BAND_2G = 2, WIFI_BAND_5G = 5,
     WIFI_SECOND_CHAN_NONE = 0, WIFI_PKT_MGMT = 0,
     WIFI_PROMIS_FILTER_MASK_MGMT = 1, WIFI_PROMIS_FILTER_MASK_DATA = 4, WIFI_SCAN_TYPE_PASSIVE = 1 };
 #define pdTRUE 1
@@ -97,6 +96,7 @@ static void ulTaskNotifyTake(unsigned clear, unsigned timeout)
     notifications = 0U;
 }
 static int64_t esp_timer_get_time(void) { return (int64_t)clock_ms * 1000; }
+static uint32_t esp_random(void) { return 0x12345678U; }
 static TickType_t xTaskGetTickCount(void) { return clock_ms; }
 static void vTaskDelayUntil(TickType_t *last, TickType_t period);
 static void vTaskDelay(TickType_t delay)
@@ -172,8 +172,12 @@ static void vTaskDelayUntil(TickType_t *last, TickType_t period)
     wifi_promiscuous_pkt_t packet = {.rx_ctrl = {0U, 28U, current_channel}};
     packet.payload[0] = 0x80U;
     packet_monitor_receive(&packet, WIFI_PKT_MGMT);
-    if (samples >= stop_after)
-        assert(cerberus_wifi_packet_monitor_stop(packet_monitor_status.generation) == ESP_OK);
+    if (stop_after && samples >= stop_after) {
+        if (packet_monitor_session_id) {
+            cerberus_wifi_packet_monitor_session_status_t reply;
+            assert(cerberus_wifi_packet_monitor_session_stop(packet_monitor_session_id, &reply) == ESP_OK);
+        } else assert(cerberus_wifi_packet_monitor_stop(packet_monitor_status.generation) == ESP_OK);
+    }
 }
 static bool station_run(void) { ++station_calls; return false; }
 static void wifi_capture_worker_tick(void)
@@ -221,6 +225,8 @@ static void reset(void)
     memset(&relation_capture, 0, sizeof(relation_capture));atomic_store(&relation_receiving,false);
     memset(&packet_monitor_status, 0, sizeof(packet_monitor_status));
     memset(&packet_monitor_ring, 0, sizeof(packet_monitor_ring));
+    packet_monitor_session_epoch = packet_monitor_session_id = 0U;
+    packet_monitor_control_busy = packet_monitor_cleanup_retry = false;
     atomic_store(&packet_monitor_radio_reserved, false);
     atomic_store(&packet_monitor_cancelled, false);
     atomic_store(&capture_radio_reserved, false);
@@ -337,6 +343,106 @@ int main(void)
         assert(current_band == 9 && current_channel == 6U && current_second == 2);
         run_ap_and_capture();
     }
-    puts("C5 shared monitor worker: samples, Stop races, stale wakes, restore faults and next scan/capture passed.");
+    /* Scoped commands never borrow a generation/channel match as authority. */
+    reset();
+    cerberus_wifi_packet_monitor_session_status_t scoped;
+    cerberus_wifi_packet_monitor_session_info(&scoped);
+    assert(scoped.session_id && !scoped.flags);
+    cerberus_wifi_packet_monitor_session_start_t start = {scoped.session_id + 1U, 36U};
+    assert(cerberus_wifi_packet_monitor_session_start(&start, &scoped) == ESP_OK);
+    uint64_t first = start.session_id;
+    assert(scoped.session_id == first && scoped.flags ==
+        (CERBERUS_WIFI_PACKET_MONITOR_BOUND | CERBERUS_WIFI_PACKET_MONITOR_HELD));
+    assert(cerberus_wifi_packet_monitor_start(36U) == ESP_ERR_INVALID_STATE);
+    assert(cerberus_wifi_packet_monitor_stop(packet_monitor_status.generation) == ESP_ERR_INVALID_STATE);
+    assert(!atomic_load(&packet_monitor_cancelled));
+    assert(cerberus_wifi_packet_monitor_session_start(&start, &scoped) == ESP_OK);
+    assert(notifications == 1U);
+    ++start.channel;
+    assert(cerberus_wifi_packet_monitor_session_start(&start, &scoped) == ESP_ERR_INVALID_ARG);
+    start.channel = 36U;
+    assert(cerberus_wifi_packet_monitor_session_stop(first + 10U, &scoped) == ESP_ERR_NOT_FOUND);
+    assert(!scoped.flags && !scoped.state && !scoped.channel && !atomic_load(&packet_monitor_cancelled));
+    dispatch();
+    assert(!cerberus_wifi_packet_monitor_active());
+    assert(cerberus_wifi_packet_monitor_session_status(first, &scoped) == ESP_OK);
+    assert(scoped.flags == (CERBERUS_WIFI_PACKET_MONITOR_BOUND | CERBERUS_WIFI_PACKET_MONITOR_CANCELLED));
+    cerberus_wifi_packet_monitor_session_read_t read = {first, scoped.latest_sequence};
+    cerberus_wifi_packet_monitor_session_sample_t received;
+    assert(cerberus_wifi_packet_monitor_session_sample(&read, &received) == ESP_OK);
+    assert(received.session_id == first && received.sample.channel == 36U);
+    assert(cerberus_wifi_packet_monitor_get_sample(received.sample.generation,
+        received.sample.sequence, &sample) == ESP_ERR_INVALID_STATE);
+    start.session_id++;
+    assert(cerberus_wifi_packet_monitor_session_start(&start, &scoped) == ESP_OK);
+    assert(cerberus_wifi_packet_monitor_session_stop(first, &scoped) == ESP_ERR_NOT_FOUND);
+    assert(cerberus_wifi_packet_monitor_session_sample(&read, &received) == ESP_ERR_NOT_FOUND);
+    assert(!atomic_load(&packet_monitor_cancelled));
+    assert(cerberus_wifi_packet_monitor_session_stop(start.session_id, &scoped) == ESP_OK);
+    dispatch();
+
+    /* A rejected Start is consumed; releasing the competing owner cannot make
+     * that same request turn into an accepted scan later. */
+    reset();
+    cerberus_wifi_packet_monitor_session_info(&scoped);
+    start = (cerberus_wifi_packet_monitor_session_start_t){scoped.session_id + 1U, 6U};
+    atomic_store(&probe_sniff_radio_reserved, true);
+    assert(cerberus_wifi_packet_monitor_session_start(&start, &scoped) == ESP_ERR_INVALID_STATE);
+    assert(!scoped.flags && scoped.session_id == start.session_id && !notifications);
+    atomic_store(&probe_sniff_radio_reserved, false);
+    assert(cerberus_wifi_packet_monitor_session_start(&start, &scoped) == ESP_ERR_INVALID_STATE);
+    assert(!notifications && !enable_calls);
+    ++start.session_id;
+    packet_monitor_control_busy = true;
+    assert(cerberus_wifi_packet_monitor_session_start(&start, &scoped) == ESP_ERR_INVALID_STATE);
+    packet_monitor_control_busy = false;
+    assert(cerberus_wifi_packet_monitor_session_start(&start, &scoped) == ESP_ERR_INVALID_STATE);
+    assert(!notifications && !enable_calls);
+    ++start.session_id;
+    assert(cerberus_wifi_packet_monitor_session_start(&start, &scoped) == ESP_OK);
+    fail_disable = true;
+    dispatch();
+    assert(packet_monitor_status.state == CERBERUS_WIFI_PACKET_MONITOR_ERROR);
+    assert(cerberus_wifi_packet_monitor_active());
+    unsigned disabled = disable_calls;
+    assert(cerberus_wifi_packet_monitor_session_stop(start.session_id, &scoped) == ESP_OK);
+    assert(disable_calls == disabled && (scoped.flags & CERBERUS_WIFI_PACKET_MONITOR_HELD));
+    dispatch(); /* Cleanup is on the worker, not the SPI command thread. */
+    assert(disable_calls == disabled + 1U && cerberus_wifi_packet_monitor_active());
+    fail_disable = false;
+    assert(cerberus_wifi_packet_monitor_session_stop(start.session_id, &scoped) == ESP_OK);
+    dispatch();
+    assert(!cerberus_wifi_packet_monitor_active() && !promiscuous);
+    run_ap_and_capture();
+
+    /* An abandoned scoped scan expires. Ordinary INFO reads do not renew it. */
+    reset(); stop_after = 0U;
+    cerberus_wifi_packet_monitor_session_info(&scoped);
+    start = (cerberus_wifi_packet_monitor_session_start_t){scoped.session_id + 1U, 6U};
+    assert(cerberus_wifi_packet_monitor_session_start(&start, &scoped) == ESP_OK);
+    clock_ms += CERBERUS_WIFI_PACKET_MONITOR_LEASE_MS - 100U;
+    cerberus_wifi_packet_monitor_session_info(&scoped);
+    dispatch();
+    assert(samples == 1U && !cerberus_wifi_packet_monitor_active());
+    assert(atomic_load(&packet_monitor_cancelled));
+    reset(); stop_after = 0U;
+    cerberus_wifi_packet_monitor_session_info(&scoped);
+    start = (cerberus_wifi_packet_monitor_session_start_t){scoped.session_id + 1U, 6U};
+    assert(cerberus_wifi_packet_monitor_session_start(&start, &scoped) == ESP_OK);
+    clock_ms += CERBERUS_WIFI_PACKET_MONITOR_LEASE_MS - 100U;
+    assert(cerberus_wifi_packet_monitor_session_status(start.session_id, &scoped) == ESP_OK);
+    dispatch();
+    assert(samples == 50U && !cerberus_wifi_packet_monitor_active());
+    reset();
+    cerberus_wifi_packet_monitor_session_info(&scoped);
+    start = (cerberus_wifi_packet_monitor_session_start_t){scoped.session_id + 1U, 6U};
+    assert(cerberus_wifi_packet_monitor_session_start(&start, &scoped) == ESP_OK);
+    clock_ms = 0U;
+    assert(cerberus_wifi_packet_monitor_session_status(start.session_id, &scoped) == ESP_OK);
+    assert(scoped.flags & CERBERUS_WIFI_PACKET_MONITOR_CANCELLED);
+    dispatch();
+    assert(!enable_calls && !cerberus_wifi_packet_monitor_active());
+
+    puts("C5 monitor: legacy/scoped ownership, stale requests, leases, cleanup retry and next scan passed.");
     return 0;
 }

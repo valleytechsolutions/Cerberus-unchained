@@ -1,4 +1,5 @@
 #pragma once
+#include "wifi_packet_monitor_session.h"
 
 #include "cerberus_protocol.h"
 #include "csi_protocol.h"
@@ -106,6 +107,17 @@ void cerberus_wifi_packet_monitor_get_status(
     cerberus_wifi_packet_monitor_status_payload_t *status);
 esp_err_t cerberus_wifi_packet_monitor_get_sample(uint8_t generation,
     uint16_t sequence, cerberus_wifi_packet_monitor_sample_payload_t *sample);
+void cerberus_wifi_packet_monitor_session_info(cerberus_wifi_packet_monitor_session_status_t *out);
+esp_err_t cerberus_wifi_packet_monitor_session_start(
+    const cerberus_wifi_packet_monitor_session_start_t *request,
+    cerberus_wifi_packet_monitor_session_status_t *out);
+esp_err_t cerberus_wifi_packet_monitor_session_status(uint64_t session,
+    cerberus_wifi_packet_monitor_session_status_t *out);
+esp_err_t cerberus_wifi_packet_monitor_session_stop(uint64_t session,
+    cerberus_wifi_packet_monitor_session_status_t *out);
+esp_err_t cerberus_wifi_packet_monitor_session_sample(
+    const cerberus_wifi_packet_monitor_session_read_t *request,
+    cerberus_wifi_packet_monitor_session_sample_t *out);
 esp_err_t cerberus_wifi_watch_get_status(uint8_t generation, cerberus_watch_scan_status_payload_t *out);
 esp_err_t cerberus_wifi_watch_get_data(const cerberus_watch_scan_data_request_t *request,
     cerberus_watch_scan_data_payload_t *out);

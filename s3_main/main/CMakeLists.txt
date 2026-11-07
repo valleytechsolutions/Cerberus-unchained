@@ -78,6 +78,7 @@ idf_component_register(
         "wifi_capture_session.c"
         "s3_wifi_packet_count.c"
         "wifi_packet_count_scan.c"
+        "wifi_packet_monitor_scan.c"
         "wifi_packet_count_record.c"
         "wifi_packet_count_diagnostics.c"
         "../../shared/wifi_packet_count.c"

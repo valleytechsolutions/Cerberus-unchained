@@ -1,4 +1,5 @@
 #pragma once
+#include "wifi_packet_monitor_session.h"
 #include "esp_err.h"
 #include "wardrive_stream.h"
 esp_err_t c5_spi_link_wardrive(uint8_t command,const cerberus_wd_request_t *query,void *reply);
@@ -296,6 +297,15 @@ esp_err_t c5_spi_link_wifi_packet_monitor_status(
     cerberus_wifi_packet_monitor_status_payload_t *status);
 esp_err_t c5_spi_link_wifi_packet_monitor_sample(uint8_t generation,
     uint16_t sequence, cerberus_wifi_packet_monitor_sample_payload_t *sample);
+esp_err_t c5_spi_link_wifi_packet_monitor_session_info(cerberus_wifi_packet_monitor_session_status_t *out);
+esp_err_t c5_spi_link_wifi_packet_monitor_session_start(uint64_t session, uint8_t channel,
+    cerberus_wifi_packet_monitor_session_status_t *out);
+esp_err_t c5_spi_link_wifi_packet_monitor_session_status(uint64_t session,
+    cerberus_wifi_packet_monitor_session_status_t *out);
+esp_err_t c5_spi_link_wifi_packet_monitor_session_stop(uint64_t session,
+    cerberus_wifi_packet_monitor_session_status_t *out);
+esp_err_t c5_spi_link_wifi_packet_monitor_session_sample(uint64_t session, uint16_t sequence,
+    cerberus_wifi_packet_monitor_session_sample_t *out);
 /* Wi-Fi capture needs C5 firmware revision 45+. `read_frame` verifies CRC32
  * into caller storage and deliberately leaves the record pending until ACK. */
 esp_err_t c5_spi_link_wifi_capture_start(
