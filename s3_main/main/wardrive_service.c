@@ -500,8 +500,8 @@ static esp_err_t append_observation_impl(const cerberus_wardrive_observation_t *
             return ESP_ERR_INVALID_SIZE;
         }
     }
-    /* Streaming preserves every observation. Skip the legacy history walk
-     * entirely, instead of calculating a decision that would be ignored. */
+    /* Streaming journals every valid observation. Final RSSI compaction runs
+     * after RF stops; skip the legacy history walk in this capture path. */
     cerberus_wardrive_dedupe_t *history = located ? &wigle_dedupe : &dedupe;
     cerberus_wardrive_decision_t decision = {0};
     if (!stream_recording) {
@@ -537,7 +537,7 @@ static esp_err_t append_observation_impl(const cerberus_wardrive_observation_t *
         publish_error(error, 'S');
         return error;
     }
-    if(stream_recording) { /* Every delivered observation is a CSV row. */ }
+    if(stream_recording) { /* Already appended to the recovery journal. */ }
     else if (relation) cerberus_wardrive_relation_commit(&relation_dedupe, observation, decision, (uint32_t)uptime);
     else if (probe) cerberus_wardrive_probe_commit(&probe_dedupe, observation, decision, (uint32_t)uptime);
     else cerberus_wardrive_commit(history, observation, decision, (uint32_t)uptime);

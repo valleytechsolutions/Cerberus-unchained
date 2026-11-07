@@ -58,6 +58,8 @@ cerberus_s3_ble_owner_t cerberus_s3_ble_host_owner(void){return CERBERUS_S3_BLE_
 static void return_to_launcher(void){++launcher_returns;current_page=0;}
 esp_err_t cerberus_wardrive_start(bool expansions,bool gps)
 {(void)expansions;(void)gps;++service_starts;return ESP_OK;}
+esp_err_t cerberus_wardrive_start_check(bool enabled)
+{return cerberus_wardrive_gps_start_ready(enabled,&uart_state)?ESP_OK:ESP_ERR_NOT_FINISHED;}
 static int64_t esp_timer_get_time(void){return clock_us;}
 static const char *esp_err_to_name(esp_err_t e)
 {return e==ESP_ERR_TIMEOUT?"ESP_ERR_TIMEOUT":e==ESP_ERR_NO_MEM?"ESP_ERR_NO_MEM":e==ESP_ERR_NOT_FOUND?"ESP_ERR_NOT_FOUND":"ESP_FAIL";}

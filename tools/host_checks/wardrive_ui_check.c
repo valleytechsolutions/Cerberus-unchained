@@ -155,6 +155,9 @@ static void check_views(const char *prefix)
     runtime.state=CERBERUS_WARDRIVE_STOPPING;wardrive_return_pending=true;draw();
     CHECK(!strcmp(lines[105],"STATE: STOPPING / SAVING"));
     CHECK(!strcmp(lines[324],"WAITING FOR RADIOS AND FILES")&&strstr(drawn,"STOP\n"));save(prefix,"stopping");
+    runtime.compacting=true;draw();
+    CHECK(!strcmp(lines[105],"STATE: SAVING RSSI EXTREMES")&&strstr(drawn,"STOP\n"));save(prefix,"compacting");
+    runtime.compacting=false;
     runtime.state=CERBERUS_WARDRIVE_STOPPED;wardrive_return_pending=false;draw();
     CHECK(!strcmp(lines[105],"STATE: STOPPED / NO CSV SAVED")&&strstr(drawn,"WAIT GPS\n"));
     CHECK(!strcmp(lines[280],"LAST FILE: NO CSV CREATED"));
@@ -170,6 +173,8 @@ static void check_views(const char *prefix)
     CHECK(!strcmp(lines[324],"NO OBSERVATIONS IN SUPPORTED CSV FORMAT"));
     runtime.skipped_format=0;draw();CHECK(!strcmp(lines[324],"NO ELIGIBLE OBSERVATIONS RECEIVED"));
     runtime.files_saved=1;runtime.sd_rows=138;strcpy(runtime.last_file_name,"CERBWardrive001.CSV");draw();
+    runtime.csv_rows=2;runtime.csv_devices=1;draw();
+    CHECK(!strcmp(lines[260],"CSV: 2 ROWS / 1 DEVICES / 0 KiB"));
     CHECK(!strcmp(lines[105],"STATE: STOPPED")&&!strcmp(lines[324],"CSV SAVED / OPEN LOGS BELOW"));save(prefix,"stopped-saved");
     runtime.state=CERBERUS_WARDRIVE_ERROR;runtime.error_code=ESP_ERR_TIMEOUT;runtime.s3_ble_error=ESP_ERR_TIMEOUT;
     draw();CHECK(!strcmp(lines[324],"S3: ESP_ERR_TIMEOUT"));save(prefix,"error");

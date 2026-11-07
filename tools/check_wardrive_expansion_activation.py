@@ -12,10 +12,10 @@ source = (root / "s3_main/main/wardrive_service.c").read_text(encoding="utf-8")
 start = source.index("static esp_err_t prepare_expansion_plan(")
 end = source.index("static esp_err_t wardrive_start_with_idle_probes_paused(", start)
 (out / "wardrive_expansion_activation_impl.h").write_text(
-    source[start:end], encoding="utf-8"
+    source[start:source.index("\n}", start) + 2], encoding="utf-8"
 )
 # The service must set the plan before opening the stream. A plan is optional
-# when R1-R6 are not requested, so the onboard/no-GPS path has no new gate.
+# when R1-R6 are not requested; GPS admission is checked separately.
 start_body = source[end:source.index("esp_err_t cerberus_wardrive_start(", end)]
 assert start_body.index("prepare_expansion_plan(expansion_stage.present_mask)") < (
     start_body.index("field_survey_stream_open()")
