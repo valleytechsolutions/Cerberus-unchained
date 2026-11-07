@@ -24,6 +24,8 @@ static bool draining, finish_automatic, pending[2];
 static bool append_fail, open_fail, finish_fail, ack_mismatch, rebind_automatic, rebound;
 static bool producer_staging, cancel_staging, terminal_no_data, expired_data;
 static unsigned staging_ticks;
+static bool monitor_case, bad_statistics, index_fail;
+static unsigned index_rows;
 static uint64_t sessions[2]={0x100000000000001ULL,0x200000000000001ULL}, storage_job;
 static uint8_t frame[4096];
 static uint16_t frame_length=91;
@@ -61,6 +63,16 @@ static esp_err_t cerberus_storage_packet_count_append(uint64_t job,unsigned sour
     for(size_t i=12U+captured;i<length-4U;++i)CHECK(data[i]==0);
     ++appends[source];return sd_fail||append_fail?ESP_FAIL:ESP_OK;
 }
+static esp_err_t cerberus_storage_packet_monitor_begin(uint64_t job,char name[8])
+{ CHECK(monitor_case);esp_err_t e=cerberus_storage_packet_count_begin(job,name);if(!e)strcpy(name,"M00001");return e; }
+static esp_err_t cerberus_storage_packet_monitor_append(uint64_t job,uint64_t session,uint32_t sequence,
+    uint64_t source_us,uint8_t channel,int8_t rssi,bool known,uint16_t bytes,const uint8_t *record,size_t length)
+{
+    CHECK(monitor_case&&session==sessions[1]&&sequence==1&&source_us==60000&&channel==36);
+    CHECK(rssi==-49&&known&&bytes==frame_length);++index_rows;
+    esp_err_t e=cerberus_storage_packet_count_append(job,1,record,length);
+    return index_fail?ESP_FAIL:e;
+}
 static esp_err_t cerberus_storage_packet_count_finish(uint64_t job,cerberus_storage_packet_count_result_t *out)
 {CHECK(job==storage_job);memset(out,0,sizeof(*out));out->bytes[0]=68+appends[0]*100;out->bytes[1]=68+appends[1]*100;strcpy(out->file_name[0],"S3.PCAPNG");strcpy(out->file_name[1],"C5.PCAPNG");storage_job=0;open_files=0;++closes;return finish_fail?ESP_FAIL:ESP_OK;}
 static esp_err_t exchange(void *ctx,unsigned source,uint8_t command,const void *q,size_t n,void *out,size_t size)
@@ -71,6 +83,10 @@ static esp_err_t exchange(void *ctx,unsigned source,uint8_t command,const void *
         CHECK(n==sizeof(cerberus_packet_count_peek_t)&&size==22);
         cerberus_packet_count_control_t *r=out;
         r->session_id=mismatch?id+1:id;r->flags=CERBERUS_PACKET_COUNT_BOUND|CERBERUS_PACKET_COUNT_RECORDING;
+        if(((const cerberus_packet_count_peek_t *)q)->kind==CERBERUS_PACKET_COUNT_READ_SUMMARY){
+            CHECK(monitor_case&&draining&&!pending[source]);r->state=CERBERUS_PACKET_COUNT_COMPLETE;
+            r->sequence=CERBERUS_PACKET_COUNT_PIN_BASE+3;return ESP_OK;
+        }
         if(producer_staging||terminal_no_data){
             r->state=producer_staging?(source?CERBERUS_PACKET_COUNT_QUEUED:CERBERUS_PACKET_COUNT_STAGING):CERBERUS_PACKET_COUNT_COMPLETE;
             if(producer_staging)r->flags|=CERBERUS_PACKET_COUNT_HELD;
@@ -87,7 +103,15 @@ static esp_err_t exchange(void *ctx,unsigned source,uint8_t command,const void *
     }else if(command==CERBERUS_PACKET_COUNT_COMMAND_READ){
         CHECK(n==14&&size==22);
         const cerberus_packet_count_read_t *request=q;cerberus_packet_count_chunk_t *r=out;
-        CHECK(request->part<4);r->session_id=id;r->pin=request->pin;r->part=request->part;
+        r->session_id=id;r->pin=request->pin;r->part=request->part;
+        if(monitor_case&&request->pin==CERBERUS_PACKET_COUNT_PIN_BASE+3){
+            CHECK(request->part<8);uint8_t stats[64]={1,0,0,2};
+            cerberus_packet_count_put(stats+4,1,4);cerberus_packet_count_put(stats+8,1,4);
+            cerberus_packet_count_put(stats+12,7,4);cerberus_packet_count_put(stats+16,2,4);
+            cerberus_packet_count_put(stats+36,1,4);if(bad_statistics)stats[60]=1;
+            memcpy(r->data,stats+request->part*8,8);return ESP_OK;
+        }
+        CHECK(request->part<4);
         uint8_t bytes[32]={0};
         cerberus_packet_count_put(bytes,1,4);cerberus_packet_count_put(bytes+4,bad_meta?5000:frame_length,2);
         cerberus_packet_count_put(bytes+6,frame_length,2);cerberus_packet_count_put(bytes+8,60000,8);
@@ -117,8 +141,8 @@ static void vTaskDelay(unsigned ticks)
     CHECK(ticks==10);
     if(!finish_automatic)return;
     uint64_t job=packet_count_record_public.job;
-    if(!packet_count_record_public.source[0].session){
-        CHECK(wifi_packet_count_record_bind(job,0,sessions[0])==ESP_OK);
+    if(!packet_count_record_public.source[1].session){
+        if(!monitor_case)CHECK(wifi_packet_count_record_bind(job,0,sessions[0])==ESP_OK);
         CHECK(wifi_packet_count_record_bind(job,1,sessions[1])==ESP_OK);
         return;
     }
@@ -128,7 +152,7 @@ static void vTaskDelay(unsigned ticks)
         if(cancel_staging){terminal_no_data=true;pending[0]=pending[1]=false;}
     }
     draining=true;
-    bool a=wifi_packet_count_record_drained(job,0,sessions[0]);
+    bool a=monitor_case||wifi_packet_count_record_drained(job,0,sessions[0]);
     bool b=wifi_packet_count_record_drained(job,1,sessions[1]);
     if(a&&b){
         if(rebind_automatic&&!rebound){
@@ -147,6 +171,7 @@ static void reset(void)
     oom=task_fail=sd_fail=ack_lost=corrupt_crc=bad_meta=bad_tail=mismatch=draining=false;
     finish_automatic=true;pending[0]=pending[1]=true;
     metadata_fault=0;
+    monitor_case=bad_statistics=index_fail=false;index_rows=0;
     append_fail=open_fail=finish_fail=ack_mismatch=rebind_automatic=rebound=false;
     producer_staging=cancel_staging=terminal_no_data=expired_data=false;staging_ticks=0;
     memset(appends,0,sizeof(appends));memset(ack_calls,0,sizeof(ack_calls));closes=0;frame_length=91;
@@ -210,6 +235,23 @@ int main(void)
         recording_extent(boundary+1U,false);
     }
     recording_extent(4095,true);recording_extent(4096,true);
+    for(unsigned fault=0;fault<5;++fault){
+        reset();monitor_case=true;ack_lost=fault==1;bad_statistics=fault==2;
+        index_fail=fault==3;sd_fail=fault==4;
+        CHECK(wifi_packet_count_record_start_monitor(&transport,&job)==ESP_OK);
+        task_entry(task_argument);
+        wifi_packet_count_record_status_t result;CHECK(wifi_packet_count_record_status(job,&result));
+        CHECK(!result.busy&&!allocations&&!tasks&&!storage_job&&!appends[0]);
+        if(fault!=4){
+            CHECK(index_rows==1&&appends[1]==1&&!strcmp(result.directory,"M00001"));
+            CHECK(result.source[1].statistics_valid==(fault!=2));
+            if(fault!=2)CHECK(result.source[1].received==1&&result.source[1].acknowledged==1&&
+                result.source[1].queue_full==7&&result.source[1].rejected==2);
+            if(fault==2)CHECK(result.source[1].loss_unknown&&result.source[1].error!=ESP_OK);
+            if(fault==3)CHECK(result.source[1].written==0&&result.source[1].discarded==1&&result.source[1].error==ESP_FAIL);
+        }else CHECK(!index_rows&&result.error==ESP_FAIL);
+        CHECK(wifi_packet_count_record_release(job)==ESP_OK);
+    }
     printf("Packet Count recorder PASS %u checks; worker context %zu bytes\n",checks,sizeof(packet_count_record_context_t));
     return 0;
 }

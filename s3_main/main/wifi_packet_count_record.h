@@ -9,8 +9,9 @@
 typedef struct {
     uint64_t session, bytes;
     uint32_t written, discarded, transport_errors;
+    uint32_t received, acknowledged, queue_full, rejected;
     esp_err_t error;
-    bool bound, draining, drained, loss_unknown;
+    bool bound, draining, drained, loss_unknown, statistics_valid;
     char file_name[24];
 } wifi_packet_count_record_source_t;
 typedef struct {
@@ -22,6 +23,8 @@ typedef struct {
 } wifi_packet_count_record_status_t;
 
 esp_err_t wifi_packet_count_record_start(const wifi_packet_count_transport_t *transport,
+    uint64_t *job);
+esp_err_t wifi_packet_count_record_start_monitor(const wifi_packet_count_transport_t *transport,
     uint64_t *job);
 bool wifi_packet_count_record_status(uint64_t job, wifi_packet_count_record_status_t *out);
 esp_err_t wifi_packet_count_record_bind(uint64_t job, unsigned source, uint64_t session);

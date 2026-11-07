@@ -66,5 +66,10 @@ does not verify the new rev147 GPS/NTP recovery paths on hardware, service
 processing, account credit or repeated-upload memory use; those remain open.
 Existing uncertain receipts were not changed or automatically retried.
 
+After the update, the owner reopened the successful CSV and confirmed that both
+WiGLE and WDGWars still display UPLOADED. This is touchscreen confirmation of
+saved receipts, not a second service request. The subsequent diagnostic sample
+was idle and did not independently identify the selected log.
+
 The time API follows [ESP-IDF 6.0.1's system-time interface](https://docs.espressif.com/projects/esp-idf/en/v6.0.1/esp32s3/api-reference/system/system_time.html).
 The backup server is documented in [Cloudflare's NTP guide](https://developers.cloudflare.com/time-services/ntp/usage/).

@@ -7,6 +7,8 @@
 #include "wardrive_log_feedback.h"
 #include "wifi_target_view.h"
 #include "wifi_packet_monitor_scan.h"
+#include "wifi_packet_monitor_record.h"
+#include "wifi_packet_count_record.h"
 #include "wifi_packet_count_scan.h"
 #include "csi_link.h"
 #include "csi_ui.h"
@@ -754,12 +756,16 @@ static uint32_t wifi_channel_survey_last_poll;
 typedef enum {
     PACKET_MONITOR_NONE, PACKET_MONITOR_CHANNEL, PACKET_MONITOR_RESTART,
     PACKET_MONITOR_SURVEY, PACKET_MONITOR_BACK_AP, PACKET_MONITOR_BACK_LIST,
-    PACKET_MONITOR_BACK_MENU,
+    PACKET_MONITOR_BACK_MENU, PACKET_MONITOR_TOGGLE_RECORD, PACKET_MONITOR_STOP_ONLY,
 } packet_monitor_action_t;
 static wifi_packet_monitor_scan_t packet_monitor;
 static packet_monitor_action_t packet_monitor_action;
 static uint8_t packet_monitor_channel = 1U, packet_monitor_next_channel;
 static bool packet_monitor_from_target;
+static bool packet_monitor_record_enabled, packet_monitor_record_preparing;
+static uint64_t packet_monitor_record_job;
+static uint64_t packet_monitor_record_redraw_ms;
+static wifi_packet_count_record_status_t packet_monitor_record_status;
 static cerberus_c5_wifi_result_t wifi_selected_result;
 static bool wifi_selection_valid;
 static bool dual_wifi_return_to_view;
@@ -2298,7 +2304,7 @@ static esp_err_t draw_packet_monitor_lane(unsigned lane)
         "BEACONS", "DEAUTH + DISASSOC", "PROBE REQUESTS",
     };
     static const uint16_t colors[] = {UI_GOOD, UI_BAD, 0x3DDF};
-    uint16_t y = (uint16_t)(96U + lane * 75U);
+    uint16_t y = (uint16_t)(90U + lane * 70U);
     uint16_t peak = 1U, current = 0U;
     uint16_t latest = packet_monitor.view.latest_sequence;
     for (unsigned column = 0U; column < 32U; ++column) {
@@ -2344,7 +2350,15 @@ static esp_err_t draw_wifi_packet_monitor(void)
         packet_monitor_channel <= 14U ? "2.4 GHZ" : "5 GHZ");
     ESP_RETURN_ON_ERROR(draw_centered(51, line, UI_GOOD, 1), TAG,
         "packet monitor heading");
-    if (packet_monitor.phase == WIFI_MONITOR_STOP)
+    if (packet_monitor_record_preparing)
+        snprintf(line, sizeof(line), "PREPARING SD RECORDING");
+    else if (packet_monitor.phase == WIFI_MONITOR_DRAIN)
+        snprintf(line, sizeof(line), "DRAINING C5 CAPTURE TO SD");
+    else if (packet_monitor.phase == WIFI_MONITOR_RELEASE)
+        snprintf(line, sizeof(line), "RELEASING C5 CAPTURE BUFFER");
+    else if (packet_monitor.phase == WIFI_MONITOR_OFF && packet_monitor_record_job)
+        snprintf(line, sizeof(line), "SAVING / CLOSING SD FILES");
+    else if (packet_monitor.phase == WIFI_MONITOR_STOP)
         snprintf(line, sizeof(line), packet_monitor.error == ESP_OK ?
             "RELEASING C5 RADIO" : "C5 CLEANUP RETRY: %s",
             esp_err_to_name(packet_monitor.error));
@@ -2364,16 +2378,31 @@ static esp_err_t draw_wifi_packet_monitor(void)
     for (unsigned lane = 0U; lane < 3U; ++lane)
         ESP_RETURN_ON_ERROR(draw_packet_monitor_lane(lane), TAG,
             "packet monitor graph");
-    ESP_RETURN_ON_ERROR(draw_centered(326,
+    ESP_RETURN_ON_ERROR(draw_centered(302,
         "CHANNEL TRAFFIC / NO BSSID FILTER", UI_MUTED, 1), TAG,
         "packet monitor scope");
+    const wifi_packet_count_record_source_t *saved = &packet_monitor_record_status.source[1];
+    esp_err_t sd_error = packet_monitor_record_status.error != ESP_OK ?
+        packet_monitor_record_status.error : saved->error;
+    if (sd_error != ESP_OK) snprintf(line, sizeof(line), "CAPTURE: %s / SAVED %lu",
+        esp_err_to_name(sd_error), (unsigned long)saved->written);
+    else if (saved->statistics_valid) snprintf(line, sizeof(line), "SAVED %lu / FULL %lu / REJECT %lu",
+        (unsigned long)saved->written, (unsigned long)saved->queue_full, (unsigned long)saved->rejected);
+    else if (packet_monitor_record_status.directory[0]) snprintf(line, sizeof(line),
+        "%s / %lu FRAMES%s", packet_monitor_record_status.directory, (unsigned long)saved->written,
+        packet_monitor_record_job ? " / WRITING" : " / CLOSED");
+    else snprintf(line, sizeof(line), "C5 RECEIVER / S3 GRAPH + SD");
+    ESP_RETURN_ON_ERROR(draw_centered(315, line, sd_error == ESP_OK ? UI_MUTED : UI_BAD, 1),
+        TAG, "packet monitor recording");
+    ESP_RETURN_ON_ERROR(draw_small_button(8, 328, 148, 27,
+        packet_monitor_record_enabled ? "PCAP ON" : "PCAP OFF"), TAG, "packet monitor PCAP");
+    ESP_RETURN_ON_ERROR(draw_small_button(164, 328, 148, 27, "SURVEY"), TAG, "packet monitor survey");
     ESP_RETURN_ON_ERROR(draw_small_button(8, UI_WIFI_CONTROLS_Y, 68, 42,
         "CH -"), TAG, "packet monitor previous channel");
     ESP_RETURN_ON_ERROR(draw_small_button(84, UI_WIFI_CONTROLS_Y, 68, 42,
         "CH +"), TAG, "packet monitor next channel");
     ESP_RETURN_ON_ERROR(draw_small_button(160, UI_WIFI_CONTROLS_Y, 68, 42,
-        packet_monitor.view.state == CERBERUS_WIFI_PACKET_MONITOR_RUNNING ?
-            "SURVEY" : "RESTART"), TAG, "packet monitor survey/restart");
+        packet_monitor_can_restart() ? "RESTART" : "STOP"), TAG, "packet monitor stop/restart");
     return draw_small_button(236, UI_WIFI_CONTROLS_Y, 76, 42,
         packet_monitor_from_target ? "BACK AP" : "AP LIST");
 }
@@ -9249,14 +9278,19 @@ static void handle_wifi_tap(uint16_t x, uint16_t y)
     }
 
     if (wifi_mode == UI_WIFI_MODE_PACKET_MONITOR) {
+        if (y >= 328U && y < 355U) {
+            if (x >= 8U && x < 156U) packet_monitor_request_action(PACKET_MONITOR_TOGGLE_RECORD);
+            else if (x >= 164U && x < 312U) packet_monitor_request_action(PACKET_MONITOR_SURVEY);
+            ESP_ERROR_CHECK(draw_detail_page());
+            return;
+        }
         if (y < UI_WIFI_CONTROLS_Y || y >= UI_WIFI_CONTROLS_Y + 42U)
             return;
         if (x >= 8U && x < 76U) packet_monitor_step_channel(-1);
         else if (x >= 84U && x < 152U) packet_monitor_step_channel(1);
         else if (x >= 160U && x < 228U)
-            packet_monitor_request_action(packet_monitor.view.state ==
-                CERBERUS_WIFI_PACKET_MONITOR_RUNNING ?
-                PACKET_MONITOR_SURVEY : PACKET_MONITOR_RESTART);
+            packet_monitor_request_action(packet_monitor_can_restart() ?
+                PACKET_MONITOR_RESTART : PACKET_MONITOR_STOP_ONLY);
         else if (x >= 236U && x < 312U)
             packet_monitor_request_action(packet_monitor_from_target ?
                 PACKET_MONITOR_BACK_AP : PACKET_MONITOR_BACK_LIST);

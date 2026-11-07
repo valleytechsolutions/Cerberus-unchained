@@ -20,9 +20,16 @@ bool wifi_packet_monitor_scan_start(wifi_packet_monitor_scan_t *s, uint8_t chann
     return true;
 }
 
+bool wifi_packet_monitor_scan_record(wifi_packet_monitor_scan_t *s, uint8_t channel)
+{
+    if (!wifi_packet_monitor_scan_start(s, channel)) return false;
+    s->recording = true;
+    return true;
+}
+
 void wifi_packet_monitor_scan_stop(wifi_packet_monitor_scan_t *s)
 {
-    if (!s || s->phase == WIFI_MONITOR_OFF || s->phase == WIFI_MONITOR_STOP) return;
+    if (!s || s->phase == WIFI_MONITOR_OFF || s->phase >= WIFI_MONITOR_STOP) return;
     /* INFO and START have not sent a mutation. Only WATCH holds a claim. */
     if (s->phase == WIFI_MONITOR_INFO || s->phase == WIFI_MONITOR_START) {
         s->phase = WIFI_MONITOR_OFF;
@@ -70,7 +77,8 @@ static void publish(wifi_packet_monitor_scan_t *s,
 }
 
 static void accept(wifi_packet_monitor_scan_t *s,
-    const cerberus_wifi_packet_monitor_session_status_t *r, bool starting, uint64_t now)
+    const cerberus_wifi_packet_monitor_session_status_t *r, bool starting, uint64_t now,
+    const wifi_packet_monitor_transport_t *t)
 {
     if (!bound_reply(s, r)) {
         if (r->session_id != s->session || r->flags || r->error_code == ESP_OK) {
@@ -90,12 +98,27 @@ static void accept(wifi_packet_monitor_scan_t *s,
              * or stop the current receiver reported by a later INFO. */
             s->view.state = CERBERUS_WIFI_PACKET_MONITOR_ERROR;
             s->view.error_code = r->error_code;
-            release(s);
+            if (s->recording) {
+                s->source_missing = true;
+                s->phase = WIFI_MONITOR_DRAIN;
+            } else release(s);
         } else s->next_action_ms = later(now, MONITOR_RETRY_MS);
         return;
     }
     publish(s, r);
+    if (s->recording && !s->record_bound) {
+        esp_err_t error = (r->flags & CERBERUS_WIFI_PACKET_MONITOR_RECORDING) ?
+            t->record_bind(s->session) : ESP_ERR_INVALID_RESPONSE;
+        if (error != ESP_OK) {
+            s->error = error;
+            s->phase = WIFI_MONITOR_STOP;
+        } else s->record_bound = true;
+    }
     s->status_due_ms = later(now, MONITOR_POLL_MS);
+    if (s->recording && !(r->flags & CERBERUS_WIFI_PACKET_MONITOR_HELD)) {
+        s->phase = WIFI_MONITOR_DRAIN;
+        return;
+    }
     if (s->phase == WIFI_MONITOR_STOP) {
         if (!(r->flags & CERBERUS_WIFI_PACKET_MONITOR_HELD)) release(s);
         else s->next_action_ms = later(now, MONITOR_POLL_MS);
@@ -107,6 +130,8 @@ bool wifi_packet_monitor_scan_tick(wifi_packet_monitor_scan_t *s, uint64_t now,
 {
     if (!s || !t || !t->info || !t->start || !t->status || !t->stop || !t->sample)
         return false;
+    if (s->recording && (!t->record_start || !t->record_bind ||
+        !t->record_drained || !t->record_release)) return false;
     if (s->have_tick && now < s->last_tick_ms) {
         wifi_packet_monitor_scan_stop(s);
         s->error = ESP_ERR_INVALID_STATE;
@@ -117,6 +142,23 @@ bool wifi_packet_monitor_scan_tick(wifi_packet_monitor_scan_t *s, uint64_t now,
     if (s->phase == WIFI_MONITOR_OFF || now < s->next_action_ms) return false;
     cerberus_wifi_packet_monitor_session_status_t r = {0};
     esp_err_t error;
+    if (s->phase == WIFI_MONITOR_DRAIN) {
+        if (!s->record_bound || t->record_drained(s->session)) {
+            if (s->source_missing) release(s);
+            else s->phase = WIFI_MONITOR_RELEASE;
+        }
+        return true;
+    }
+    if (s->phase == WIFI_MONITOR_RELEASE) {
+        bool released = false;
+        error = t->record_release(s->session, &released);
+        if (error == ESP_OK && released) release(s);
+        else {
+            if (error != ESP_OK) s->error = error;
+            s->next_action_ms = later(now, MONITOR_POLL_MS);
+        }
+        return true;
+    }
     if (s->phase == WIFI_MONITOR_INFO) {
         error = t->info(&r);
         if (error != ESP_OK) {
@@ -138,15 +180,16 @@ bool wifi_packet_monitor_scan_tick(wifi_packet_monitor_scan_t *s, uint64_t now,
         /* Claim before sending. A lost reply is followed by STATUS, never a
          * replay of START or a channel-based guess at the owner. */
         s->phase = WIFI_MONITOR_WATCH;
-        error = t->start(s->session, s->channel, &r);
+        error = s->recording ? t->record_start(s->session, s->channel, &r) :
+            t->start(s->session, s->channel, &r);
         s->status_due_ms = now;
-        if (error == ESP_OK) accept(s, &r, true, now);
+        if (error == ESP_OK) accept(s, &r, true, now, t);
     } else if (s->phase == WIFI_MONITOR_STOP) {
         error = t->stop(s->session, &r);
-        if (error == ESP_OK) accept(s, &r, false, now);
+        if (error == ESP_OK) accept(s, &r, false, now, t);
     } else if (now >= s->status_due_ms) {
         error = t->status(s->session, &r);
-        if (error == ESP_OK) accept(s, &r, false, now);
+        if (error == ESP_OK) accept(s, &r, false, now, t);
     } else {
         if (!s->have_fetched || s->fetched == s->view.latest_sequence) return false;
         uint16_t sequence = (uint16_t)(s->fetched + 1U);

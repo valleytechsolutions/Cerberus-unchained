@@ -132,6 +132,9 @@ typedef struct {
     uint64_t job;
     char directory[96];
     packet_count_storage_stream_t source[2];
+    packet_count_storage_stream_t index;
+    uint32_t records;
+    bool monitor;
 } packet_count_storage_t;
 static packet_count_storage_t *sd_packet_count;
 static unsigned sd_packet_count_next_index = 1U;

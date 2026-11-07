@@ -4,8 +4,9 @@ Marauder `develop` was checked on November 7, 2026 and still resolves to
 `79cc6bcba1db6679baee1dab2b0c1ad5010e6363`. Its
 [RunPacketMonitor](https://github.com/justcallmekoko/ESP32Marauder/blob/79cc6bcba1db6679baee1dab2b0c1ad5010e6363/esp32_marauder/WiFiScan.cpp#L5062)
 opens a `packet_monitor` capture, and its receive callback appends frames.
-Cerberus's Packet Monitor has channel controls and three graphs, but no
-recording path. Packet Count and selected-BSSID capture are separate tools.
+Cerberus's installed Packet Monitor has channel controls and three graphs.
+The rev148 source candidate adds the recording path described below. Packet
+Count and selected-BSSID capture remain separate tools with different scopes.
 
 ## Stop correction
 
@@ -64,24 +65,58 @@ The matched development package is
 `cerberus-unchained-0.1.0-dev.rev146-20261107T172248Z`. Its S3, C5 and recovery
 bridge all report rev146, and all 22 package checksums verify.
 
-Installation and touchscreen/RF acceptance remain pending. The connected
-device remains on rev145. Packet Monitor recording is still missing.
+Rev146 was not installed. The connected device now runs rev147's upload fixes;
+it does not yet contain these monitor changes.
 
-## Remaining implementation
+## Recording candidate in rev148
 
-1. Add optional bounded C5 frame recording alongside its counters. Graph-only
-   operation must allocate no frame queue. Capture metadata and bytes in the
-   receive callback; keep SPI, SD writes and dynamic allocation outside it.
-   Preserve the documented SDK payload extent and reject payload-less callbacks.
-2. Use S3 memory and the serialized SD writer to assemble validated frame reads
-   and save a C5-labelled PCAPNG file. Preserve the source clock, channel and
-   RSSI without inventing UTC. Report queue drops, oversized/truncated frames,
-   transport loss and SD failures separately from graph counts. Retuning must
-   finish the old segment before admitting the next one.
-3. Add the recording control to the existing Packet Monitor page. Saving,
-   Stop/Back and the next Wi-Fi scan require device acceptance, including slow
-   SD, 2.4/5 GHz, repeated use and loaded memory measurements. A successful build
-   or idle boot does not satisfy those checks.
+PCAP is optional on the existing page. C5 keeps a bounded two-frame queue only
+when recording is enabled, admits SDK management/data payloads, and copies
+their channel, RSSI and monotonic capture time outside the graph's critical
+section. Payload-less callbacks and receive errors are excluded. Stop closes
+admission; filter/band/channel restoration and callback drain must finish before
+the reservation clears. The original filter is now restored as well.
+
+Raw transfers carry the exact session, frame sequence and CRC. Immutable
+metadata/statistics pins and idempotent acknowledgements let the S3 recover a
+lost response without appending a frame twice. The optional queue requires C5
+capability 77. It is released by the existing scanner worker, never a new C5
+task. An abandoned stopped queue expires after 30 seconds; disposal can wait
+until that worker returns from another radio operation. Raw reads do not renew
+the ten-second receive lease.
+
+The S3 reuses the Packet Count SD worker and its PSRAM assembly buffer. It
+prepares the SD lease before asking C5 to receive. Each recording segment gets
+`/CERBERUS/MONITOR/Mnnnnn/C5.PCAPNG` and `C5.CSV`. The CSV maps packet numbers
+to the 64-bit session, source sequence, C5 uptime in microseconds, channel,
+RSSI and frame length. Unknown RSSI is blank. PCAPNG uses radiotap and untimed
+Simple Packet Blocks: the C5 uptime is not labelled UTC or GPS time.
+
+Both files must flush and close successfully before the PCAP filename is
+published. Failed or interrupted writes retain temporary data (`C5.TMP` and
+`C5.IDX`); a failed final rename can leave the completed CSV beside a temporary
+PCAP. The device reports that failure. USB storage and File Tools deletion
+remain excluded while the SD lease is held.
+
+Stop, Back, retune, Survey and sleep wait for receiver cleanup, queue drain,
+exact-session release and file closure. Retuning starts a new segment. The
+final status separates saved frames, full-queue drops, other rejected frames,
+transport loss and storage errors from the graph counters. These diagnostic
+counters are not yet persisted in a session manifest. Recording counter
+refreshes are limited to four per second; state and error changes are immediate.
+
+Focused host checks exercise the actual C5 service, wire adapters, S3 controller,
+SD worker and filesystem implementation. Their fault boundaries are injected;
+they are not RF throughput or physical SD durability measurements. Full build
+and registered-suite validation are in progress for this candidate.
+
+## Remaining acceptance
+
+Installation, SD-file inspection, 2.4/5 GHz reception, Stop/Back and the next
+scan, repeated use, slow-card behavior and loaded memory measurements remain
+open. The bounded queue can drop frames under load and this is not a claim of
+lossless channel capture. The coverage ledger remains partial until these
+checks and the remaining upstream behavior are resolved.
 
 C5 reception and S3 control, analysis and storage are useful work for both
 processors. A second receiver should be added only with a distinct channel or

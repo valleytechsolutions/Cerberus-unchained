@@ -69,9 +69,12 @@ static cerberus_wifi_packet_monitor_counters_t packet_monitor_counts;
 static wifi_band_mode_t packet_monitor_previous_band_mode;
 static uint8_t packet_monitor_previous_channel;
 static wifi_second_chan_t packet_monitor_previous_second;
+static wifi_promiscuous_filter_t packet_monitor_previous_filter;
 static bool packet_monitor_restore_pending;
 static bool packet_monitor_disable_pending;
 static void packet_monitor_run(void);
+static bool packet_monitor_record_retained(void);
+static void packet_monitor_record_worker_tick(void);
 static void packet_monitor_receive(const wifi_promiscuous_pkt_t *packet,
     wifi_promiscuous_pkt_type_t type);
 static void channel_survey_task(void *arg);
@@ -644,7 +647,8 @@ static void wifi_scan_task(void *arg)
 {
     (void)arg;
     while (true) {
-        ulTaskNotifyTake(pdTRUE, (probe_sniff_retained()||packet_count_retained())?pdMS_TO_TICKS(250):portMAX_DELAY);
+        ulTaskNotifyTake(pdTRUE, (probe_sniff_retained()||packet_count_retained()||packet_monitor_record_retained())?pdMS_TO_TICKS(250):portMAX_DELAY);
+        packet_monitor_record_worker_tick();
         packet_count_worker_tick();
         if(atomic_load_explicit(&packet_count_radio_reserved,memory_order_acquire)){
             while(atomic_load_explicit(&packet_count_radio_reserved,memory_order_acquire)){

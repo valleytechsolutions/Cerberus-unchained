@@ -7,6 +7,8 @@ static uint64_t packet_monitor_session_epoch, packet_monitor_session_id;
 static int64_t packet_monitor_lease_clock_us, packet_monitor_lease_deadline_us;
 static bool packet_monitor_control_busy, packet_monitor_cleanup_retry;
 
+#include "wifi_packet_monitor_record_service.h"
+
 static void packet_monitor_session_init_locked(void)
 {
     if (packet_monitor_session_epoch) return;
@@ -44,14 +46,27 @@ static void packet_monitor_check_expiry(void)
 static void packet_monitor_receive(const wifi_promiscuous_pkt_t *packet,
     wifi_promiscuous_pkt_type_t type)
 {
-    if (!packet || type != WIFI_PKT_MGMT || packet->rx_ctrl.rx_state != 0U ||
+    if (!packet || (type != WIFI_PKT_MGMT && type != WIFI_PKT_DATA) || packet->rx_ctrl.rx_state != 0U ||
         packet->rx_ctrl.sig_len < 28U) return;
     portENTER_CRITICAL(&packet_monitor_mux);
-    if (packet_monitor_receiving &&
-        packet->rx_ctrl.channel == packet_monitor_receive_channel)
+    bool admitted = packet_monitor_receiving &&
+        packet->rx_ctrl.channel == packet_monitor_receive_channel;
+    packet_monitor_record_context_t *record = admitted ? packet_monitor_record_context : NULL;
+    if (record) ++record->inflight;
+    if (admitted && type == WIFI_PKT_MGMT)
         cerberus_wifi_packet_monitor_observe(&packet_monitor_counts,
             packet->payload, packet->rx_ctrl.sig_len - 4U);
     portEXIT_CRITICAL(&packet_monitor_mux);
+    if (record) {
+        /* IDF defines the payload by sig_len; exclude FCS for both supported
+         * callback types. CTRL/MISC and error callbacks supply no bytes here. */
+        (void)cerberus_monitor_record_push(&record->store, packet->payload,
+            packet->rx_ctrl.sig_len - 4U, packet->rx_ctrl.channel,
+            packet->rx_ctrl.rssi, esp_timer_get_time());
+        portENTER_CRITICAL(&packet_monitor_mux);
+        --record->inflight;
+        portEXIT_CRITICAL(&packet_monitor_mux);
+    }
 }
 
 /* Keep the reservation until both RX and the prior Wi-Fi band/channel are
@@ -64,6 +79,7 @@ static esp_err_t packet_monitor_restore_radio(void)
         if (error != ESP_OK) return error;
         packet_monitor_disable_pending = false;
     }
+    if (!packet_monitor_record_callbacks_idle()) return ESP_ERR_NOT_FINISHED;
     if (packet_monitor_restore_pending) {
         esp_err_t error = esp_wifi_set_band_mode(
             packet_monitor_previous_band_mode);
@@ -73,6 +89,8 @@ static esp_err_t packet_monitor_restore_radio(void)
                 packet_monitor_previous_second);
             if (error != ESP_OK) return error;
         }
+        error = esp_wifi_set_promiscuous_filter(&packet_monitor_previous_filter);
+        if (error != ESP_OK) return error;
         packet_monitor_restore_pending = false;
     }
     atomic_store_explicit(&packet_monitor_radio_reserved, false,
@@ -104,6 +122,8 @@ static void packet_monitor_run(void)
         if (error == ESP_OK)
             error = esp_wifi_get_channel(&packet_monitor_previous_channel,
                 &packet_monitor_previous_second);
+        if (error == ESP_OK)
+            error = esp_wifi_get_promiscuous_filter(&packet_monitor_previous_filter);
         if (error == ESP_OK) {
             packet_monitor_restore_pending = true;
             error = esp_wifi_set_band(channel <= 14U ?
@@ -112,7 +132,8 @@ static void packet_monitor_run(void)
         if (error == ESP_OK)
             error = esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE);
         wifi_promiscuous_filter_t filter = {
-            .filter_mask = WIFI_PROMIS_FILTER_MASK_MGMT,
+            .filter_mask = WIFI_PROMIS_FILTER_MASK_MGMT |
+                (packet_monitor_record_requested ? WIFI_PROMIS_FILTER_MASK_DATA : 0U),
         };
         if (error == ESP_OK) error = esp_wifi_set_promiscuous_filter(&filter);
         if (error == ESP_OK) {
@@ -125,7 +146,7 @@ static void packet_monitor_run(void)
         portENTER_CRITICAL(&packet_monitor_mux);
         packet_monitor_counts = (cerberus_wifi_packet_monitor_counters_t){0};
         packet_monitor_receive_channel = channel;
-        packet_monitor_receiving = true;
+        packet_monitor_receiving = !atomic_load_explicit(&packet_monitor_cancelled, memory_order_acquire);
         portEXIT_CRITICAL(&packet_monitor_mux);
         TickType_t last_sample = xTaskGetTickCount();
         while (!atomic_load_explicit(&packet_monitor_cancelled,
@@ -133,6 +154,8 @@ static void packet_monitor_run(void)
             vTaskDelayUntil(&last_sample,
                 pdMS_TO_TICKS(CERBERUS_WIFI_PACKET_MONITOR_SAMPLE_MS));
             packet_monitor_check_expiry();
+            if (packet_monitor_record_faulted())
+                atomic_store_explicit(&packet_monitor_cancelled, true, memory_order_release);
             if (atomic_load_explicit(&packet_monitor_cancelled,
                     memory_order_acquire)) break;
             portENTER_CRITICAL(&packet_monitor_mux);
@@ -158,9 +181,8 @@ static void packet_monitor_run(void)
             xSemaphoreGive(scanner_mutex);
         }
     }
-    portENTER_CRITICAL(&packet_monitor_mux);
-    packet_monitor_receiving = false;
-    portEXIT_CRITICAL(&packet_monitor_mux);
+    packet_monitor_record_close_admission();
+    if (packet_monitor_record_faulted() && error == ESP_OK) error = ESP_ERR_INVALID_STATE;
     esp_err_t cleanup = packet_monitor_restore_radio();
     if (cleanup != ESP_OK) error = cleanup;
     xSemaphoreTake(scanner_mutex, portMAX_DELAY);
@@ -171,6 +193,7 @@ static void packet_monitor_run(void)
         packet_monitor_status.state = error == ESP_OK
             ? CERBERUS_WIFI_PACKET_MONITOR_IDLE
             : CERBERUS_WIFI_PACKET_MONITOR_ERROR;
+        packet_monitor_record_clock_locked(esp_timer_get_time(), false);
     }
     xSemaphoreGive(scanner_mutex);
 }
@@ -187,7 +210,7 @@ static bool packet_monitor_held_locked(void)
         atomic_load_explicit(&packet_monitor_radio_reserved, memory_order_acquire);
 }
 
-static esp_err_t packet_monitor_start_internal(uint8_t channel, uint64_t session)
+static esp_err_t packet_monitor_start_internal(uint8_t channel, uint64_t session, bool recording)
 {
     if (!cerberus_wifi_packet_monitor_channel_valid(channel))
         return ESP_ERR_INVALID_ARG;
@@ -197,7 +220,7 @@ static esp_err_t packet_monitor_start_internal(uint8_t channel, uint64_t session
     if (session) packet_monitor_session_init_locked();
     if (session && session == packet_monitor_session_id) {
         packet_monitor_expire_locked(esp_timer_get_time());
-        bool same = packet_monitor_status.channel == channel;
+        bool same = packet_monitor_status.channel == channel && packet_monitor_record_requested == recording;
         xSemaphoreGive(scanner_mutex);
         return same ? ESP_OK : ESP_ERR_INVALID_ARG;
     }
@@ -210,7 +233,7 @@ static esp_err_t packet_monitor_start_internal(uint8_t channel, uint64_t session
     /* Consume a valid request even when busy. A delayed replay of a rejected
      * Start must not become a new scan after the competing owner finishes. */
     if (session) packet_monitor_session_epoch = session;
-    if (packet_monitor_control_busy || packet_monitor_held_locked()) {
+    if (packet_monitor_control_busy || packet_monitor_held_locked() || packet_monitor_record_context) {
         bool legacy_replay = !session && !packet_monitor_session_id &&
             packet_monitor_status.state == CERBERUS_WIFI_PACKET_MONITOR_RUNNING &&
             packet_monitor_status.channel == channel;
@@ -236,6 +259,11 @@ static esp_err_t packet_monitor_start_internal(uint8_t channel, uint64_t session
         defense_status.state == CERBERUS_WIFI_DEFENSE_RUNNING ||
         wifi_connection_is_active_locked() ||
         packet_monitor_held_locked())) error = ESP_ERR_INVALID_STATE;
+    if (error == ESP_OK && recording) {
+        if (now > INT64_MAX - (int64_t)CERBERUS_MONITOR_RECORD_RETENTION_MS * 1000)
+            error = ESP_ERR_INVALID_STATE;
+        else error = packet_monitor_record_create_locked(session, now);
+    }
     packet_monitor_control_busy = false;
     if (error != ESP_OK) {
         xSemaphoreGive(scanner_mutex);
@@ -255,6 +283,7 @@ static esp_err_t packet_monitor_start_internal(uint8_t channel, uint64_t session
     };
     packet_monitor_started_us = now;
     packet_monitor_session_id = session;
+    packet_monitor_record_requested = recording;
     packet_monitor_cleanup_retry = false;
     if (session) {
         packet_monitor_lease_clock_us = now;
@@ -271,7 +300,7 @@ static esp_err_t packet_monitor_start_internal(uint8_t channel, uint64_t session
 
 esp_err_t cerberus_wifi_packet_monitor_start(uint8_t channel)
 {
-    return packet_monitor_start_internal(channel, 0U);
+    return packet_monitor_start_internal(channel, 0U, false);
 }
 
 esp_err_t cerberus_wifi_packet_monitor_stop(uint8_t generation)
@@ -355,6 +384,8 @@ static void packet_monitor_session_reply_locked(uint64_t requested, bool info,
         out->elapsed_ms = out->state == CERBERUS_WIFI_PACKET_MONITOR_RUNNING ?
             packet_monitor_elapsed_locked() : packet_monitor_status.elapsed_ms;
         if (bound) out->flags |= CERBERUS_WIFI_PACKET_MONITOR_BOUND;
+        if (bound && packet_monitor_record_context)
+            out->flags |= CERBERUS_WIFI_PACKET_MONITOR_RECORDING;
         if (packet_monitor_held_locked()) out->flags |= CERBERUS_WIFI_PACKET_MONITOR_HELD;
         if (bound && atomic_load_explicit(&packet_monitor_cancelled, memory_order_acquire))
             out->flags |= CERBERUS_WIFI_PACKET_MONITOR_CANCELLED;
@@ -382,7 +413,22 @@ esp_err_t cerberus_wifi_packet_monitor_session_start(
     memset(out, 0, sizeof(*out)); out->session_id = request->session_id;
     if (!scanner_mutex) { out->error_code = ESP_ERR_INVALID_STATE; return ESP_ERR_INVALID_STATE; }
     esp_err_t error = request->session_id ?
-        packet_monitor_start_internal(request->channel, request->session_id) : ESP_ERR_INVALID_ARG;
+        packet_monitor_start_internal(request->channel, request->session_id, false) : ESP_ERR_INVALID_ARG;
+    xSemaphoreTake(scanner_mutex, portMAX_DELAY);
+    packet_monitor_session_reply_locked(request->session_id, false, error, out);
+    xSemaphoreGive(scanner_mutex);
+    return error;
+}
+
+esp_err_t cerberus_wifi_packet_monitor_record_start(
+    const cerberus_wifi_packet_monitor_session_start_t *request,
+    cerberus_wifi_packet_monitor_session_status_t *out)
+{
+    if (!request || !out) return ESP_ERR_INVALID_ARG;
+    memset(out, 0, sizeof(*out)); out->session_id = request->session_id;
+    if (!scanner_mutex) { out->error_code = ESP_ERR_INVALID_STATE; return ESP_ERR_INVALID_STATE; }
+    esp_err_t error = request->session_id ?
+        packet_monitor_start_internal(request->channel, request->session_id, true) : ESP_ERR_INVALID_ARG;
     xSemaphoreTake(scanner_mutex, portMAX_DELAY);
     packet_monitor_session_reply_locked(request->session_id, false, error, out);
     xSemaphoreGive(scanner_mutex);
@@ -403,6 +449,7 @@ static esp_err_t packet_monitor_session_control(uint64_t session, bool stop,
         packet_monitor_expire_locked(now);
         if (stop) {
             atomic_store_explicit(&packet_monitor_cancelled, true, memory_order_release);
+            packet_monitor_record_close_admission();
             if (packet_monitor_status.state == CERBERUS_WIFI_PACKET_MONITOR_ERROR &&
                 packet_monitor_held_locked()) packet_monitor_cleanup_retry = true;
             notify = packet_monitor_held_locked();

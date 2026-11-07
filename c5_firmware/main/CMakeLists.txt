@@ -12,6 +12,7 @@ idf_component_register(
         "../../shared/wifi_sae_commit.c"
         "../../shared/wifi_ap_clone.c"
         "../../shared/wifi_capture_ring.c"
+        "../../shared/wifi_packet_monitor_record.c"
         "../../shared/wifi_capture_filter.c"
         "../../shared/radio_test.c"
         "../../shared/network_scan.c"

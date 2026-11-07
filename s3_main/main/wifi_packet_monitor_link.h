@@ -1,11 +1,13 @@
 /* Private to c5_spi_link.c. Every operation has one 20 ms budget and no
  * automatic replay. The caller retains its session after an ambiguous reply. */
+#include "wifi_packet_monitor_record.h"
 static bool packet_monitor_session_control_valid(
     const cerberus_wifi_packet_monitor_session_status_t *r, bool info, uint64_t session)
 {
     if (!r->session_id || (!info && r->session_id != session) ||
         (r->flags & ~(CERBERUS_WIFI_PACKET_MONITOR_BOUND |
-            CERBERUS_WIFI_PACKET_MONITOR_HELD | CERBERUS_WIFI_PACKET_MONITOR_CANCELLED))) return false;
+            CERBERUS_WIFI_PACKET_MONITOR_HELD | CERBERUS_WIFI_PACKET_MONITOR_CANCELLED |
+            CERBERUS_WIFI_PACKET_MONITOR_RECORDING))) return false;
     if (!info && !(r->flags & CERBERUS_WIFI_PACKET_MONITOR_BOUND))
         return r->error_code != ESP_OK && !r->elapsed_ms && !r->latest_sequence &&
             !r->state && !r->channel && !r->stored_count && !r->flags;
@@ -14,12 +16,13 @@ static bool packet_monitor_session_control_valid(
         (r->channel && !cerberus_wifi_packet_monitor_channel_valid(r->channel)) ||
         (!r->channel && (r->state || r->stored_count || r->latest_sequence || r->elapsed_ms || r->flags)) ||
         ((r->flags & CERBERUS_WIFI_PACKET_MONITOR_CANCELLED) && !(r->flags & CERBERUS_WIFI_PACKET_MONITOR_BOUND)) ||
+        ((r->flags & CERBERUS_WIFI_PACKET_MONITOR_RECORDING) && !(r->flags & CERBERUS_WIFI_PACKET_MONITOR_BOUND)) ||
         (r->state == CERBERUS_WIFI_PACKET_MONITOR_RUNNING && !(r->flags & CERBERUS_WIFI_PACKET_MONITOR_HELD)) ||
         (r->state == CERBERUS_WIFI_PACKET_MONITOR_IDLE && (r->flags & CERBERUS_WIFI_PACKET_MONITOR_HELD))) return false;
     return true;
 }
 
-static esp_err_t packet_monitor_session_gate_locked(uint32_t deadline, bool refresh)
+static esp_err_t packet_monitor_session_gate_locked(uint32_t deadline, bool refresh, uint8_t minimum)
 {
     if (refresh || !peer_firmware_version) {
         cerberus_c5_status_t device = {0};
@@ -27,7 +30,7 @@ static esp_err_t packet_monitor_session_gate_locked(uint32_t deadline, bool refr
         peer_firmware_version = error == ESP_OK ? device.firmware_version : 0U;
         if (error != ESP_OK) return error;
     }
-    return peer_firmware_version >= CERBERUS_WIFI_PACKET_MONITOR_SESSION_MIN_FIRMWARE ?
+    return peer_firmware_version >= minimum ?
         ESP_OK : ESP_ERR_NOT_SUPPORTED;
 }
 
@@ -37,7 +40,8 @@ static esp_err_t packet_monitor_session_exchange(cerberus_spi_command_t command,
     if (!out) return ESP_ERR_INVALID_ARG;
     memset(out, 0, sizeof(*out));
     bool info = command == CERBERUS_SPI_COMMAND_WIFI_PACKET_MONITOR_SESSION_INFO;
-    bool start = command == CERBERUS_SPI_COMMAND_WIFI_PACKET_MONITOR_SESSION_START;
+    bool recording = command == CERBERUS_SPI_COMMAND_WIFI_PACKET_MONITOR_RECORD_START;
+    bool start = command == CERBERUS_SPI_COMMAND_WIFI_PACKET_MONITOR_SESSION_START || recording;
     if ((!info && !session) || (start && !cerberus_wifi_packet_monitor_channel_valid(channel)))
         return ESP_ERR_INVALID_ARG;
     if (!link_mutex) return ESP_ERR_INVALID_STATE;
@@ -45,7 +49,8 @@ static esp_err_t packet_monitor_session_exchange(cerberus_spi_command_t command,
     if (begun < 0) return ESP_ERR_INVALID_STATE;
     uint32_t deadline = (uint32_t)((uint64_t)begun / 1000U) + 20U;
     if (take_link_mutex(pdMS_TO_TICKS(20)) != pdTRUE) return ESP_ERR_TIMEOUT;
-    esp_err_t error = packet_monitor_session_gate_locked(deadline, info || start);
+    esp_err_t error = packet_monitor_session_gate_locked(deadline, info || start,
+        recording ? CERBERUS_MONITOR_RECORD_MIN_FIRMWARE : CERBERUS_WIFI_PACKET_MONITOR_SESSION_MIN_FIRMWARE);
     cerberus_wifi_packet_monitor_session_start_t query = {session, channel};
     if (error == ESP_OK) error = survey_session_frame_locked(command,
         info ? NULL : &query, info ? 0U : start ? sizeof(query) : sizeof(session),
@@ -65,6 +70,9 @@ esp_err_t c5_spi_link_wifi_packet_monitor_session_info(cerberus_wifi_packet_moni
 esp_err_t c5_spi_link_wifi_packet_monitor_session_start(uint64_t session, uint8_t channel,
     cerberus_wifi_packet_monitor_session_status_t *out)
 { return packet_monitor_session_exchange(CERBERUS_SPI_COMMAND_WIFI_PACKET_MONITOR_SESSION_START, session, channel, out); }
+esp_err_t c5_spi_link_wifi_packet_monitor_record_start(uint64_t session, uint8_t channel,
+    cerberus_wifi_packet_monitor_session_status_t *out)
+{ return packet_monitor_session_exchange(CERBERUS_SPI_COMMAND_WIFI_PACKET_MONITOR_RECORD_START, session, channel, out); }
 esp_err_t c5_spi_link_wifi_packet_monitor_session_status(uint64_t session,
     cerberus_wifi_packet_monitor_session_status_t *out)
 { return packet_monitor_session_exchange(CERBERUS_SPI_COMMAND_WIFI_PACKET_MONITOR_SESSION_STATUS, session, 0U, out); }
@@ -83,7 +91,7 @@ esp_err_t c5_spi_link_wifi_packet_monitor_session_sample(uint64_t session, uint1
     if (begun < 0) return ESP_ERR_INVALID_STATE;
     uint32_t deadline = (uint32_t)((uint64_t)begun / 1000U) + 20U;
     if (take_link_mutex(pdMS_TO_TICKS(20)) != pdTRUE) return ESP_ERR_TIMEOUT;
-    esp_err_t error = packet_monitor_session_gate_locked(deadline, false);
+    esp_err_t error = packet_monitor_session_gate_locked(deadline, false, CERBERUS_WIFI_PACKET_MONITOR_SESSION_MIN_FIRMWARE);
     cerberus_wifi_packet_monitor_session_read_t query = {session, sample_sequence};
     if (error == ESP_OK) error = survey_session_frame_locked(
         CERBERUS_SPI_COMMAND_WIFI_PACKET_MONITOR_SESSION_SAMPLE,

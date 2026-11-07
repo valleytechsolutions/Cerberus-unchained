@@ -24,7 +24,7 @@ extern "C" {
 
 #define CERBERUS_PROTOCOL_VERSION_V1 1U
 #define CERBERUS_PROTOCOL_VERSION 2U
-#define CERBERUS_C5_FIRMWARE_VERSION 76U
+#define CERBERUS_C5_FIRMWARE_VERSION 77U
 #define CERBERUS_SPI_MAGIC 0x43455242UL
 #define CERBERUS_SPI_TRANSFER_SIZE 32U
 #define CERBERUS_SPI_FRAME_PAYLOAD_SIZE 22U
@@ -208,6 +208,13 @@ typedef enum {
     CERBERUS_SPI_COMMAND_WIFI_PACKET_MONITOR_SESSION_STOP = 174,
     CERBERUS_SPI_COMMAND_WIFI_PACKET_MONITOR_SESSION_STATUS = 175,
     CERBERUS_SPI_COMMAND_WIFI_PACKET_MONITOR_SESSION_SAMPLE = 176,
+    CERBERUS_SPI_COMMAND_WIFI_PACKET_MONITOR_RECORD_START = 177,
+    CERBERUS_SPI_COMMAND_WIFI_PACKET_MONITOR_RECORD_PEEK = 178,
+    CERBERUS_SPI_COMMAND_WIFI_PACKET_MONITOR_RECORD_READ = 179,
+    CERBERUS_SPI_COMMAND_WIFI_PACKET_MONITOR_RECORD_RAW_READ = 180,
+    CERBERUS_SPI_COMMAND_WIFI_PACKET_MONITOR_RECORD_RAW_ACK = 181,
+    CERBERUS_SPI_COMMAND_WIFI_PACKET_MONITOR_RECORD_RELEASE = 182,
+    CERBERUS_SPI_COMMAND_WIFI_PACKET_MONITOR_RECORD_STATUS = 183,
 } cerberus_spi_command_t;
 
 typedef enum {
@@ -1618,6 +1625,23 @@ static inline bool cerberus_protocol_packet_count_raw_valid(const cerberus_packe
     return p&&p->magic==CERBERUS_SPI_MAGIC&&p->protocol_version==CERBERUS_PROTOCOL_VERSION&&
         p->command==CERBERUS_PACKET_COUNT_COMMAND_RAW_READ&&p->payload_length==sizeof(p->payload)&&
         p->crc16==cerberus_protocol_crc16(p,offsetof(cerberus_packet_count_raw_frame_t,crc16));
+}
+
+static inline bool cerberus_protocol_prepare_monitor_record_raw(cerberus_packet_count_raw_frame_t *out,
+    uint8_t sequence, const cerberus_packet_count_raw_chunk_t *payload)
+{
+    if (!cerberus_protocol_prepare_packet_count_raw(out, sequence, payload)) return false;
+    out->command = CERBERUS_SPI_COMMAND_WIFI_PACKET_MONITOR_RECORD_RAW_READ;
+    out->crc16 = cerberus_protocol_crc16(out, offsetof(cerberus_packet_count_raw_frame_t, crc16));
+    return true;
+}
+
+static inline bool cerberus_protocol_monitor_record_raw_valid(const cerberus_packet_count_raw_frame_t *p)
+{
+    return p && p->magic == CERBERUS_SPI_MAGIC && p->protocol_version == CERBERUS_PROTOCOL_VERSION &&
+        p->command == CERBERUS_SPI_COMMAND_WIFI_PACKET_MONITOR_RECORD_RAW_READ &&
+        p->payload_length == sizeof(p->payload) &&
+        p->crc16 == cerberus_protocol_crc16(p, offsetof(cerberus_packet_count_raw_frame_t, crc16));
 }
 
 static inline bool cerberus_protocol_prepare_event_batch(

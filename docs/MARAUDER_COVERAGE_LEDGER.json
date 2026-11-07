@@ -269,13 +269,15 @@
       "family": "wifi_receive_capture",
       "status": "partial",
       "cerberus_evidence": "docs/PACKET_MONITOR_RECORDING_PLAN.md",
-      "next_gap": "Retained in rev54/C5 49: shared scanner worker and 4,440-byte idle C5 heap gain over rev52. A focused rev53 test now corroborates monitor activity (generation 1, channel 8, sample 92 at 18,543 ms), Back to idle (sample 211 at 42,394 ms), and subsequent scans on the same boot (successful scans 1 to 4, failed 0). C5 uses 200 ms beacon/deauth-disassoc/probe counters and channel controls. PCAP sidecar, exact sample measurements, worker stack watermark, prolonged load and broader channel acceptance remain open. The rev146 source candidate adds exact session control, a receive lease and nonblocking cleanup/navigation. Its production C5/S3 bridge checks cover lost replies, stale ownership, failed cleanup and 300 session cycles. All 166 registered host suites and five native targets pass at 756b2a6. Installation, physical acceptance and Packet Monitor recording remain open; see PACKET_MONITOR_RECORDING_PLAN.md.",
+      "next_gap": "Earlier rev53 hardware checks confirmed graph activity, Back and subsequent scans; they do not validate the new recording path. Rev146 added exact session control, a receive lease and nonblocking cleanup/navigation, with 166 host suites and five native targets passing at 756b2a6. The rev148 source candidate adds optional bounded C5 management/data capture, exact raw transfer/ACK, and S3 PCAPNG plus a source-time CSV index on SD. Focused checks cover full queues, invalid clocks, immutable pins, lost replies, write/close/rename failures, and navigation waiting for drain and file closure. This candidate is not installed. Full candidate validation, physical SD readback, both bands, sustained load, drop measurements, stack watermark and remaining upstream parity are open; see PACKET_MONITOR_RECORDING_PLAN.md.",
       "s3_role": "S3 controls capture, buffers and writes SD PCAPNG; it graphs C5 samples.",
       "c5_role": "C5 filters/captures 2.4/5 GHz frames and transports bounded records.",
       "related_menu_entries": [],
       "related_cli_commands": [],
       "cerberus_code": [
         "shared/wifi_packet_monitor_core.h",
+        "shared/wifi_packet_monitor_record.c",
+        "c5_firmware/main/wifi_packet_monitor_record_service.h",
         "c5_firmware/main/wifi_packet_monitor_service.h",
         "c5_firmware/main/wifi_scanner.c",
         "s3_main/main/ui.c"

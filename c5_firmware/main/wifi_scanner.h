@@ -108,6 +108,11 @@ void cerberus_wifi_packet_monitor_get_status(
 esp_err_t cerberus_wifi_packet_monitor_get_sample(uint8_t generation,
     uint16_t sequence, cerberus_wifi_packet_monitor_sample_payload_t *sample);
 void cerberus_wifi_packet_monitor_session_info(cerberus_wifi_packet_monitor_session_status_t *out);
+esp_err_t cerberus_wifi_packet_monitor_record_start(
+    const cerberus_wifi_packet_monitor_session_start_t *request,
+    cerberus_wifi_packet_monitor_session_status_t *out);
+esp_err_t cerberus_wifi_packet_monitor_record_exchange(uint8_t command,
+    const void *request, size_t request_size, void *reply, size_t reply_size);
 esp_err_t cerberus_wifi_packet_monitor_session_start(
     const cerberus_wifi_packet_monitor_session_start_t *request,
     cerberus_wifi_packet_monitor_session_status_t *out);

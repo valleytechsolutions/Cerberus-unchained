@@ -63,4 +63,42 @@ static void packet_count_storage_cases(void)
     CHECK(cerberus_storage_packet_count_append(12,1,packet,2)==ESP_ERR_INVALID_SIZE);
     CHECK(cerberus_storage_packet_count_finish(12,&result)==ESP_ERR_INVALID_SIZE);
     CHECK(!strcmp(result.file_name[1],"C5.TMP")&&!sd_packet_count&&!count_allocations);
+    setup();CHECK(cerberus_storage_packet_monitor_begin(20,directory)==ESP_OK);
+    CHECK(!strcmp(directory,"M00001"));
+    CHECK(cerberus_storage_reserve_for_usb()==ESP_ERR_INVALID_STATE);
+    CHECK(recon_path_protected("sdcard/cerberus/MONITOR./M00001 /C5.IDX"));
+    CHECK(cerberus_storage_packet_count_open(20,0,header,sizeof(header))==ESP_ERR_INVALID_STATE);
+    CHECK(cerberus_storage_packet_count_open(20,1,header,sizeof(header))==ESP_OK);
+    CHECK(stream_count==2);
+    CHECK(cerberus_storage_packet_count_append(20,1,packet,sizeof(packet))==ESP_ERR_INVALID_STATE);
+    CHECK(cerberus_storage_packet_monitor_append(20,UINT64_C(0x100000000000005),1,987654321,
+        36,-49,true,48,packet,sizeof(packet))==ESP_OK);
+    CHECK(cerberus_storage_packet_monitor_append(20,UINT64_C(0x100000000000005),2,987654999,
+        36,0,false,48,packet,sizeof(packet))==ESP_OK);
+    CHECK(cerberus_storage_packet_count_finish(20,&result)==ESP_OK);
+    CHECK(!sd_packet_count&&!count_allocations&&!stream_count&&!descriptor_count&&!locked);
+    CHECK(!strcmp(result.file_name[1],"C5.PCAPNG")&&result.bytes[1]==228);
+    FILE *index=fopen("sdcard/CERBERUS/MONITOR/M00001/C5.CSV","rb");CHECK(index);
+    char bytes[512]={0};size_t length=fread(bytes,1,sizeof(bytes)-1,index);CHECK(length>0&&fclose(index)==0);
+    CHECK(!strcmp(bytes,"pcap_packet,session_id,source_sequence,source_uptime_us,channel,rssi_dbm,frame_bytes\n"
+        "1,72057594037927941,1,987654321,36,-49,48\n2,72057594037927941,2,987654999,36,,48\n"));
+    /* Fail each stream's open/write/flush/close and both rename stages. A
+     * partially written index must never publish a completed PCAP filename. */
+    const enum event monitor_faults[]={OPEN,FDOPEN,WRITE,WRITE,FLUSH,SYNC,CLOSE,RENAME,RENAME};
+    for(unsigned f=0;f<sizeof(monitor_faults)/sizeof(monitor_faults[0]);++f){
+        setup();CHECK(cerberus_storage_packet_monitor_begin(30,directory)==ESP_OK);
+        enum event event_id=monitor_faults[f];
+        if(f<3){
+            fault_at[event_id]=calls[event_id]+2U;
+            CHECK(cerberus_storage_packet_count_open(30,1,header,sizeof(header))!=ESP_OK);
+        }else{
+            CHECK(cerberus_storage_packet_count_open(30,1,header,sizeof(header))==ESP_OK);
+            fault_at[event_id]=calls[event_id]+(f==3||f==8?2U:1U);
+            if(f==3)CHECK(cerberus_storage_packet_monitor_append(30,8,1,60000,6,-50,true,48,
+                packet,sizeof(packet))!=ESP_OK);
+        }
+        CHECK(cerberus_storage_packet_count_finish(30,&result)!=ESP_OK);
+        CHECK(!sd_packet_count&&!count_allocations&&!stream_count&&!descriptor_count&&!locked);
+        CHECK(!strcmp(result.file_name[1],"C5.TMP"));CHECK(locks==releases);
+    }
 }

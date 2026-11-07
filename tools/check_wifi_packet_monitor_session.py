@@ -45,5 +45,8 @@ subprocess.run([
     "-I", str(root / "shared"),
     str(root / "tools/host_checks/wifi_packet_monitor_bridge_check.c"),
     str(root / "s3_main/main/wifi_packet_monitor_scan.c"), "-o", str(exe),
+    str(root / "shared/wifi_packet_monitor_record.c"),
+    str(root / "shared/wifi_capture_ring.c"),
+    str(root / "shared/wifi_packet_count.c"),
 ], check=True, env=env)
 subprocess.run([str(exe)], check=True, env=env)

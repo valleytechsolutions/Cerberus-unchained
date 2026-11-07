@@ -5,6 +5,7 @@
 #include <stdatomic.h>
 static atomic_bool packet_count_radio_reserved;
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "esp_err.h"
@@ -13,7 +14,7 @@ typedef int wifi_band_mode_t;
 typedef int wifi_second_chan_t;
 typedef void *TaskHandle_t;
 enum { WIFI_BAND_2G = 2, WIFI_BAND_5G = 5,
-    WIFI_SECOND_CHAN_NONE = 0, WIFI_PKT_MGMT = 0,
+    WIFI_SECOND_CHAN_NONE = 0, WIFI_PKT_MGMT = 0, WIFI_PKT_DATA = 2,
     WIFI_PROMIS_FILTER_MASK_MGMT = 1, WIFI_PROMIS_FILTER_MASK_DATA = 4, WIFI_SCAN_TYPE_PASSIVE = 1 };
 #define pdTRUE 1
 #define portMAX_DELAY 0xffffffffU
@@ -24,7 +25,7 @@ enum { WIFI_BAND_2G = 2, WIFI_BAND_5G = 5,
 typedef unsigned wifi_promiscuous_pkt_type_t;
 typedef struct { unsigned filter_mask; } wifi_promiscuous_filter_t;
 typedef struct {
-    struct { unsigned rx_state, sig_len, channel; } rx_ctrl;
+    struct { unsigned rx_state, sig_len, channel; int8_t rssi; } rx_ctrl;
     uint8_t payload[64];
 } wifi_promiscuous_pkt_t;
 typedef struct {
@@ -54,6 +55,7 @@ static cerberus_wifi_packet_monitor_counters_t packet_monitor_counts;
 static wifi_band_mode_t packet_monitor_previous_band_mode;
 static uint8_t packet_monitor_previous_channel;
 static wifi_second_chan_t packet_monitor_previous_second;
+static wifi_promiscuous_filter_t packet_monitor_previous_filter;
 static bool packet_monitor_restore_pending, packet_monitor_disable_pending;
 static struct { struct { uint8_t flags; } status; uint64_t capture_epoch; } watch_capture;
 static uint64_t watch_capture_epoch;
@@ -82,6 +84,24 @@ static uint32_t clock_ms;
 static wifi_band_mode_t current_band;
 static uint8_t current_channel;
 static wifi_second_chan_t current_second;
+static wifi_promiscuous_filter_t current_filter;
+static bool fail_filter_restore, record_heap_fail;
+static bool record_test_data;
+static size_t record_heap_bytes, record_heap_free = 65536U;
+#define MALLOC_CAP_INTERNAL 1U
+#define MALLOC_CAP_8BIT 2U
+static size_t heap_caps_get_free_size(unsigned caps)
+{ assert(caps == 3U); return record_heap_free; }
+static void *heap_caps_calloc(size_t n, size_t bytes, unsigned caps)
+{
+    assert(caps == 3U && !record_heap_bytes);
+    if (record_heap_fail) return NULL;
+    void *p = calloc(n, bytes);
+    if (p) record_heap_bytes = n * bytes;
+    return p;
+}
+static void heap_caps_free(void *p)
+{ assert(p && record_heap_bytes); record_heap_bytes = 0U; free(p); }
 
 static void xSemaphoreTake(unsigned mutex, unsigned timeout)
 { assert(mutex == 1U && timeout == portMAX_DELAY && !locked); locked = true; }
@@ -144,11 +164,12 @@ static esp_err_t esp_wifi_set_channel(uint8_t channel, wifi_second_chan_t second
 }
 static esp_err_t esp_wifi_set_promiscuous_filter(const wifi_promiscuous_filter_t *filter)
 {
-    unsigned expected = atomic_load(&packet_monitor_radio_reserved) ?
-        WIFI_PROMIS_FILTER_MASK_MGMT : WIFI_PROMIS_FILTER_MASK_MGMT|WIFI_PROMIS_FILTER_MASK_DATA;
-    assert(filter->filter_mask == expected);
+    if (fail_filter_restore && filter->filter_mask == 0x20U) return ESP_FAIL;
+    current_filter = *filter;
     return ESP_OK;
 }
+static esp_err_t esp_wifi_get_promiscuous_filter(wifi_promiscuous_filter_t *filter)
+{ *filter = current_filter; return ESP_OK; }
 static esp_err_t esp_wifi_set_promiscuous(bool enabled)
 {
     if (enabled) {
@@ -169,9 +190,13 @@ static void vTaskDelayUntil(TickType_t *last, TickType_t period)
 {
     assert(period == 200U && !locked && atomic_load(&packet_monitor_radio_reserved));
     *last += period; clock_ms = *last; ++samples;
-    wifi_promiscuous_pkt_t packet = {.rx_ctrl = {0U, 28U, current_channel}};
+    wifi_promiscuous_pkt_t packet = {.rx_ctrl = {0U, 28U, current_channel, -55}};
     packet.payload[0] = 0x80U;
     packet_monitor_receive(&packet, WIFI_PKT_MGMT);
+    if (record_test_data) {
+        packet.payload[0] = 0x08U;
+        packet_monitor_receive(&packet, WIFI_PKT_DATA);
+    }
     if (stop_after && samples >= stop_after) {
         if (packet_monitor_session_id) {
             cerberus_wifi_packet_monitor_session_status_t reply;
@@ -218,6 +243,13 @@ static void dispatch(void)
 static void reset(void)
 {
     assert(!locked);
+    assert(!packet_monitor_record_context && !record_heap_bytes);
+    packet_monitor_record_requested = false;
+    packet_monitor_record_released_session = 0U;
+    record_heap_fail = fail_filter_restore = false;
+    record_test_data = false;
+    record_heap_free = 65536U;
+    current_filter.filter_mask = 0x20U;
     atomic_store(&packet_count_radio_reserved,false);count_polls=0;
     memset(&scan_status, 0, sizeof(scan_status));
     scan_band = CERBERUS_WIFI_SCAN_BAND_ALL;
@@ -326,11 +358,12 @@ int main(void)
     assert(cerberus_wifi_packet_monitor_start(10U) == ESP_OK); dispatch();
     assert(samples == 0U && !cerberus_wifi_packet_monitor_active() && !promiscuous);
 
-    for (unsigned fault = 0U; fault < 3U; ++fault) {
+    for (unsigned fault = 0U; fault < 4U; ++fault) {
         reset();
         fail_disable = fault == 0U;
         fail_restore_band = fault == 1U;
         fail_restore_channel = fault == 2U;
+        fail_filter_restore = fault == 3U;
         assert(cerberus_wifi_packet_monitor_start(36U) == ESP_OK); dispatch();
         assert(cerberus_wifi_packet_monitor_active());
         assert(packet_monitor_status.state == CERBERUS_WIFI_PACKET_MONITOR_ERROR);
@@ -338,9 +371,11 @@ int main(void)
         xTaskNotifyGive(scanner_task_handle); dispatch(); /* retained lease blocks other work */
         assert(station_calls == 0U && ap_scans == 0U);
         fail_disable = fail_restore_band = fail_restore_channel = false;
+        fail_filter_restore = false;
         assert(cerberus_wifi_packet_monitor_stop(packet_monitor_status.generation) == ESP_OK);
         assert(!cerberus_wifi_packet_monitor_active() && !promiscuous);
         assert(current_band == 9 && current_channel == 6U && current_second == 2);
+        assert(current_filter.filter_mask == 0x20U);
         run_ap_and_capture();
     }
     /* Scoped commands never borrow a generation/channel match as authority. */

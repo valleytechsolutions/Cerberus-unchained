@@ -1,4 +1,5 @@
 /* Included after the common passive SPI helpers. No automatic mutation retry. */
+#include "wifi_packet_monitor_record.h"
 static size_t packet_count_request_size(uint8_t command)
 {
     switch (command) {
@@ -17,11 +18,11 @@ static size_t packet_count_request_size(uint8_t command)
     }
 }
 
-esp_err_t c5_spi_link_wifi_packet_count_exchange(uint8_t command, const void *request,
+static esp_err_t packet_record_exchange(bool monitor, uint8_t command, const void *request,
     size_t request_size, void *reply, size_t reply_size)
 {
-    bool raw = command == CERBERUS_PACKET_COUNT_COMMAND_RAW_READ;
-    size_t expected = packet_count_request_size(command);
+    bool raw = command == (monitor ? CERBERUS_MONITOR_RECORD_RAW_READ : CERBERUS_PACKET_COUNT_COMMAND_RAW_READ);
+    size_t expected = monitor ? cerberus_monitor_record_request_bytes(command) : packet_count_request_size(command);
     if (!reply || reply_size != (raw ? sizeof(cerberus_packet_count_raw_chunk_t) :
         sizeof(cerberus_packet_count_control_t)) || expected == SIZE_MAX ||
         request_size != expected || (expected ? !request : request != NULL)) return ESP_ERR_INVALID_ARG;
@@ -39,12 +40,14 @@ esp_err_t c5_spi_link_wifi_packet_count_exchange(uint8_t command, const void *re
     uint32_t deadline = (uint32_t)((uint64_t)began / 1000U) + 20U;
     if (take_link_mutex(pdMS_TO_TICKS(20)) != pdTRUE) return ESP_ERR_TIMEOUT;
     esp_err_t error = ESP_OK;
-    if (command == CERBERUS_PACKET_COUNT_COMMAND_INFO || command == CERBERUS_PACKET_COUNT_COMMAND_BEGIN) {
+    if (!peer_firmware_version || command == CERBERUS_PACKET_COUNT_COMMAND_INFO ||
+        command == CERBERUS_PACKET_COUNT_COMMAND_BEGIN || command == CERBERUS_MONITOR_RECORD_STATUS) {
         cerberus_c5_status_t device = {0};
         error = get_status_v2_passive_locked(++sequence, deadline, &device);
         peer_firmware_version = error == ESP_OK ? device.firmware_version : 0U;
     }
-    if (error == ESP_OK && peer_firmware_version < CERBERUS_PACKET_COUNT_MIN_FIRMWARE)
+    if (error == ESP_OK && peer_firmware_version <
+        (monitor ? CERBERUS_MONITOR_RECORD_MIN_FIRMWARE : CERBERUS_PACKET_COUNT_MIN_FIRMWARE))
         error = ESP_ERR_NOT_SUPPORTED;
     if (error == ESP_OK && raw) {
         cerberus_spi_frame_t frame;
@@ -57,7 +60,8 @@ esp_err_t c5_spi_link_wifi_packet_count_exchange(uint8_t command, const void *re
         else {
             memcpy(tx, &frame, sizeof(frame));
             error = spi_request_response_passive(tx, discarded, &response, sizeof(tx), deadline);
-            if (error == ESP_OK && (!cerberus_protocol_packet_count_raw_valid(&response) ||
+            if (error == ESP_OK && (!(monitor ? cerberus_protocol_monitor_record_raw_valid(&response) :
+                cerberus_protocol_packet_count_raw_valid(&response)) ||
                 response.sequence != token)) error = ESP_ERR_INVALID_RESPONSE;
             if (error == ESP_OK) memcpy(reply, &response.payload, reply_size);
         }
@@ -72,7 +76,8 @@ esp_err_t c5_spi_link_wifi_packet_count_exchange(uint8_t command, const void *re
         memcpy(&returned_session, reply, sizeof(returned_session));
         if (returned_session != session) error = ESP_ERR_INVALID_RESPONSE;
     }
-    if (error == ESP_OK && (raw || command == CERBERUS_PACKET_COUNT_COMMAND_READ)) {
+    if (error == ESP_OK && (raw || command == CERBERUS_PACKET_COUNT_COMMAND_READ ||
+        command == CERBERUS_MONITOR_RECORD_READ)) {
         cerberus_packet_count_read_t q;
         memcpy(&q, query, sizeof(q));
         uint32_t pin;
@@ -85,3 +90,11 @@ esp_err_t c5_spi_link_wifi_packet_count_exchange(uint8_t command, const void *re
     if (error != ESP_OK) memset(reply, 0, reply_size);
     return error;
 }
+
+esp_err_t c5_spi_link_wifi_packet_count_exchange(uint8_t command, const void *request,
+    size_t request_size, void *reply, size_t reply_size)
+{ return packet_record_exchange(false, command, request, request_size, reply, reply_size); }
+
+esp_err_t c5_spi_link_wifi_packet_monitor_record_exchange(uint8_t command, const void *request,
+    size_t request_size, void *reply, size_t reply_size)
+{ return packet_record_exchange(true, command, request, request_size, reply, reply_size); }

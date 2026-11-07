@@ -1,6 +1,7 @@
 #define PACKET_COUNT_RECORD_STACK 6144U
 #define PACKET_COUNT_RECORD_RETRIES 3U
-enum { COUNT_RECORD_PEEK, COUNT_RECORD_META, COUNT_RECORD_FRAME, COUNT_RECORD_ACK, COUNT_RECORD_EMPTY_VERIFY };
+enum { COUNT_RECORD_PEEK, COUNT_RECORD_META, COUNT_RECORD_FRAME, COUNT_RECORD_ACK,
+    COUNT_RECORD_EMPTY_VERIFY, COUNT_RECORD_STATS_PEEK, COUNT_RECORD_STATS_READ };
 typedef struct {
     uint64_t session, next_poll_us;
     uint32_t pin, sequence, consumed, crc;
@@ -19,6 +20,7 @@ typedef struct {
      * needed and an ACK retry must never serialize or append it again. */
     uint8_t block[CERBERUS_WIFI_PCAP_RECORD_MAX_SIZE];
     unsigned current;
+    bool monitor;
 } packet_count_record_context_t;
 
 static portMUX_TYPE packet_count_record_lock = portMUX_INITIALIZER_UNLOCKED;
@@ -142,7 +144,10 @@ static void packet_count_record_step(packet_count_record_context_t *context)
         if (error == ESP_OK && !reply.sequence) {
             if (reply.error_code == ESP_ERR_NOT_FOUND && (reply.flags & CERBERUS_PACKET_COUNT_BOUND)) {
                 stream->retries = 0U;
-                if (desired.draining) packet_count_record_drained_publish(source);
+                if (desired.draining) {
+                    if (context->monitor) stream->phase = COUNT_RECORD_STATS_PEEK;
+                    else packet_count_record_drained_publish(source);
+                }
                 else if (sampled_now >= 0) stream->next_poll_us = (uint64_t)sampled_now + 20000U;
                 context->current ^= 1U;
                 return;
@@ -187,7 +192,8 @@ static void packet_count_record_step(packet_count_record_context_t *context)
                     !cerberus_wifi_packet_count_channel_bit(m[20]) ||
                     (m[22] & ~3U) || m[23] || m[24] || m[25] || m[26] || m[27] ||
                     ((m[22] & 2U) ? ((int8_t)m[21] == INT8_MIN || (int8_t)m[21] > 0) : m[21] != 0U) ||
-                    ((m[22] & 1U) ? time > INT64_MAX : time != 0U))
+                    ((m[22] & 1U) ? time > INT64_MAX : time != 0U) ||
+                    (context->monitor && !(m[22] & 1U)))
                     error = ESP_ERR_INVALID_RESPONSE;
                 if (error == ESP_OK) {
                     stream->phase = stream->sequence == stream->consumed ? COUNT_RECORD_ACK : COUNT_RECORD_FRAME;
@@ -225,8 +231,13 @@ static void packet_count_record_step(packet_count_record_context_t *context)
                  * cannot append this sequence a second time. */
                 stream->consumed = stream->sequence;
                 esp_err_t saved = ESP_ERR_INVALID_STATE;
-                if (length && !stream->storage_failed) saved = cerberus_storage_packet_count_append(
-                    context->job, source, context->block, length);
+                if (length && !stream->storage_failed) {
+                    saved = context->monitor ? cerberus_storage_packet_monitor_append(
+                        context->job, stream->session, stream->sequence, metadata.capture_time_us,
+                        metadata.channel, metadata.rssi_dbm, metadata.rssi_known, stream->length,
+                        context->block, length) : cerberus_storage_packet_count_append(
+                            context->job, source, context->block, length);
+                }
                 if (length && saved != ESP_OK) stream->storage_failed = true;
                 portENTER_CRITICAL(&packet_count_record_lock);
                 wifi_packet_count_record_source_t *out = &packet_count_record_public.source[source];
@@ -260,6 +271,52 @@ static void packet_count_record_step(packet_count_record_context_t *context)
             }
             context->current ^= 1U;
         }
+    } else if (stream->phase == COUNT_RECORD_STATS_PEEK) {
+        cerberus_packet_count_peek_t request = {stream->session, CERBERUS_PACKET_COUNT_READ_SUMMARY, 0U};
+        cerberus_packet_count_control_t reply;
+        error = packet_count_record_exchange(context, CERBERUS_PACKET_COUNT_COMMAND_PEEK,
+            &request, sizeof(request), &reply, sizeof(reply));
+        if (error == ESP_OK && (reply.session_id != stream->session ||
+            !(reply.flags & CERBERUS_PACKET_COUNT_BOUND) ||
+            (reply.flags & (CERBERUS_PACKET_COUNT_HELD | CERBERUS_PACKET_COUNT_RX_ACTIVE)) ||
+            reply.sequence <= CERBERUS_PACKET_COUNT_PIN_BASE)) error = ESP_ERR_INVALID_RESPONSE;
+        if (error == ESP_OK) {
+            stream->pin = reply.sequence;
+            stream->part = 0U;
+            stream->phase = COUNT_RECORD_STATS_READ;
+        }
+    } else if (stream->phase == COUNT_RECORD_STATS_READ) {
+        cerberus_packet_count_read_t request = {stream->session, stream->pin, stream->part};
+        cerberus_packet_count_chunk_t reply;
+        error = packet_count_record_exchange(context, CERBERUS_PACKET_COUNT_COMMAND_READ,
+            &request, sizeof(request), &reply, sizeof(reply));
+        if (error == ESP_OK && (reply.session_id != stream->session || reply.pin != stream->pin ||
+            reply.part != stream->part)) error = ESP_ERR_INVALID_RESPONSE;
+        if (error == ESP_OK) {
+            memcpy(context->block + stream->part * 8U, reply.data, 8U);
+            if (++stream->part == 8U) {
+                const uint8_t *b = context->block;
+                if (b[0] != 1U || (b[1] & ~6U) || b[2] || b[3] > 2U ||
+                    cerberus_packet_count_get(b + 4U, 4U) != cerberus_packet_count_get(b + 8U, 4U))
+                    error = ESP_ERR_INVALID_RESPONSE;
+                for (unsigned i = 40U; i < 64U; ++i) if (b[i]) error = ESP_ERR_INVALID_RESPONSE;
+                if (error == ESP_OK) {
+                    uint64_t rejected = 0U;
+                    for (unsigned i = 16U; i <= 32U; i += 4U)
+                        rejected += cerberus_packet_count_get(b + i, 4U);
+                    portENTER_CRITICAL(&packet_count_record_lock);
+                    wifi_packet_count_record_source_t *out = &packet_count_record_public.source[source];
+                    out->received = (uint32_t)cerberus_packet_count_get(b + 4U, 4U);
+                    out->acknowledged = (uint32_t)cerberus_packet_count_get(b + 8U, 4U);
+                    out->queue_full = (uint32_t)cerberus_packet_count_get(b + 12U, 4U);
+                    out->rejected = rejected > UINT32_MAX ? UINT32_MAX : (uint32_t)rejected;
+                    out->statistics_valid = true;
+                    if (b[1] && out->error == ESP_OK) out->error = ESP_ERR_INVALID_STATE;
+                    portEXIT_CRITICAL(&packet_count_record_lock);
+                    packet_count_record_drained_publish(source);
+                } else --stream->part;
+            }
+        }
     } else {
         cerberus_packet_count_ack_t request = {stream->session, stream->consumed};
         cerberus_packet_count_control_t reply;
@@ -292,7 +349,8 @@ static void packet_count_record_worker(void *argument)
 {
     packet_count_record_context_t *context = argument;
     char directory[8] = {0};
-    esp_err_t error = cerberus_storage_packet_count_begin(context->job, directory);
+    esp_err_t error = context->monitor ? cerberus_storage_packet_monitor_begin(context->job, directory) :
+        cerberus_storage_packet_count_begin(context->job, directory);
     portENTER_CRITICAL(&packet_count_record_lock);
     packet_count_record_public.error = error;
     memcpy(packet_count_record_public.directory, directory, sizeof(directory));
@@ -333,7 +391,8 @@ static void packet_count_record_worker(void *argument)
     vTaskDelete(NULL);
 }
 
-esp_err_t wifi_packet_count_record_start(const wifi_packet_count_transport_t *transport, uint64_t *job)
+static esp_err_t packet_record_start(const wifi_packet_count_transport_t *transport,
+    uint64_t *job, bool monitor)
 {
     if (!job || !transport || !transport->exchange) return ESP_ERR_INVALID_ARG;
     *job = 0U;
@@ -350,6 +409,7 @@ esp_err_t wifi_packet_count_record_start(const wifi_packet_count_transport_t *tr
     packet_count_record_context_t *context = heap_caps_calloc(1U, sizeof(*context), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (context) {
         context->job = reserved;
+        context->monitor = monitor;
         context->transport = *transport;
         if (xTaskCreate(packet_count_record_worker, "count_sd", PACKET_COUNT_RECORD_STACK,
             context, 4U, NULL) == pdPASS) { *job = reserved; return ESP_OK; }
@@ -360,6 +420,12 @@ esp_err_t wifi_packet_count_record_start(const wifi_packet_count_transport_t *tr
     portEXIT_CRITICAL(&packet_count_record_lock);
     return ESP_ERR_NO_MEM;
 }
+
+esp_err_t wifi_packet_count_record_start(const wifi_packet_count_transport_t *transport, uint64_t *job)
+{ return packet_record_start(transport, job, false); }
+
+esp_err_t wifi_packet_count_record_start_monitor(const wifi_packet_count_transport_t *transport, uint64_t *job)
+{ return packet_record_start(transport, job, true); }
 
 bool wifi_packet_count_record_status(uint64_t job, wifi_packet_count_record_status_t *out)
 {

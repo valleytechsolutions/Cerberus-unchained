@@ -10,6 +10,7 @@
 #include "radio_test_service.h"
 #include "wifi_scanner.h"
 #include "wifi_capture_service.h"
+#include "wifi_packet_monitor_record.h"
 #include "wardrive_radio.h"
 
 #include "driver/gpio.h"
@@ -533,17 +534,21 @@ static void prepare_v2_response(const cerberus_spi_frame_t *request)
     }
     case CERBERUS_SPI_COMMAND_WIFI_PACKET_MONITOR_SESSION_INFO:
     case CERBERUS_SPI_COMMAND_WIFI_PACKET_MONITOR_SESSION_START:
+    case CERBERUS_SPI_COMMAND_WIFI_PACKET_MONITOR_RECORD_START:
     case CERBERUS_SPI_COMMAND_WIFI_PACKET_MONITOR_SESSION_STOP:
     case CERBERUS_SPI_COMMAND_WIFI_PACKET_MONITOR_SESSION_STATUS: {
         cerberus_wifi_packet_monitor_session_status_t payload;
         if (request->command == CERBERUS_SPI_COMMAND_WIFI_PACKET_MONITOR_SESSION_INFO) {
             if (request->payload_length != 0U) return;
             cerberus_wifi_packet_monitor_session_info(&payload);
-        } else if (request->command == CERBERUS_SPI_COMMAND_WIFI_PACKET_MONITOR_SESSION_START) {
+        } else if (request->command == CERBERUS_SPI_COMMAND_WIFI_PACKET_MONITOR_SESSION_START ||
+            request->command == CERBERUS_SPI_COMMAND_WIFI_PACKET_MONITOR_RECORD_START) {
             if (request->payload_length != sizeof(cerberus_wifi_packet_monitor_session_start_t)) return;
             cerberus_wifi_packet_monitor_session_start_t query;
             memcpy(&query, request->payload, sizeof(query));
-            (void)cerberus_wifi_packet_monitor_session_start(&query, &payload);
+            if (request->command == CERBERUS_SPI_COMMAND_WIFI_PACKET_MONITOR_RECORD_START)
+                (void)cerberus_wifi_packet_monitor_record_start(&query, &payload);
+            else (void)cerberus_wifi_packet_monitor_session_start(&query, &payload);
         } else {
             if (request->payload_length != sizeof(uint64_t)) return;
             uint64_t session;
@@ -564,6 +569,30 @@ static void prepare_v2_response(const cerberus_spi_frame_t *request)
         if (cerberus_wifi_packet_monitor_session_sample(&query, &payload) == ESP_OK)
             prepare_frame_response((cerberus_spi_command_t)request->command,
                 request->sequence, &payload, sizeof(payload));
+        break;
+    }
+    case CERBERUS_SPI_COMMAND_WIFI_PACKET_MONITOR_RECORD_PEEK:
+    case CERBERUS_SPI_COMMAND_WIFI_PACKET_MONITOR_RECORD_READ:
+    case CERBERUS_SPI_COMMAND_WIFI_PACKET_MONITOR_RECORD_RAW_ACK:
+    case CERBERUS_SPI_COMMAND_WIFI_PACKET_MONITOR_RECORD_RELEASE:
+    case CERBERUS_SPI_COMMAND_WIFI_PACKET_MONITOR_RECORD_STATUS: {
+        if (request->payload_length != cerberus_monitor_record_request_bytes(request->command)) return;
+        uint8_t payload[22] = {0};
+        (void)cerberus_wifi_packet_monitor_record_exchange(request->command, request->payload,
+            request->payload_length, payload, sizeof(payload));
+        prepare_frame_response((cerberus_spi_command_t)request->command,
+            request->sequence, payload, sizeof(payload));
+        break;
+    }
+    case CERBERUS_SPI_COMMAND_WIFI_PACKET_MONITOR_RECORD_RAW_READ: {
+        if (received_transfer_bytes != CERBERUS_PACKET_COUNT_RAW_TRANSFER_BYTES ||
+            request->payload_length != sizeof(cerberus_packet_count_read_t)) return;
+        cerberus_packet_count_raw_chunk_t payload;
+        (void)cerberus_wifi_packet_monitor_record_exchange(request->command, request->payload,
+            request->payload_length, &payload, sizeof(payload));
+        cerberus_packet_count_raw_frame_t frame;
+        if (cerberus_protocol_prepare_monitor_record_raw(&frame, request->sequence, &payload))
+            memcpy(tx_buffer, &frame, sizeof(frame));
         break;
     }
     case CERBERUS_SPI_COMMAND_WIFI_PACKET_MONITOR_START:

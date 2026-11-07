@@ -155,10 +155,16 @@ typedef struct {
     char file_name[2][24];
 } cerberus_storage_packet_count_result_t;
 esp_err_t cerberus_storage_packet_count_begin(uint64_t job, char name[8]);
+/* Monitor uses the same exclusive SD lease, with a separate MONITOR/Mnnnnn
+ * directory and a source-clock CSV index beside the C5 PCAPNG. */
+esp_err_t cerberus_storage_packet_monitor_begin(uint64_t job, char name[8]);
 esp_err_t cerberus_storage_packet_count_open(uint64_t job, unsigned source,
     const uint8_t *header, size_t length);
 esp_err_t cerberus_storage_packet_count_append(uint64_t job, unsigned source,
     const uint8_t *record, size_t length);
+esp_err_t cerberus_storage_packet_monitor_append(uint64_t job, uint64_t session,
+    uint32_t sequence, uint64_t source_us, uint8_t channel, int8_t rssi,
+    bool rssi_known, uint16_t frame_bytes, const uint8_t *record, size_t length);
 /* Exact job required. Waits for the mutex to close every owned handle and
  * release the lease even after earlier errors. Result must be nonnull. */
 esp_err_t cerberus_storage_packet_count_finish(uint64_t job,
