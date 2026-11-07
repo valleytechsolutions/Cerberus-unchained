@@ -136,9 +136,19 @@ invented. Old files are not renamed, rewritten or deleted by the update.
   its SDK timeout to exit. Canceling bulk deletion cannot restore files already
   deleted; the processed count records the partial operation.
 
-Uploads obtain current UTC from NTP over the home network. Connection, clock
-or certificate failure reports a stage/error; there is no insecure TLS fallback.
-Captures more than 60 seconds ahead of synchronized UTC are rejected.
+Uploads establish UTC before contacting a service. A synchronization from this
+boot can be reused for 15 minutes while the wall and monotonic clocks agree.
+With GPS attached, open Wardriving and wait for **FIX + UTC** before opening
+Logs / Upload; its recent NMEA time remains usable after leaving that screen.
+This time handoff does not require recording a new log or keeping GPS running.
+
+Without recent time, the uploader tries the NTP pool and Cloudflare's time
+server over home Wi-Fi, up to 15 seconds each. **UTC TIMEOUT / LOG NOT SENT**
+means that attempt never reached an upload service. An older **CHECK ACCOUNT**
+receipt remains unchanged and still requires the explicit retry confirmation.
+Connection, clock or certificate failures stop the upload. Certificate checks
+remain enabled. Captures more than 60 seconds ahead of synchronized UTC are
+rejected.
 
 Unlocated logs stay local and are skipped by Upload All. Legacy pre-headers
 missing Earth metadata remain inspectable but require PC export/review; the

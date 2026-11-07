@@ -72,6 +72,16 @@ esp_err_t cerberus_wardrive_gps_uart_preview(bool enabled);
 void cerberus_wardrive_gps_uart_snapshot(
     cerberus_wardrive_gps_snapshot_t *out, esp_err_t *uart_error);
 
+/* Time holdover for TLS after leaving the GPS screen. This does not make an
+ * old position eligible for logging, start a reader or retain UART ownership.
+ * The sample must come from a valid RMC fix in this boot. */
+#define CERBERUS_WARDRIVE_GPS_TIME_HOLDOVER_MS 900000U
+typedef struct {
+    char utc[25];
+    uint64_t received_ms;
+} cerberus_wardrive_gps_time_t;
+esp_err_t cerberus_wardrive_gps_uart_recent_time(cerberus_wardrive_gps_time_t *out);
+
 /* Value-only local state. No UART operations, allocation or cleanup. */
 esp_err_t cerberus_wardrive_gps_uart_get_state(cerberus_wardrive_gps_uart_state_t *out);
 

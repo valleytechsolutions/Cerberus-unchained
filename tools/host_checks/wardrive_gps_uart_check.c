@@ -282,9 +282,46 @@ static void presets_preview_and_detection(void)
         CHECK(cerberus_gps_config_valid(&c)==(cerberus_gps_input_pin_valid(pin)&&pin!=2&&pin!=46));}
     reset();test_config.rx_gpio=44;CHECK(cerberus_wardrive_gps_uart_start()==ESP_ERR_INVALID_ARG&&!installs);
 }
+static void recent_time_after_stop(void)
+{
+    reset();cerberus_wardrive_gps_time_t sample;
+    memset(&sample,0x5a,sizeof(sample));
+    CHECK(cerberus_wardrive_gps_uart_recent_time(NULL)==ESP_ERR_INVALID_ARG);
+    CHECK(cerberus_wardrive_gps_uart_recent_time(&sample)==ESP_ERR_NOT_FOUND&&!sample.utc[0]&&!sample.received_ms);
+    CHECK(!installs&&!allocations&&!gps_lock);
+    CHECK(cerberus_wardrive_gps_uart_start()==ESP_OK);
+    char text[180];size_t size=sentence(text,"GNRMC,120000.123,A,4807.038,N,01131.000,E,0,0,010126","\r\n");
+    feed(text,size,13);
+    CHECK(cerberus_wardrive_gps_uart_recent_time(&sample)==ESP_OK);
+    CHECK(!strcmp(sample.utc,"2026-01-01T12:00:00.123Z")&&sample.received_ms==gps_core.last_utc_ms);
+    uint64_t received=sample.received_ms;now_us+=100000;
+    size=sentence(text,"GNGGA,120000.123,4807.038,N,01131.000,E,1,10,0.9,100.0,M,0.0,M,,","\r\n");
+    feed(text,size,13);
+    CHECK(gps_core.last_fix_ms>gps_core.last_utc_ms);
+    CHECK(cerberus_wardrive_gps_uart_recent_time(&sample)==ESP_OK&&sample.received_ms==received);
+    stop_clean();
+    unsigned old_installs=installs,old_reads=reads,old_allocations=allocations;
+    now_us=(int64_t)received*1000+900000000;
+    CHECK(cerberus_wardrive_gps_uart_recent_time(&sample)==ESP_OK&&sample.received_ms==received);
+    cerberus_wardrive_gps_uart_state_t state;
+    CHECK(cerberus_wardrive_gps_uart_get_state(&state)==ESP_OK&&!state.gps.utc_valid&&!state.gps.coordinates_valid);
+    ++now_us;now_us+=999;
+    CHECK(cerberus_wardrive_gps_uart_recent_time(&sample)==ESP_ERR_NOT_FOUND&&!sample.utc[0]);
+    CHECK(installs==old_installs&&reads==old_reads&&allocations==old_allocations&&!driver_installed);
+    now_us=(int64_t)received*1000;
+    CHECK(cerberus_wardrive_gps_uart_recent_time(&sample)==ESP_ERR_NOT_FOUND); /* Clock reversal. */
+
+    reset();CHECK(cerberus_wardrive_gps_uart_start()==ESP_OK);
+    size=sentence(text,"GNRMC,120000.123,A,4807.038,N,01131.000,E,0,0,010126","\r\n");feed(text,size,13);
+    fail_timed_take=timed_takes+1;
+    CHECK(cerberus_wardrive_gps_uart_recent_time(&sample)==ESP_ERR_TIMEOUT&&!sample.utc[0]);fail_timed_take=0;
+    size=sentence(text,"GNRMC,120001.000,V,,,,,,,010126","\r\n");feed(text,size,13);
+    CHECK(cerberus_wardrive_gps_uart_recent_time(&sample)==ESP_ERR_NOT_FOUND&&!sample.utc[0]);
+    stop_clean();
+}
 int main(void)
 {
-    off_and_trace();setup_and_cleanup();clocks_and_identity();observer_lock_timeouts();presets_preview_and_detection();reset();
+    off_and_trace();setup_and_cleanup();clocks_and_identity();observer_lock_timeouts();presets_preview_and_detection();recent_time_after_stop();reset();
     printf("GPS UART/trace: %u checks; actual reader/parser/lifecycle, optional PSRAM, exact observer identity, privacy and cleanup passed. row=%zu store=%zu snapshot=%zu\n",
         checks,sizeof(cerberus_wardrive_gps_trace_row_t),sizeof(gps_trace_store_t),sizeof(cerberus_wardrive_gps_trace_snapshot_t));
     return 0;

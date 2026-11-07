@@ -32,4 +32,6 @@ A TLS 1.2 handshake from the PC, using the actual SDK verifier and firmware cert
 
 The matched rev145 package was installed on November 7 after fresh S3 and C5 recovery backups were checked against the installed images. Each programmed image passed flash-digest verification. Both chips booted, the SD card mounted and the saved upload profile loaded. Two idle observations 41.8 seconds apart showed advancing uptime and SPI traffic without a reset or additional transport errors.
 
-On-device WDGWars TLS, actual upload acknowledgement and repeated-upload memory use remain open. No logs were uploaded or receipts changed during this investigation. A saved uncertain receipt still requires the existing service retry confirmation.
+A later user-triggered upload of a newly recorded CSV succeeded on the installed rev145 firmware. Read-only device diagnostics recorded WDGWars HTTP 202, a complete validated response and no TLS or transport error. Both WiGLE and WDGWars had acknowledged results. This verifies the device upload path for that request; server processing and account credit were not checked. The diagnostic capture was read-only; it sent no additional log or retry.
+
+An earlier service retry separately timed out while establishing UTC, before any HTTP request. The [rev147 clock-recovery change](DUAL_RADIO_REV147.md) addresses that dependency. The earlier uncertain receipt remains unchanged and still requires service retry confirmation. Repeated-upload memory use remains unverified on hardware.

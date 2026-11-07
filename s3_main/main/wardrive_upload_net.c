@@ -15,14 +15,17 @@
 #include <time.h>
 
 static esp_netif_t *station;
-static bool claimed, initialized, started, sntp_owned;
+static bool claimed, initialized, started, sntp_owned, time_ready;
 static bool cancelled(cerberus_upload_cancel_fn fn,void *context){return fn&&fn(context);}
 static void report(cerberus_upload_progress_fn fn,void *context,const char *s,uint32_t n,uint32_t total)
 {if(fn)fn(context,s,n,total);}
 
+#include "wardrive_upload_clock.h"
+
 esp_err_t cerberus_upload_net_end(void)
 {
-    if(sntp_owned){esp_netif_sntp_deinit();sntp_owned=false;}
+    time_ready=false;
+    upload_sntp_end();
     if(started){esp_err_t e=esp_wifi_stop();if(e!=ESP_OK&&e!=ESP_ERR_WIFI_NOT_STARTED)return e;started=false;}
     if(initialized){esp_err_t e=esp_wifi_deinit();if(e!=ESP_OK)return e;initialized=false;}
     if(station){esp_netif_destroy_default_wifi(station);station=NULL;}
@@ -34,6 +37,7 @@ esp_err_t cerberus_upload_net_begin(const cerberus_upload_config_t *config,
 {
     report(progress,context,"CHECKING UPLOAD CONFIGURATION",0,0);
     if(!cerberus_upload_config_wifi_ready(config)||claimed)return ESP_ERR_INVALID_STATE;
+    time_ready=false;
     if(cancelled(cancel,context))return ESP_ERR_INVALID_STATE;
     report(progress,context,"CLAIMING S3 FOR HOME WI-FI",0,0);
     esp_err_t err=cerberus_s3_wifi_claim(CERBERUS_S3_WIFI_UPLOAD);if(err!=ESP_OK)return err;claimed=true;
@@ -70,21 +74,9 @@ esp_err_t cerberus_upload_net_begin(const cerberus_upload_config_t *config,
         if(esp_timer_get_time()>=deadline)return ESP_ERR_TIMEOUT;
         vTaskDelay(pdMS_TO_TICKS(100));
     }
-    /* Obtain current UTC even if the RTC contains a plausible old date. No
-     * insecure TLS fallback is used when a home AP blocks NTP. */
-    report(progress,context,"VERIFYING UTC FOR TLS",0,0);
-    esp_sntp_config_t sync=ESP_NETIF_SNTP_DEFAULT_CONFIG("pool.ntp.org");
-    err=esp_netif_sntp_init(&sync);if(err!=ESP_OK)return err;sntp_owned=true;
-    deadline=esp_timer_get_time()+25000000LL;
-    for(;;){
-        if(cancelled(cancel,context))return ESP_ERR_INVALID_STATE;
-        err=esp_netif_sntp_sync_wait(pdMS_TO_TICKS(100));
-        if(err==ESP_OK)break;
-        if(err!=ESP_ERR_TIMEOUT&&err!=ESP_ERR_NOT_FINISHED)return err;
-        if(esp_timer_get_time()>=deadline)return ESP_ERR_TIMEOUT;
-    }
-    time_t now=time(NULL);if(now<1704067200LL||now>4102444800LL)return ESP_ERR_INVALID_RESPONSE;
-    return ESP_OK;
+    err=upload_clock_prepare(cancel,progress,context);
+    time_ready=err==ESP_OK;
+    return err;
 }
 static bool write_all(esp_http_client_handle_t client,const char *data,size_t length,
     cerberus_upload_cancel_fn cancel,void *context,int64_t deadline)
@@ -104,7 +96,7 @@ cerberus_upload_reply_t cerberus_upload_net_send(const cerberus_upload_config_t 
     cerberus_upload_reply_t reply={.result=CERBERUS_UPLOAD_UNKNOWN};
     cerberus_upload_transfer_t detail={.error=ESP_ERR_INVALID_ARG};
     if(transfer)*transfer=detail;
-    if(!claimed||!started||!file||!plan||part>=plan->parts||!name||strlen(name)>64||
+    if(!claimed||!started||!time_ready||!file||!plan||part>=plan->parts||!name||strlen(name)>64||
         !cerberus_upload_config_service_ready(config,service))return reply;
     for(const char *p=name;*p;++p)if(!((*p>='0'&&*p<='9')||(*p>='a'&&*p<='z')||
         (*p>='A'&&*p<='Z')||*p=='-'||*p=='_'||*p=='.'))return reply;

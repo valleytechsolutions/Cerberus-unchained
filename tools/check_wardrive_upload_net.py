@@ -12,3 +12,4 @@ csv=out/'synthetic.csv';csv.write_text('WigleWifi-1.6,appRelease=fixture,model=C
     'MAC,SSID,AuthMode,FirstSeen,Channel,Frequency,RSSI,CurrentLatitude,CurrentLongitude,AltitudeMeters,AccuracyMeters,RCOIs,MfgrId,Type\n'
     '02:00:00:00:00:01,Fixture,WPA2,2026-01-01 12:00:00,6,2437,-55,12.5,-45.5,100,,,,WIFI\n',newline='')
 subprocess.run([str(exe),str(csv)],check=True,env=env)
+subprocess.run([str(exe),str(csv),'retry-clock'],check=True,env=env)

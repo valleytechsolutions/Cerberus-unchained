@@ -276,6 +276,27 @@ esp_err_t cerberus_wardrive_gps_uart_start(void){return gps_consumer_set(1U,true
 esp_err_t cerberus_wardrive_gps_uart_stop(void){return gps_consumer_set(1U,false);}
 esp_err_t cerberus_wardrive_gps_uart_preview(bool enabled){return gps_consumer_set(2U,enabled);}
 
+esp_err_t cerberus_wardrive_gps_uart_recent_time(cerberus_wardrive_gps_time_t *out)
+{
+    if (!out) return ESP_ERR_INVALID_ARG;
+    memset(out, 0, sizeof(*out));
+    if (!gps_lock) return ESP_ERR_NOT_FOUND;
+    if (xSemaphoreTake(gps_lock, pdMS_TO_TICKS(GPS_SNAPSHOT_WAIT_MS)) != pdTRUE)
+        return ESP_ERR_TIMEOUT;
+    uint64_t now;
+    bool valid = clock_ms(&now) && receipt_clock_valid && last_uart_error == ESP_OK &&
+        gps_core.fix_live && gps_core.utc_seen &&
+        gps_core.last_fix_ms >= gps_core.last_utc_ms &&
+        gps_core.last_fix_ms - gps_core.last_utc_ms <= 1000U && now >= gps_core.last_utc_ms &&
+        now - gps_core.last_utc_ms <= CERBERUS_WARDRIVE_GPS_TIME_HOLDOVER_MS;
+    if (valid) {
+        memcpy(out->utc, gps_core.utc, sizeof(out->utc));
+        out->received_ms = gps_core.last_utc_ms;
+    }
+    xSemaphoreGive(gps_lock);
+    return valid ? ESP_OK : ESP_ERR_NOT_FOUND;
+}
+
 static void snapshot_locked(cerberus_wardrive_gps_snapshot_t *out, bool *valid_clock)
 {
     uint64_t now;
