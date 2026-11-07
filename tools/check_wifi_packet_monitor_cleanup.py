@@ -1,4 +1,4 @@
-"""Exercise the production C5 monitor's reserved-radio restore path."""
+"""Exercise C5 restore failures and the S3 monitor's Stop completion gate."""
 from pathlib import Path
 import importlib.util
 import os
@@ -97,3 +97,14 @@ subprocess.run(compiler + ["-std=c11", "-O1", "-Wall", "-Wextra", "-Werror",
     str(fixture), "-o", str(exe)], check=True, env=environment)
 subprocess.run([str(exe)], check=True, env=environment)
 print("Wi-Fi Packet Monitor disable/restore reservation and retry: pass")
+
+ui = (root / "s3_main/main/ui.c").read_text(encoding="utf-8")
+start = ui.index("static bool packet_monitor_stop_ui(void)")
+end = ui.index("static void packet_monitor_start_ui(void)", start)
+(out / "wifi_packet_monitor_stop_impl.h").write_text(ui[start:end], encoding="utf-8")
+ui_exe = out / "wifi-packet-monitor-stop-check.exe"
+subprocess.run(compiler + ["-std=c11", "-O1", "-Wall", "-Wextra", "-Werror",
+    "-I", str(out), "-I", str(root / "shared"),
+    str(root / "tools/host_checks/wifi_packet_monitor_stop_check.c"),
+    "-o", str(ui_exe)], check=True, env=environment)
+subprocess.run([str(ui_exe)], check=True, env=environment)

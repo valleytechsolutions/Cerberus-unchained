@@ -2113,6 +2113,13 @@ static bool packet_monitor_stop_ui(void)
             return false;
         }
     }
+    /* Stop acceptance is not completion: the worker can fail to disable RX or
+     * restore the prior channel after the initial reply. Keep cleanup retryable. */
+    if (packet_monitor_status.state == CERBERUS_WIFI_PACKET_MONITOR_ERROR) {
+        packet_monitor_error = packet_monitor_status.error_code != ESP_OK ?
+            (esp_err_t)packet_monitor_status.error_code : ESP_FAIL;
+        return false;
+    }
     packet_monitor_attempted = false;
     return true;
 }
