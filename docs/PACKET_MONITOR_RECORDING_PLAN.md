@@ -55,8 +55,17 @@ The standalone MultiSSID and PineScan UI checks pass. Their older, unregistered
 navigation fixtures still refer to retired BLE/GPS/live-view helpers and do not
 compile; they are not included in these passing claims.
 
-Full-matrix validation and installation of this candidate are pending. The
-connected device remains on rev145. Packet Monitor recording is still missing.
+At source commit `756b2a6`, all 166 registered host suites and all five native
+firmware targets pass with unchanged input hashes. The S3 READY ISR and console
+checks, C5 IRAM checks and C5 link checks also pass. The retired-session UI
+regression fails before its correction and passes afterward.
+
+The matched development package is
+`cerberus-unchained-0.1.0-dev.rev146-20261107T172248Z`. Its S3, C5 and recovery
+bridge all report rev146, and all 22 package checksums verify.
+
+Installation and touchscreen/RF acceptance remain pending. The connected
+device remains on rev145. Packet Monitor recording is still missing.
 
 ## Remaining implementation
 
