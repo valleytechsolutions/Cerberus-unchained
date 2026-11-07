@@ -69,6 +69,8 @@ typedef struct {
     uint8_t expansion_present_mask;
     uint32_t duplicate_sightings, invalid_sightings, dedupe_evicted;
     uint32_t sd_rows, files_saved;
+    uint32_t csv_rows, csv_devices, compacted_rows;
+    bool compacting;
     uint32_t geotagged_rows, unlocated_rows, gps_fallback_rows;
     uint32_t skipped_no_fix, skipped_time, skipped_format;
     uint64_t sd_bytes;
@@ -108,12 +110,13 @@ esp_err_t cerberus_wardrive_clear_recent(void);
 
 /* Start requires exclusive access to the onboard C5 scan and S3 BLE scanner.
  * The UI must suspend/drain Recon before calling. R1-R6 are opt-in; enabling
- * them does not imply that expansion radios are installed. GPS is opt-in;
- * without a wired receiver, leave enable_gps false. Scanning continues without
- * a GPS reader, but the production stream saves only valid located WiGLE rows
- * to one CERBWardrive CSV. Skipped observations have explicit counters. Fresh GPS/RMC
- * results enter WiGLE; other valid observations enter an unlocated sidecar. */
+ * them does not imply that expansion radios are installed. A running GPS
+ * receiver with a fresh fix and RMC UTC is required before admission. No RF,
+ * storage lease or capture task is started while the fix is unavailable.
+ * After admission, each observation still passes the GPS/time/format checks. */
 esp_err_t cerberus_wardrive_start(bool include_expansions, bool enable_gps);
+/* Value-only check. NOT_FINISHED means GPS is off or is not ready to record. */
+esp_err_t cerberus_wardrive_start_check(bool enable_gps);
 /* Idle-only mode selection. Applies to the next integrated session. */
 esp_err_t cerberus_wardrive_set_mode(uint8_t mode);
 /* Stop is asynchronous. Both terminal states mean the worker has closed its

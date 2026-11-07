@@ -44,6 +44,18 @@ typedef struct {
     bool detecting_baud;
 } cerberus_wardrive_gps_uart_state_t;
 
+/* Start admission uses live receiver state, never the TLS time holdover. */
+static inline bool cerberus_wardrive_gps_start_ready(bool enabled,
+    const cerberus_wardrive_gps_uart_state_t *s)
+{
+    return enabled && s && s->error == ESP_OK && s->driver_active &&
+        s->reader_running && s->clock_valid && !s->starting && !s->stopping &&
+        s->gps.state == CERBERUS_WARDRIVE_GPS_FRESH && s->gps.coordinates_valid &&
+        s->gps.utc_valid && s->gps.utc_from_rmc &&
+        s->gps.fix_age_ms <= CERBERUS_WARDRIVE_GPS_FIX_MAX_AGE_MS &&
+        s->gps.utc_age_ms <= CERBERUS_WARDRIVE_GPS_FIX_MAX_AGE_MS;
+}
+
 typedef struct {
     uint64_t observer_token;
     uint64_t receiver_epoch;

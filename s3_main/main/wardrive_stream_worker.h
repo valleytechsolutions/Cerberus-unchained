@@ -45,11 +45,17 @@ static void wardrive_stream_worker(void *unused)
     cerberus_wd_status_t radios[2]={{0}};
     bool begun[2]={false,false},stopped[2]={false,false};
     uint32_t last_ok[2]={now_ms(),now_ms()},last_sync=now_ms(),last_expansion=now_ms();
-    esp_err_t failure=ESP_OK;bool storage_failed=false;
+    esp_err_t failure=gps_error==ESP_OK?cerberus_wardrive_start_check(gps_enabled):gps_error;
+    bool storage_failed=false;
     portENTER_CRITICAL(&wardrive_lock);wardrive_status.gps_error=gps_error;portEXIT_CRITICAL(&wardrive_lock);
+    if(failure!=ESP_OK)publish_error(failure,'G');
     while(!wants_stop()&&failure==ESP_OK){
         for(unsigned chip=0;chip<2&&failure==ESP_OK&&!wants_stop();++chip){
             bool c5=chip==1;cerberus_wd_request_t *q=&queries[chip];
+            if(!begun[chip]){
+                failure=cerberus_wardrive_start_check(gps_enabled);
+                if(failure!=ESP_OK){publish_error(failure,'G');break;}
+            }
             esp_err_t e=stream_exchange(c5,begun[chip]?CERBERUS_WD_STATUS:CERBERUS_WD_START,q,&radios[chip]);
             if(e==ESP_OK){
                 begun[chip]=true;last_ok[chip]=now_ms();stream_publish(c5,&radios[chip]);

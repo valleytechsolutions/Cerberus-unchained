@@ -199,6 +199,12 @@ static bool wigle_row(cerberus_ward_log_parser_t *p, char **f, unsigned count)
     if (!*f[9]) ++p->summary.missing_altitude;
     if (!*f[10]) ++p->summary.missing_accuracy;
     if (lat == 0 && lon == 0) ++p->summary.zero_coordinates;
+    for (unsigned i = 0; i < 6; ++i) {
+        char octet[3] = {f[0][i * 3], f[0][i * 3 + 1], 0};
+        p->last_row.address[i] = (uint8_t)strtoul(octet, NULL, 16);
+    }
+    p->last_row.type = !strcmp(f[13], "WIFI") ? 1U : 2U;
+    p->last_row.rssi = (int8_t)strtol(f[6], NULL, 10);
     return true;
 }
 

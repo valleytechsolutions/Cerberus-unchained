@@ -523,7 +523,7 @@ static const ui_menu_item_t menu_items[] = {
 
 static bool wardrive_include_expansions;
 static uint8_t wardrive_mode;
-static bool wardrive_gps_enabled; /* OFF on entry: GPS is not fitted on this unit. */
+static bool wardrive_gps_enabled; /* Loaded from the saved receiver setting. */
 static bool wardrive_start_pending;
 static bool wardrive_return_pending;
 static uint32_t wardrive_start_requested_ms;
@@ -8019,20 +8019,21 @@ static esp_err_t draw_wardrive(void)
     bool gps_selected = active ? status.gps_requested : wardrive_gps_enabled;
     cerberus_wardrive_gps_uart_state_t receiver={0};
     esp_err_t gps_read=cerberus_wardrive_gps_uart_get_state(&receiver);
+    bool gps_ready = gps_read == ESP_OK && cerberus_wardrive_gps_start_ready(gps_selected, &receiver);
     if(gps_selected&&gps_read==ESP_OK){
         status.gps=receiver.gps;status.gps_error=receiver.error;
         if(status.gps_error==ESP_OK&&gps_preview_error!=ESP_ERR_NOT_FINISHED)status.gps_error=gps_preview_error;
     }
     const char *gps_line = gps_selected ? "GPS DATA > ON / NO RECENT NMEA" :
-        "GPS DATA > OFF / SCAN ONLY";
+        "GPS DATA > OFF / ENABLE GPS TO START";
     uint16_t gps_color = UI_MUTED;
-    if (gps_selected && status.gps_error != ESP_OK) {
-        gps_line = "GPS DATA > UART ERROR / SCAN ONLY";
+    if (gps_selected && status.gps_error != ESP_OK && status.gps_error != ESP_ERR_NOT_FINISHED) {
+        gps_line = "GPS DATA > UART ERROR";
         gps_color = UI_BAD;
     } else if (gps_selected && status.gps.state == CERBERUS_WARDRIVE_GPS_NO_FIX) {
         gps_line = "GPS DATA > NMEA / NO FIX";
     } else if (gps_selected && status.gps.state == CERBERUS_WARDRIVE_GPS_STALE) {
-        gps_line = "GPS DATA > FIX STALE / SCAN ONLY";
+        gps_line = "GPS DATA > FIX STALE";
     } else if (gps_selected && status.gps.state == CERBERUS_WARDRIVE_GPS_FRESH) {
         gps_line = status.gps.utc_valid ?
             "GPS DATA > FIX + UTC / WIGLE CSV" : "GPS DATA > FIX / UTC UNVERIFIED";
@@ -8051,7 +8052,7 @@ static esp_err_t draw_wardrive(void)
         (!status.gps_requested || status.gps.state != CERBERUS_WARDRIVE_GPS_FRESH || !status.gps.utc_valid))
         state_label = "SCANNING / WAITING FOR GPS";
     snprintf(line, sizeof(line), "STATE: %s", wardrive_start_pending ?
-        "WAITING FOR RADIOS" : state_label);
+        "WAITING FOR RADIOS" : status.compacting ? "SAVING RSSI EXTREMES" : state_label);
     ESP_RETURN_ON_ERROR(draw_centered(105, line,
         status.state == CERBERUS_WARDRIVE_ERROR ? UI_BAD :
         active ? UI_GOOD : UI_TEXT, 1), TAG, "wardrive state");
@@ -8066,7 +8067,7 @@ static esp_err_t draw_wardrive(void)
     snprintf(line,sizeof(line),"C5 %s: %lu WIFI / %lu BLE",mode==CERBERUS_WD_BLE?"BLE":"5G",
         (unsigned long)status.c5_stream.wifi_reports,(unsigned long)status.c5_stream.ble_reports);
     ESP_RETURN_ON_ERROR(draw_centered(178,line,UI_TEXT,1),TAG,"wardrive C5 receiver");
-    snprintf(line, sizeof(line), "LOGGED: AP %lu / BLE %lu / R1-R6 %lu",
+    snprintf(line, sizeof(line), "VALID: AP %lu / BLE %lu / R1-R6 %lu",
         (unsigned long)(status.c5_wifi_logged+status.s3_wifi_logged),
         (unsigned long)(status.s3_ble_logged+status.c5_ble_logged),
         (unsigned long)status.expansion_logged);
@@ -8078,9 +8079,10 @@ static esp_err_t draw_wardrive(void)
     ESP_RETURN_ON_ERROR(draw_centered(220, line, UI_MUTED, 1), TAG, "wardrive drops");
     snprintf(line, sizeof(line), "EXPANSION R1-R6: %u ONLINE", expansion_count);
     ESP_RETURN_ON_ERROR(draw_centered(240, line, UI_TEXT, 1), TAG, "wardrive expansions");
-    snprintf(line, sizeof(line), "SD: %lu ROWS / %lu FILES / %llu KiB",
-        (unsigned long)status.sd_rows, (unsigned long)status.files_saved,
+    if (status.files_saved) snprintf(line, sizeof(line), "CSV: %lu ROWS / %lu DEVICES / %llu KiB",
+        (unsigned long)status.csv_rows, (unsigned long)status.csv_devices,
         (unsigned long long)(status.sd_bytes / 1024U));
+    else snprintf(line, sizeof(line), "SD JOURNAL: %lu VALID OBSERVATIONS", (unsigned long)status.sd_rows);
     ESP_RETURN_ON_ERROR(draw_centered(260, line, UI_TEXT, 1), TAG, "wardrive storage");
     snprintf(line, sizeof(line), "LAST FILE: %s", status.last_file_name[0] ?
         status.last_file_name : unsaved ? "NO CSV CREATED" : "NONE YET");
@@ -8103,6 +8105,10 @@ static esp_err_t draw_wardrive(void)
             snprintf(line, sizeof(line), "LOG SIZE LIMIT / START A NEW SESSION");
         else if (status.sd_error != ESP_OK)
             snprintf(line, sizeof(line), "SD: %s", esp_err_to_name(status.sd_error));
+        else if (status.gps_error == ESP_ERR_NOT_FINISHED)
+            snprintf(line, sizeof(line), "GPS FIX LOST / WAIT FOR FIX + UTC");
+        else if (status.gps_error != ESP_OK)
+            snprintf(line, sizeof(line), "GPS: %s", esp_err_to_name(status.gps_error));
         else
             snprintf(line, sizeof(line), "%s", esp_err_to_name(error));
         ESP_RETURN_ON_ERROR(draw_centered(324, line, UI_BAD, 1), TAG, "wardrive error");
@@ -8114,6 +8120,10 @@ static esp_err_t draw_wardrive(void)
         ESP_RETURN_ON_ERROR(draw_centered(324, unsaved, UI_BAD, 1), TAG, "wardrive unsaved reason");
     } else if (status.state == CERBERUS_WARDRIVE_STOPPED && status.files_saved) {
         ESP_RETURN_ON_ERROR(draw_centered(324, "CSV SAVED / OPEN LOGS BELOW", UI_GOOD, 1), TAG, "wardrive saved");
+    } else if (!active && !gps_ready) {
+        ESP_RETURN_ON_ERROR(draw_centered(324, gps_selected ?
+            "WAIT FOR GPS FIX + UTC BEFORE START" : "ENABLE GPS / WAIT FOR FIX + UTC",
+            UI_MUTED, 1), TAG, "wardrive start GPS gate");
     }
     ESP_RETURN_ON_ERROR(draw_small_button(24, 346, 132, 28,
         wardrive_include_expansions ? "R1-R6: ON" : "R1-R6: OFF"),
@@ -8122,7 +8132,7 @@ static esp_err_t draw_wardrive(void)
         wardrive_gps_enabled ? "GPS: ON" : "GPS: OFF"),
         TAG, "wardrive GPS control");
     ESP_RETURN_ON_ERROR(draw_button(8, 380, 96, 32,
-        active || wardrive_start_pending ? "STOP" : "START"), TAG, "wardrive start stop");
+        active || wardrive_start_pending ? "STOP" : gps_ready ? "START" : "WAIT GPS"), TAG, "wardrive start stop");
     ESP_RETURN_ON_ERROR(draw_button(112,380,96,32,"RECENT NETS"),TAG,"wardrive recent");
     return draw_button(216,380,96,32,"LOGS / UPLOAD");
 }
@@ -11779,6 +11789,15 @@ static void wardrive_handle_tap(uint16_t x, uint16_t y)
         } else {
             wardrive_start_error = ESP_OK;
             wardrive_blocked_reason[0] = '\0';
+            esp_err_t gps_gate = cerberus_wardrive_start_check(wardrive_gps_enabled);
+            if (gps_gate != ESP_OK) {
+                wardrive_start_error = gps_gate;
+                snprintf(wardrive_blocked_reason, sizeof(wardrive_blocked_reason),
+                    wardrive_gps_enabled ? "GPS FIX + UTC REQUIRED BEFORE START" : "ENABLE GPS BEFORE START");
+                wardrive_last_draw_ms = 0U;
+                ESP_ERROR_CHECK(draw_detail_page());
+                return;
+            }
             wardrive_start_requested_ms = (uint32_t)(esp_timer_get_time() / 1000);
             wardrive_last_start_attempt_ms = wardrive_start_requested_ms - 250U;
             wardrive_start_pending = true;
@@ -11832,6 +11851,8 @@ static void wardrive_tick(uint32_t now_ms, bool asleep)
             else if (error != ESP_ERR_INVALID_STATE) {
                 wardrive_start_pending = false;
                 wardrive_start_error = error;
+                if (error == ESP_ERR_NOT_FINISHED) snprintf(wardrive_blocked_reason,
+                    sizeof(wardrive_blocked_reason), "GPS FIX LOST / WAIT FOR FIX + UTC");
             }
         }
     }

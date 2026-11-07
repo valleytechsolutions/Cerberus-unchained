@@ -27,7 +27,13 @@ typedef struct {
     char first_utc[20], last_utc[20];
 } cerberus_ward_log_summary_t;
 typedef struct {
+    uint8_t address[6];
+    uint8_t type; /* 1: WIFI, 2: BLE; never group by SSID or display name. */
+    int8_t rssi;
+} cerberus_ward_log_identity_t;
+typedef struct {
     cerberus_ward_log_summary_t summary;
+    cerberus_ward_log_identity_t last_row; /* Last fully validated WiGLE row. */
     size_t used;
     char line[CERBERUS_WARD_LOG_LINE_CAPACITY];
 } cerberus_ward_log_parser_t;

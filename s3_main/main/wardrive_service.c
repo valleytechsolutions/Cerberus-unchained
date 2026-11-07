@@ -322,6 +322,7 @@ static void publish_error(esp_err_t error, char radio)
     if (radio == 'C') wardrive_status.c5_error = error;
     else if (radio == 'B') wardrive_status.s3_ble_error = error;
     else if (radio == 'E') wardrive_status.expansion_error = error;
+    else if (radio == 'G') wardrive_status.gps_error = error;
     else wardrive_status.sd_error = error;
     if (wardrive_status.error_code == ESP_OK) wardrive_status.error_code = error;
     portEXIT_CRITICAL(&wardrive_lock);
@@ -396,13 +397,26 @@ static esp_err_t save_log_stream(bool located, bool keep)
 {
     char name[24] = {0};
     uint64_t bytes = 0U;
+    cerberus_wardrive_compact_stats_t compact = {0};
+    portENTER_CRITICAL(&wardrive_lock);
+    wardrive_status.compacting = located && keep;
+    portEXIT_CRITICAL(&wardrive_lock);
     esp_err_t error;
     do {
-        error = located ? cerberus_storage_wardrive_wigle_finish(keep, name, sizeof(name), &bytes) :
+        error = located ? cerberus_storage_wardrive_wigle_finish(keep, name, sizeof(name), &bytes, &compact) :
             cerberus_storage_wardrive_finish(keep, name, sizeof(name), &bytes);
         /* A mutex timeout leaves the FILE open. Keep ownership until close. */
         if (error == ESP_ERR_TIMEOUT) vTaskDelay(pdMS_TO_TICKS(100));
     } while (error == ESP_ERR_TIMEOUT);
+    portENTER_CRITICAL(&wardrive_lock);
+    wardrive_status.compacting = false;
+    if (error == ESP_OK && compact.input_rows) {
+        wardrive_status.csv_rows += compact.output_rows;
+        wardrive_status.csv_devices += compact.devices;
+        wardrive_status.compacted_rows += compact.input_rows - compact.output_rows;
+        wardrive_status.sd_bytes -= compact.input_bytes - compact.output_bytes;
+    }
+    portEXIT_CRITICAL(&wardrive_lock);
     if (located) { wigle_file_open = false; wigle_file_rows = 0U; }
     else { wardrive_file_open = false; open_file_rows = 0U; }
     if (error != ESP_OK) { publish_error(error, 'S'); return error; }
@@ -1136,8 +1150,7 @@ static void wardrive_worker(void *unused)
 {
     (void)unused;
     recent_begin_session();
-    /* An unwired receiver is the default. GPS owns no UART/task/heap until
-     * explicitly enabled for this session. It never gates C5/S3 scanning. */
+    /* Retain the preview reader and its acquired fix for this session. */
     bool gps_enabled = wardrive_status.gps_requested;
     esp_err_t gps_error = start_optional_gps(gps_enabled);
     bool wifi_own = false, ble_pending = false;
@@ -1152,11 +1165,12 @@ static void wardrive_worker(void *unused)
     uint32_t wifi_start_retry_deadline = 0U;
     bool wifi_start_retry_active = false, wifi_start_uncertain = false;
     uint8_t wifi_start_baseline = 0U;
-    esp_err_t failure = ESP_OK;
+    esp_err_t failure = gps_error == ESP_OK ? cerberus_wardrive_start_check(gps_enabled) : gps_error;
     portENTER_CRITICAL(&wardrive_lock);
     wardrive_status.gps_error = gps_error;
-    wardrive_status.state = CERBERUS_WARDRIVE_RUNNING;
+    wardrive_status.state = failure == ESP_OK ? CERBERUS_WARDRIVE_RUNNING : CERBERUS_WARDRIVE_ERROR;
     portEXIT_CRITICAL(&wardrive_lock);
+    if (failure != ESP_OK) publish_error(failure, 'G');
     while (!wants_stop() && failure == ESP_OK) {
         if (wifi_start_retry_active &&
             !before_deadline(wifi_start_retry_deadline)) {
@@ -1408,6 +1422,16 @@ static esp_err_t prepare_expansion_plan(uint8_t present_mask)
     return field_survey_set_expansion_plan(&plan);
 }
 
+esp_err_t cerberus_wardrive_start_check(bool enable_gps)
+{
+    if (!enable_gps) return ESP_ERR_NOT_FINISHED;
+    cerberus_wardrive_gps_uart_state_t receiver;
+    esp_err_t error = cerberus_wardrive_gps_uart_get_state(&receiver);
+    if (error != ESP_OK) return error;
+    if (receiver.error != ESP_OK) return receiver.error;
+    return cerberus_wardrive_gps_start_ready(true, &receiver) ? ESP_OK : ESP_ERR_NOT_FINISHED;
+}
+
 static esp_err_t wardrive_start_with_idle_probes_paused(bool include_expansions,
     bool enable_gps)
 {
@@ -1497,7 +1521,9 @@ static esp_err_t wardrive_start_with_idle_probes_paused(bool include_expansions,
             return error;
         }
     }
-    error = cerberus_storage_wardrive_session_begin();
+    /* Driver warm-up and owner checks can outlast the fix that admitted us. */
+    error = cerberus_wardrive_start_check(enable_gps);
+    if (error == ESP_OK) error = cerberus_storage_wardrive_session_begin();
     if (error != ESP_OK) {
         if (include_expansions) {
             esp_err_t reset_error = field_survey_set_expansion_plan(NULL);
@@ -1584,8 +1610,12 @@ esp_err_t cerberus_wardrive_start(bool include_expansions, bool enable_gps)
 
     /* Idle R1-R6 presence probes share the SPI bus with onboard C5 scan
      * commands. Drain any in-flight probe before Wardriving takes the bus. */
-    esp_err_t error = field_survey_set_idle_probe_enabled(false);
-    bool gate_closed = error == ESP_OK || error == ESP_ERR_TIMEOUT;
+    esp_err_t error = cerberus_wardrive_start_check(enable_gps);
+    bool gate_closed = false;
+    if (error == ESP_OK) {
+        error = field_survey_set_idle_probe_enabled(false);
+        gate_closed = error == ESP_OK || error == ESP_ERR_TIMEOUT;
+    }
     if (error == ESP_OK)
         error = wardrive_start_with_idle_probes_paused(include_expansions,
             enable_gps);

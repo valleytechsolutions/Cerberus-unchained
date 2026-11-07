@@ -197,6 +197,8 @@ static void probe_sniff_receive(const wifi_promiscuous_pkt_t *p,wifi_promiscuous
 { (void)p;(void)type;(void)entered; }
 static bool probe_sniff_retained(void){return false;}
 static bool packet_count_retained(void){return atomic_load(&packet_count_radio_reserved);}
+static bool packet_monitor_record_retained(void){return false;}
+static void packet_monitor_record_worker_tick(void){CHECK(!packet_monitor_radio_reserved);}
 static void packet_count_worker_tick(void){CHECK(!atomic_load(&packet_count_radio_reserved));}
 static void probe_sniff_worker_tick(void){CHECK(!atomic_load(&probe_sniff_radio_reserved));}
 #include "wifi_scan_observation_impl.h"

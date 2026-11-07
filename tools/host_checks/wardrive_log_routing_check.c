@@ -6,6 +6,7 @@ static unsigned long long stream_observed_ms;
 #include "wardrive_core.h"
 #include "wardrive_recent.h"
 #include "wardrive_wigle.h"
+#include "wardrive_compact.h"
 #include "esp_err.h"
 #include <assert.h>
 #include <stdio.h>
@@ -32,6 +33,8 @@ static unsigned appends[2], begins[2], closes[2], errors, invalid, duplicates;
 static esp_err_t fail_append;
 static struct {
     bool gps_requested;
+    bool compacting;
+    uint32_t csv_rows, csv_devices, compacted_rows;
     uint32_t files_saved, geotagged_rows, unlocated_rows, gps_fallback_rows;
     uint32_t skipped_no_fix, skipped_time, skipped_format;
     uint64_t sd_bytes;
@@ -66,7 +69,7 @@ static esp_err_t cerberus_storage_wardrive_wigle_begin(const char *h, size_t n) 
 static esp_err_t cerberus_storage_wardrive_append(const char *h, size_t n) { return append(0U,h,n); }
 static esp_err_t cerberus_storage_wardrive_wigle_append(const char *h, size_t n) { return append(1U,h,n); }
 static esp_err_t cerberus_storage_wardrive_finish(bool keep, char *n, size_t c, uint64_t *b) { return finish(0U,keep,n,c,b); }
-static esp_err_t cerberus_storage_wardrive_wigle_finish(bool keep, char *n, size_t c, uint64_t *b) { return finish(1U,keep,n,c,b); }
+static esp_err_t cerberus_storage_wardrive_wigle_finish(bool keep, char *n, size_t c, uint64_t *b,cerberus_wardrive_compact_stats_t *stats) { memset(stats,0,sizeof(*stats));return finish(1U,keep,n,c,b); }
 static esp_err_t cerberus_storage_wardrive_session_finish(void)
 { assert(!storage_open[0] && !storage_open[1]); return ESP_OK; }
 

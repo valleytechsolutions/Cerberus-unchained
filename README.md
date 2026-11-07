@@ -91,6 +91,13 @@ See [Unchained build and release instructions](docs/UNCHAINED_BUILD.md) and
 
 ## Development status
 
+The rev148 development candidate requires a fresh GPS fix and RMC UTC before
+Wardriving starts. After Stop, it saves the strongest and weakest complete
+observation per Wi-Fi BSSID or Bluetooth address in one `CERBWardrive###.CSV`.
+Compaction runs after the receivers stop with a fixed working buffer; capture
+cadence is unchanged. See [data quality, recovery and validation limits](docs/WARDRIVE_DATA_QUALITY.md).
+This candidate is separate from the published release described above.
+
 Rev137 provides Wi-Fi-only, Bluetooth-only and combined Wardriving modes.
 Wi-Fi-only splits S3 2.4 GHz and C5 5 GHz reception; Bluetooth-only uses both
 receivers. Combined mode keeps C5 on 5 GHz and assigns S3 alternating Wi-Fi/BLE

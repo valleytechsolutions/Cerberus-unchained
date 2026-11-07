@@ -32,6 +32,7 @@ subprocess.run(compiler + [
     "-I", str(root / "s3_main/main"),
     "-I", str(root / "shared"),
     str(root / "s3_main/main/wardrive_core.c"),
+    str(root / "s3_main/main/wardrive_log.c"),
     str(root / "tools/host_checks/wardrive_storage_check.c"), "-o", str(exe),
 ], check=True, env=environment)
 with tempfile.TemporaryDirectory(prefix="files-", dir=out) as temporary:

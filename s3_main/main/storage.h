@@ -1,5 +1,7 @@
 #pragma once
 
+#include "wardrive_compact.h"
+
 #include "esp_err.h"
 #include "sdmmc_cmd.h"
 #include "storage_report_limits.h"
@@ -184,7 +186,8 @@ esp_err_t cerberus_storage_wardrive_wigle_begin(const char *header, size_t heade
 esp_err_t cerberus_storage_wardrive_wigle_append(const char *row, size_t row_length);
 esp_err_t cerberus_storage_wardrive_wigle_sync(void);
 esp_err_t cerberus_storage_wardrive_wigle_finish(bool keep,
-    char *file_name, size_t file_name_capacity, uint64_t *bytes_written);
+    char *file_name, size_t file_name_capacity, uint64_t *bytes_written,
+    cerberus_wardrive_compact_stats_t *stats);
 /* Worker-only journal: begin requires mounted firmware-owned storage and
  * returns R00001..R99999. Its lease excludes USB/unmount/capture/Wardriving and
  * mutations overlapping the active session until finish. Begin examines at most

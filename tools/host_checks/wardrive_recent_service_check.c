@@ -13,6 +13,7 @@
 #include "wardrive_wigle.h"
 #include "wardrive_gps_uart.h"
 #include "wifi_capture_session.h"
+#include "wardrive_compact.h"
 #include "wardrive_recent_storage_decls.h"
 
 static unsigned checks;
@@ -66,6 +67,11 @@ static cerberus_s3_ble_wardrive_evidence_t ble_evidence[32];
 static field_survey_stream_t stream;
 static field_survey_snapshot_t field_status;
 static cerberus_wardrive_gps_snapshot_t gps_source;
+/* Admission and later row snapshots are separate so lifecycle cases can
+ * exercise a fix lost after starting without bypassing the Start gate. */
+static cerberus_wardrive_gps_uart_state_t gps_admission;
+esp_err_t cerberus_wardrive_gps_uart_get_state(cerberus_wardrive_gps_uart_state_t *out)
+{ *out=gps_admission;return ESP_OK; }
 
 #include "wardrive_passive_boundary.h"
 
@@ -211,7 +217,7 @@ esp_err_t cerberus_wardrive_gps_uart_stop(void)
         CHECK(wardrive_status.state==CERBERUS_WARDRIVE_STOPPING);
         CHECK(!storage_owned && !storage_open[0] && !storage_open[1]);
         CHECK(!passive_source.attached);
-        CHECK(cerberus_wardrive_start(false,false)==ESP_ERR_INVALID_STATE);
+        CHECK(cerberus_wardrive_start(false,true)==ESP_ERR_INVALID_STATE);
         if (gps_stop_calls>1U) CHECK(wardrive_status.gps_error!=ESP_OK);
         ++gps_cleanup_checks;
     }
@@ -249,7 +255,7 @@ esp_err_t cerberus_storage_wardrive_wigle_begin(const char *h,size_t n){return s
 esp_err_t cerberus_storage_wardrive_append(const char *r,size_t n){return sd_append(0,r,n);}
 esp_err_t cerberus_storage_wardrive_wigle_append(const char *r,size_t n){return sd_append(1,r,n);}
 esp_err_t cerberus_storage_wardrive_finish(bool k,char *n,size_t c,uint64_t *b){return sd_finish(0,k,n,c,b);}
-esp_err_t cerberus_storage_wardrive_wigle_finish(bool k,char *n,size_t c,uint64_t *b){return sd_finish(1,k,n,c,b);}
+esp_err_t cerberus_storage_wardrive_wigle_finish(bool k,char *n,size_t c,uint64_t *b,cerberus_wardrive_compact_stats_t *stats){memset(stats,0,sizeof(*stats));return sd_finish(1,k,n,c,b);}
 esp_err_t cerberus_storage_wardrive_sync(void){++sd_calls;return ESP_OK;}
 esp_err_t cerberus_storage_wardrive_wigle_sync(void){++sd_calls;return ESP_OK;}
 
@@ -262,6 +268,9 @@ static void reset(void)
     memset(&wifi_status,0,sizeof(wifi_status)); memset(&ble_status,0,sizeof(ble_status));
     memset(&field_status,0,sizeof(field_status)); memset(&stream,0,sizeof(stream));
     memset(&gps_source,0,sizeof(gps_source)); memset(storage_open,0,sizeof(storage_open));
+    gps_admission=(cerberus_wardrive_gps_uart_state_t){.driver_active=true,.reader_running=true,
+        .clock_valid=true,.gps={.state=CERBERUS_WARDRIVE_GPS_FRESH,.coordinates_valid=true,
+        .utc_valid=true,.utc_from_rmc=true}};
     memset(wifi_source,0,sizeof(wifi_source)); memset(ble_source,0,sizeof(ble_source));
     memset(ble_evidence,0,sizeof(ble_evidence));
     allocations=frees=task_creates=sd_calls=sd_appends=rf_starts=status_polls=gps_calls=0;
@@ -283,7 +292,7 @@ static void reset(void)
 }
 static void prepare_capture(void)
 {
-    CHECK(cerberus_wardrive_start(false,false)==ESP_OK && worker_active && pending_task);
+    CHECK(cerberus_wardrive_start(false,true)==ESP_OK && worker_active && pending_task);
     recent_begin_session(); /* Same worker-entry function, then exercise captured banks. */
     wifi_status=(cerberus_wifi_scan_status_payload_t){.state=CERBERUS_WIFI_SCAN_COMPLETE,.generation=255,.stored_count=2};
     passive_seed_completed(255U,255U,2U);
@@ -298,6 +307,24 @@ static cerberus_wardrive_recent_snapshot_t snapshot(void)
 
 int main(void)
 {
+    for (unsigned fault=0;fault<12;++fault) {
+        reset();
+        switch(fault) {
+        case 1:gps_admission.gps.state=CERBERUS_WARDRIVE_GPS_NO_FIX;break;
+        case 2:gps_admission.gps.coordinates_valid=false;break;
+        case 3:gps_admission.gps.utc_valid=false;break;
+        case 4:gps_admission.gps.utc_from_rmc=false;break;
+        case 5:gps_admission.gps.fix_age_ms=CERBERUS_WARDRIVE_GPS_FIX_MAX_AGE_MS+1;break;
+        case 6:gps_admission.gps.utc_age_ms=CERBERUS_WARDRIVE_GPS_FIX_MAX_AGE_MS+1;break;
+        case 7:gps_admission.driver_active=false;break;
+        case 8:gps_admission.reader_running=false;break;
+        case 9:gps_admission.clock_valid=false;break;
+        case 10:gps_admission.stopping=true;break;
+        case 11:gps_admission.error=ESP_FAIL;break;
+        }
+        CHECK(cerberus_wardrive_start(false,fault!=0)==(fault==11?ESP_FAIL:ESP_ERR_NOT_FINISHED));
+        CHECK(!worker_active&&!workspace&&!task_creates&&!sd_calls&&!rf_starts&&!allocations);
+    }
     reset();
     cerberus_wardrive_recent_snapshot_t view=snapshot();
     CHECK(!view.available && !view.count && !view.session_id && view.state==CERBERUS_WARDRIVE_IDLE);
@@ -334,44 +361,44 @@ int main(void)
 
     /* Failed admissions and task creation retain the old model and identity. */
     uint64_t session=view.session_id;
-    status_error=ESP_ERR_TIMEOUT; CHECK(cerberus_wardrive_start(false,false)==status_error);
+    status_error=ESP_ERR_TIMEOUT; CHECK(cerberus_wardrive_start(false,true)==status_error);
     CHECK(snapshot().session_id==session && snapshot().revision==revision);
     status_error=ESP_OK; wifi_status.state=0; ble_status.state=0; fail_task=true;
-    CHECK(cerberus_wardrive_start(false,false)==ESP_ERR_NO_MEM && !workspace && !worker_active);
+    CHECK(cerberus_wardrive_start(false,true)==ESP_ERR_NO_MEM && !workspace && !worker_active);
     CHECK(snapshot().session_id==session && snapshot().revision==revision);
     enqueue_on_start=true; field_status.present_mask=1;
     unsigned previous_appends=sd_appends;
-    CHECK(cerberus_wardrive_start(true,false)==ESP_ERR_NO_MEM && !workspace && !worker_active);
+    CHECK(cerberus_wardrive_start(true,true)==ESP_ERR_NO_MEM && !workspace && !worker_active);
     CHECK(sd_appends==previous_appends && !stream.count && !storage_owned);
     CHECK(snapshot().session_id==session && snapshot().revision==revision && !recent_worker_session);
     enqueue_on_start=false;
     fail_task=false; immediate_task=true;
-    CHECK(cerberus_wardrive_start(false,false)==ESP_OK && !workspace && !worker_active);
+    CHECK(cerberus_wardrive_start(false,true)==ESP_OK && !workspace && !worker_active);
     view=snapshot(); CHECK(view.available && !view.count && view.session_id==session+1 && view.state==CERBERUS_WARDRIVE_STOPPED);
     inspect_free=true; CHECK(cerberus_wardrive_clear_recent()==ESP_OK); inspect_free=false;
     CHECK(!snapshot().available && snapshot().session_id==session+1);
 
     /* Optional model OOM never rejects the existing logger or falls back to internal RAM. */
     reset(); fail_alloc_at=2; immediate_task=true;
-    CHECK(cerberus_wardrive_start(false,false)==ESP_OK);
+    CHECK(cerberus_wardrive_start(false,true)==ESP_OK);
     view=snapshot(); CHECK(!view.available && view.view_error==ESP_ERR_NO_MEM && view.state==CERBERUS_WARDRIVE_STOPPED);
     CHECK(allocations==2 && frees==1 && !workspace && !storage_owned);
-    fail_alloc_at=0; CHECK(cerberus_wardrive_start(false,false)==ESP_OK && snapshot().available);
+    fail_alloc_at=0; CHECK(cerberus_wardrive_start(false,true)==ESP_OK && snapshot().available);
     reset(); fail_alloc_at=2; prepare_capture(); capture_wifi_ok(false);
     CHECK(!snapshot().available && snapshot().view_error==ESP_ERR_NO_MEM && sd_appends==2);
     reset(); session_error=ESP_FAIL;
-    CHECK(cerberus_wardrive_start(false,false)==ESP_FAIL && !workspace && !worker_active && !pending_task);
+    CHECK(cerberus_wardrive_start(false,true)==ESP_FAIL && !workspace && !worker_active && !pending_task);
     CHECK(!recent_session_id && !wardrive_recent && allocations==1 && frees==1);
 
     /* Run the actual worker through both completed radios and asynchronous Stop. */
-    reset(); CHECK(cerberus_wardrive_start(false,false)==ESP_OK);
+    reset(); CHECK(cerberus_wardrive_start(false,true)==ESP_OK);
     stop_after_append=4; auto_complete=true;
     void (*worker)(void *)=pending_task; pending_task=NULL; worker(NULL);
     view=snapshot(); CHECK(!worker_active && !workspace && !storage_owned && view.count==4);
     /* Existing independent scheduling starts the next C5 sweep before the
      * first BLE bank requests Stop; cleanup drains that already owned sweep. */
     CHECK(view.state==CERBERUS_WARDRIVE_STOPPED && view.available && sd_appends==4 && rf_starts==3);
-    CHECK(!gps_calls && task_creates==1 && allocations==2 && frees==1);
+    CHECK(gps_calls>0 && task_creates==1 && allocations==2 && frees==1);
 
     reset(); prepare_capture(); begin_error=ESP_FAIL; inspect_pending=true;
     char failed_radio='?';

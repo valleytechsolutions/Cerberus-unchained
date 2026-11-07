@@ -1290,9 +1290,13 @@ static esp_err_t wardrive_stream_append(wardrive_storage_stream_t *stream,
     return error;
 }
 
+#include "storage_wardrive_compact_impl.h"
+
 static esp_err_t wardrive_stream_finish(wardrive_storage_stream_t *stream, bool keep,
-    char *file_name, size_t file_name_capacity, uint64_t *bytes_written)
+    char *file_name, size_t file_name_capacity, uint64_t *bytes_written,
+    cerberus_wardrive_compact_stats_t *stats)
 {
+    if (stats) memset(stats, 0, sizeof(*stats));
     if (file_name != NULL && file_name_capacity != 0U) file_name[0] = '\0';
     ESP_RETURN_ON_ERROR(take_storage_mutex(), TAG, "storage lock failed");
     if (stream->file == NULL) {
@@ -1313,8 +1317,15 @@ static esp_err_t wardrive_stream_finish(wardrive_storage_stream_t *stream, bool 
     stream->pending_rows = 0U;
     esp_err_t error = failed ? ESP_FAIL : ESP_OK;
     if (keep && error == ESP_OK) {
-        if (rename(stream->temp_path, stream->final_path) != 0) error = ESP_FAIL;
-        else {
+        if (stream == &sd_wigle_stream) {
+            cerberus_wardrive_compact_stats_t compact = {0};
+            error = wardrive_compact_publish(stream, &compact);
+            if (error == ESP_OK) {
+                size = compact.output_bytes;
+                if (stats) *stats = compact;
+            }
+        } else if (rename(stream->temp_path, stream->final_path) != 0) error = ESP_FAIL;
+        if (error == ESP_OK) {
             memcpy(file_name, stream->name, strlen(stream->name) + 1U);
             if (bytes_written != NULL) *bytes_written = size;
         }
@@ -1361,7 +1372,7 @@ esp_err_t cerberus_storage_wardrive_sync(void)
 { return wardrive_stream_sync(&sd_wardrive_stream); }
 esp_err_t cerberus_storage_wardrive_finish(bool keep, char *name,
     size_t capacity, uint64_t *bytes)
-{ return wardrive_stream_finish(&sd_wardrive_stream, keep, name, capacity, bytes); }
+{ return wardrive_stream_finish(&sd_wardrive_stream, keep, name, capacity, bytes, NULL); }
 esp_err_t cerberus_storage_wardrive_wigle_begin(const char *header, size_t length)
 { return wardrive_stream_begin(&sd_wigle_stream, "CERBWardrive", header, length); }
 esp_err_t cerberus_storage_wardrive_wigle_append(const char *row, size_t length)
@@ -1369,8 +1380,8 @@ esp_err_t cerberus_storage_wardrive_wigle_append(const char *row, size_t length)
 esp_err_t cerberus_storage_wardrive_wigle_sync(void)
 { return wardrive_stream_sync(&sd_wigle_stream); }
 esp_err_t cerberus_storage_wardrive_wigle_finish(bool keep, char *name,
-    size_t capacity, uint64_t *bytes)
-{ return wardrive_stream_finish(&sd_wigle_stream, keep, name, capacity, bytes); }
+    size_t capacity, uint64_t *bytes, cerberus_wardrive_compact_stats_t *stats)
+{ return wardrive_stream_finish(&sd_wigle_stream, keep, name, capacity, bytes, stats); }
 
 static void write_le16(uint8_t *destination, uint16_t value)
 {

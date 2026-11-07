@@ -35,6 +35,9 @@ typedef struct {cerberus_wardrive_recent_ticket_t ticket;} wardrive_recent_attem
 static void recent_preview(const cerberus_wardrive_observation_t *o,wardrive_recent_attempt_t *a){(void)o;(void)a;}
 static void recent_outcome(cerberus_wardrive_recent_ticket_t t,cerberus_wardrive_recent_outcome_t o){(void)t;(void)o;}
 static esp_err_t start_optional_gps(bool enable){CHECK(enable);return ESP_OK;}
+static unsigned gps_checks, lose_fix_at;
+esp_err_t cerberus_wardrive_start_check(bool enable)
+{CHECK(enable);return lose_fix_at&&++gps_checks>=lose_fix_at?ESP_ERR_NOT_FINISHED:ESP_OK;}
 static esp_err_t stop_optional_gps(bool enable){CHECK(enable&&storage_closed);return ESP_OK;}
 static void publish_error(esp_err_t error,char source){(void)source;if(!wardrive_status.error_code)wardrive_status.error_code=error;}
 static esp_err_t append_observation_impl(const cerberus_wardrive_observation_t *o,cerberus_wardrive_recent_outcome_t *out)
@@ -100,8 +103,22 @@ static void run(unsigned stop,unsigned fail,unsigned start_loss,unsigned read_lo
     else CHECK(wardrive_status.state==CERBERUS_WARDRIVE_STOPPED&&
         writes==4U+(radios_fixture[1].session?4U:0U));
 }
+static void check_gps_loss(unsigned at)
+{
+    memset(radios_fixture,0,sizeof(radios_fixture));memset(delivered,0,sizeof(delivered));
+    wardrive_status=(cerberus_wardrive_status_t){.mode=CERBERUS_WD_WIFI,.gps_requested=true};
+    writes=open_file_rows=wigle_file_rows=sd_fail_at=lost_start=lost_reads=0;stop_after=999;
+    stop_requested=storage_closed=wardrive_file_open=wigle_file_open=false;worker_active=true;
+    gps_checks=0;lose_fix_at=at;wardrive_stream_worker(NULL);
+    CHECK(wardrive_status.state==CERBERUS_WARDRIVE_ERROR&&!worker_active&&storage_closed);
+    CHECK(radios_fixture[1].starts==0);
+    if(at<3)CHECK(radios_fixture[0].starts==0&&writes==0);
+    else CHECK(radios_fixture[0].starts==1&&radios_fixture[0].released);
+    lose_fix_at=0;
+}
 int main(void)
 {
+    check_gps_loss(1);check_gps_loss(2);check_gps_loss(3);
     run(3,0,0,0); /* Stop before C5 START: drain only the started S3. */
     run(7,0,0,3); /* Lost reads/ACK progress must never duplicate an append. */
     run(7,0,2,0); /* START accepted but its response was lost. */

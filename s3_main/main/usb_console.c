@@ -1534,6 +1534,9 @@ static void print_radio(void)
         (unsigned long)wardrive.geotagged_rows,
         (unsigned long)wardrive.unlocated_rows,
         (unsigned long)wardrive.gps_fallback_rows);
+    console_printf("csv_rows=%lu\r\ncsv_devices=%lu\r\ncompacted_rows=%lu\r\ncompacting=%u\r\n",
+        (unsigned long)wardrive.csv_rows, (unsigned long)wardrive.csv_devices,
+        (unsigned long)wardrive.compacted_rows, wardrive.compacting ? 1U : 0U);
     console_printf("skipped_no_fix=%lu\r\nskipped_time=%lu\r\nskipped_format=%lu\r\n",
         (unsigned long)wardrive.skipped_no_fix,
         (unsigned long)wardrive.skipped_time,
