@@ -1544,7 +1544,8 @@ static esp_err_t wardrive_start_with_idle_probes_paused(bool include_expansions,
             release_workspace();
             return error;
         }
-        error = field_survey_set_running(true);
+        error = cerberus_wardrive_start_check(enable_gps);
+        if (error == ESP_OK) error = field_survey_set_running(true);
         if (error != ESP_OK) {
             field_survey_stream_close();
             esp_err_t reset_error = field_survey_set_expansion_plan(NULL);

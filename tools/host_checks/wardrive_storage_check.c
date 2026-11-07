@@ -57,7 +57,8 @@ static int injected_rename(const char *from,const char *to)
 #define MALLOC_CAP_8BIT 2U
 static void *heap_caps_malloc(size_t n,unsigned caps){(void)caps;return fail_allocation?NULL:malloc(n);}
 static void heap_caps_free(void *p){free(p);}
-static void vTaskDelay(unsigned n){assert(n==1);}
+static unsigned yield_calls;
+static void vTaskDelay(unsigned n){assert(n==1);++yield_calls;}
 #define ESP_LOGI(...) ((void)0)
 #define CERBERUS_STORAGE_MOUNT_PATH test_root
 #define CERBERUS_STORAGE_WARDRIVE_PATH "/CERBERUS/WARD"
@@ -114,6 +115,12 @@ _Static_assert(sizeof(sd_wardrive_stream) + sizeof(sd_wigle_stream) <
 int main(int argc, char **argv)
 {
     assert(argc == 2);
+    wardrive_compact_yield_us=100000;test_now_us=100000;yield_calls=0;
+    for(unsigned i=0;i<1000;++i)wardrive_compact_yield();
+    assert(!yield_calls);
+    test_now_us=120000;wardrive_compact_yield();assert(yield_calls==1);
+    test_now_us=119999;wardrive_compact_yield();assert(yield_calls==2);
+    test_now_us=0;
     test_root = argv[1];
     const char header[] = "header\n";
     const char row[] = "row1\n";

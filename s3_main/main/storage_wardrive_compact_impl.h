@@ -1,6 +1,15 @@
 /* Included by storage.c; the Wardriving lease and storage mutex are held.
  * The closed .TMP remains the recovery source until a complete CSV exists. */
-static void wardrive_compact_yield(void) { vTaskDelay(1); }
+static int64_t wardrive_compact_yield_us;
+static void wardrive_compact_yield(void)
+{
+    int64_t now = esp_timer_get_time();
+    /* At 100 Hz a tick per batch adds seconds to a large log. Share CPU
+     * on elapsed time instead; SD calls can also yield while waiting. */
+    if (now >= wardrive_compact_yield_us && now - wardrive_compact_yield_us < 20000) return;
+    vTaskDelay(1);
+    wardrive_compact_yield_us = esp_timer_get_time();
+}
 
 static esp_err_t wardrive_compact_publish(wardrive_storage_stream_t *stream,
     cerberus_wardrive_compact_stats_t *stats)
@@ -28,6 +37,7 @@ static esp_err_t wardrive_compact_publish(wardrive_storage_stream_t *stream,
         files[i] = fdopen(fd, "w+b");
         if (!files[i]) { close(fd); error = ESP_FAIL; }
     }
+    wardrive_compact_yield_us = esp_timer_get_time();
     if (error == ESP_OK) error = cerberus_wardrive_compact(source, files[0], files[1],
         files[2], memory, capacity, wardrive_compact_yield, stats);
     if (error == ESP_OK && (fflush(files[2]) || fsync(fileno(files[2])))) error = ESP_FAIL;

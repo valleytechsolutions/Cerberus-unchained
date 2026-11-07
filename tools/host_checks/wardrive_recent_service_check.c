@@ -57,6 +57,7 @@ static cerberus_s3_ble_host_lease_t host_live_lease;
 static bool fail_task, immediate_task, inspect_pending, inspect_free, auto_complete, enqueue_on_start;
 static esp_err_t status_error, session_error, append_error, begin_error, copy_error;
 static bool storage_open[2], storage_owned;
+static bool lose_fix_on_sd_open;
 static size_t partial_bytes;
 static void (*pending_task)(void *);
 static cerberus_wifi_scan_status_payload_t wifi_status;
@@ -227,7 +228,8 @@ esp_err_t cerberus_wardrive_gps_uart_stop(void)
 void cerberus_wardrive_gps_uart_snapshot(cerberus_wardrive_gps_snapshot_t *out,esp_err_t *error)
 { ++gps_calls; *out=gps_source; if(error)*error=ESP_OK; }
 esp_err_t cerberus_storage_wardrive_session_begin(void)
-{ ++sd_calls; if(session_error)return session_error; CHECK(!storage_owned); storage_owned=true; return ESP_OK; }
+{ ++sd_calls; if(session_error)return session_error; CHECK(!storage_owned); storage_owned=true;
+  if(lose_fix_on_sd_open)gps_admission.gps.utc_valid=false;return ESP_OK; }
 esp_err_t cerberus_storage_wardrive_session_finish(void)
 { ++sd_calls; CHECK(!storage_open[0]&&!storage_open[1]); storage_owned=false; return ESP_OK; }
 static void check_preview(void)
@@ -262,6 +264,7 @@ esp_err_t cerberus_storage_wardrive_wigle_sync(void){++sd_calls;return ESP_OK;}
 static void reset(void)
 {
     worker_active=start_in_progress=false;
+    lose_fix_on_sd_open=false;
     CHECK(cerberus_wardrive_clear_recent()==ESP_OK);
     if(workspace)release_workspace();
     memset(&wardrive_status,0,sizeof(wardrive_status));
@@ -307,6 +310,9 @@ static cerberus_wardrive_recent_snapshot_t snapshot(void)
 
 int main(void)
 {
+    reset();lose_fix_on_sd_open=true;field_status.present_mask=1;
+    CHECK(cerberus_wardrive_start(true,true)==ESP_ERR_NOT_FINISHED);
+    CHECK(!worker_active&&!workspace&&!storage_owned&&!field_status.requested&&!task_creates);
     for (unsigned fault=0;fault<12;++fault) {
         reset();
         switch(fault) {
