@@ -1057,6 +1057,7 @@ esp_err_t c5_spi_link_wifi_packet_monitor_sample(uint8_t generation,
 
 #include "wifi_packet_monitor_link.h"
 #include "wifi_channel_analyzer_link.h"
+#include "wifi_fox_hunt_link.h"
 
 static bool wifi_capture_status_channel_valid(const cerberus_wifi_capture_status_payload_t *status)
 {

@@ -241,6 +241,7 @@ typedef enum {
     UI_WIFI_MODE_PROBE_SNIFF,
     UI_WIFI_MODE_PACKET_COUNT,
     UI_WIFI_MODE_CHANNEL_ANALYZER,
+    UI_WIFI_MODE_FOX_HUNT,
 } ui_wifi_mode_t;
 
 typedef cerberus_s3_wifi_ssid_analysis_t ui_wifi_ssid_analysis_t;
@@ -375,6 +376,14 @@ static void mesh_ui_tap(uint16_t x, uint16_t y);
 static esp_err_t mesh_ui_draw(void);
 static bool mesh_ui_busy(void);
 static bool wifi_packet_count_ui_busy(void);
+static bool wifi_fox_hunt_ui_busy(void);
+static bool wifi_fox_hunt_supported(void);
+static bool wifi_fox_hunt_holds_source(uint8_t origin);
+static esp_err_t wifi_fox_hunt_open(const uint8_t target[6], uint8_t channel,
+    const uint8_t *label, size_t length, uint8_t origin);
+static esp_err_t wifi_fox_hunt_draw(void);
+static void wifi_fox_hunt_tap(uint16_t x, uint16_t y);
+static void wifi_fox_hunt_back(void);
 static esp_err_t wifi_packet_count_open_selection(const wifi_packet_count_selection_t *selection, uint8_t origin);
 static void wifi_packet_count_back(void);
 static void wifi_packet_count_tap(uint16_t x, uint16_t y);
@@ -8241,6 +8250,7 @@ static esp_err_t draw_wardrive(void)
 
 static esp_err_t draw_detail_page(void)
 {
+    if (current_page == UI_PAGE_WIFI && wifi_mode == UI_WIFI_MODE_FOX_HUNT) return wifi_fox_hunt_draw();
     if (current_page == UI_PAGE_MESH_ARCHIVE) return mesh_archive_draw();
     if (current_page == UI_PAGE_IEEE802154 && ieee802154_mode == UI_IEEE802154_MODE_MESH) return mesh_ui_draw();
     if (current_page == UI_PAGE_WIFI && wifi_mode == UI_WIFI_MODE_PACKET_COUNT) return wifi_packet_count_draw();
@@ -8669,6 +8679,9 @@ static void open_main_menu(void)
 
 static void return_to_launcher(void)
 {
+    if (current_page == UI_PAGE_WIFI && wifi_mode == UI_WIFI_MODE_FOX_HUNT) {
+        wifi_fox_hunt_back(); ESP_ERROR_CHECK(draw_detail_page()); return;
+    }
     if (current_page == UI_PAGE_WIFI && wifi_mode == UI_WIFI_MODE_CHANNEL_ANALYZER) {
         channel_analyzer_request(CHANNEL_ANALYZER_BACK);
         ESP_ERROR_CHECK(draw_detail_page());
@@ -9168,6 +9181,7 @@ static void handle_ieee802154_tap(uint16_t x, uint16_t y)
 
 static void handle_wifi_tap(uint16_t x, uint16_t y)
 {
+    if (wifi_mode == UI_WIFI_MODE_FOX_HUNT) { wifi_fox_hunt_tap(x, y); ESP_ERROR_CHECK(draw_detail_page()); return; }
     if (wifi_mode == UI_WIFI_MODE_CHANNEL_ANALYZER) {
         channel_analyzer_tap(x, y); ESP_ERROR_CHECK(draw_detail_page()); return;
     }
@@ -11564,6 +11578,7 @@ static void handle_scripts_tap(uint16_t x, uint16_t y)
 #include "sentinel_live_ui.h"
 #include "dual_wifi_live_ui.h"
 #include "wifi_packet_count_ui.h"
+#include "wifi_fox_hunt_ui.h"
 #include "probe_sniff_ui.h"
 #include "mesh_ui.h"
 #include "mesh_archive_ui.h"
@@ -12210,6 +12225,9 @@ static void handle_tap(uint16_t x, uint16_t y)
         return;
     }
 
+    if (current_page == UI_PAGE_WIFI && wifi_mode == UI_WIFI_MODE_FOX_HUNT) {
+        wifi_fox_hunt_tap(x, y); ESP_ERROR_CHECK(draw_detail_page()); return;
+    }
     if (!ui_capability_blocked && current_page == UI_PAGE_WIFI && wifi_mode == UI_WIFI_MODE_PACKET_COUNT) {
         wifi_packet_count_tap(x, y); ESP_ERROR_CHECK(draw_detail_page()); return;
     }
@@ -12712,6 +12730,8 @@ void cerberus_ui_run(const cerberus_ui_config_t *config)
             wifi_mode == UI_WIFI_MODE_CHANNEL_ANALYZER && !screen_asleep;
         if (channel_analyzer_tick((uint64_t)now_ms, channel_analyzer_visible) && channel_analyzer_visible)
             ESP_ERROR_CHECK(draw_detail_page());
+        wifi_fox_hunt_tick((uint64_t)now_ms, current_page == UI_PAGE_WIFI &&
+            wifi_mode == UI_WIFI_MODE_FOX_HUNT && !screen_asleep);
         mesh_ui_tick((uint64_t)now_ms, current_page == UI_PAGE_IEEE802154 &&
             ieee802154_mode == UI_IEEE802154_MODE_MESH && !screen_asleep);
         wifi_packet_count_tick((uint64_t)now_ms, current_page == UI_PAGE_WIFI &&
@@ -12784,7 +12804,7 @@ void cerberus_ui_run(const cerberus_ui_config_t *config)
             !(current_page == UI_PAGE_WIFI && wifi_mode == UI_WIFI_MODE_DUAL) &&
             !(current_page == UI_PAGE_SCRIPTS && script_running) &&
             now_ms - last_user_activity_ms >= (int64_t)ui_screen_timeout_seconds * 1000LL &&
-            channel_analyzer_prepare_sleep()) {
+            channel_analyzer_prepare_sleep() && wifi_fox_hunt_prepare_sleep()) {
             awake_brightness = cerberus_display_get_brightness();
             esp_err_t sleep_err = cerberus_display_set_brightness(0U);
             if (sleep_err == ESP_OK) {

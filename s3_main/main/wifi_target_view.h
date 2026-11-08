@@ -17,6 +17,7 @@ typedef struct {
     bool can_capture;
     bool can_packet_monitor;
     bool can_csi;
+    bool can_fox_hunt;
 } cerberus_wifi_target_view_t;
 
 typedef enum {
@@ -30,6 +31,7 @@ typedef enum {
     CERBERUS_WIFI_TARGET_CAPTURE,
     CERBERUS_WIFI_TARGET_PACKET_MONITOR,
     CERBERUS_WIFI_TARGET_CSI,
+    CERBERUS_WIFI_TARGET_FOX_HUNT,
 } cerberus_wifi_target_action_t;
 
 esp_err_t cerberus_wifi_target_draw(const cerberus_wifi_target_view_t *view,

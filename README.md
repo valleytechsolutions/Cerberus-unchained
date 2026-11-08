@@ -29,6 +29,12 @@ reference revisions and the distinction between adapted code and independently
 implemented workflows. This acknowledgment does not change any license or
 imply upstream endorsement of Cerberus Unchained.
 
+**Next candidate:** Rev162 adds passive Wi-Fi Fox Hunt from selected AP,
+observed-client, PineScan and MultiSSID details, with C5 transmitter tracking
+and channel search plus S3 signal history and controls. It also keeps radio
+cleanup errors visible on the Channel Analyzer screen. Candidate verification
+and physical acceptance are tracked in [Wi-Fi Fox Hunt](docs/WIFI_FOX_HUNT.md).
+
 **Local development checkpoint:** `0.1.0-dev.rev161` is installed on the
 development board with onboard C5 capability 82. **Scan → Wi-Fi → Channel
 Analyzer** now provides fixed-channel total-traffic receive windows, S3

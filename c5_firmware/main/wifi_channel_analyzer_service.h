@@ -41,7 +41,7 @@ esp_err_t cerberus_wifi_channel_analyzer_start(const cerberus_wifi_channel_analy
     memset(out,0,sizeof(*out));out->session_id=request->session_id;
     if (!scanner_mutex) {out->error_code=ESP_ERR_INVALID_STATE;return ESP_ERR_INVALID_STATE;}
     esp_err_t error=request->session_id ?
-        packet_monitor_start_internal(request->channel,request->session_id,false,true) : ESP_ERR_INVALID_ARG;
+        packet_monitor_start_internal(request->channel,request->session_id,false,true,NULL) : ESP_ERR_INVALID_ARG;
     xSemaphoreTake(scanner_mutex,portMAX_DELAY);
     channel_analyzer_reply_locked(request->session_id,false,error,out);
     xSemaphoreGive(scanner_mutex);return error;

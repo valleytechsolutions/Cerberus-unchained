@@ -27,7 +27,7 @@ static uint8_t packet_monitor_previous_channel;
 static wifi_second_chan_t packet_monitor_previous_second;
 static int packet_monitor_previous_filter = 5;
 static int channel_analyzer_previous_ctrl_filter;
-static bool channel_analyzer_mode;
+static bool channel_analyzer_mode, wifi_fox_hunt_mode;
 static esp_err_t esp_wifi_set_promiscuous_ctrl_filter(const int *filter)
 {(void)filter;return ESP_OK;}
 static bool packet_monitor_restore_pending;

@@ -35,6 +35,7 @@ static bool mesh_test_busy;
 static bool mesh_ui_busy(void){return mesh_test_busy;}
 static bool wifi_packet_count_ui_busy(void){return false;}
 static bool channel_analyzer_ui_busy(void){return false;}
+static bool wifi_fox_hunt_ui_busy(void){return false;}
 static bool live_supported(sentinel_scan_tool_t tool){return tool!=SENTINEL_SCAN_NONE;}
 static uint16_t live_page[SENTINEL_SCAN_TOOL_COUNT];
 static cerberus_scan_display_store_t *live_store;

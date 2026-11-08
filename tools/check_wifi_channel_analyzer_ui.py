@@ -53,7 +53,7 @@ footer = ui.index("    if (current_page == UI_PAGE_WIFI && wifi_mode == UI_WIFI_
 route += "static esp_err_t route_footer(void){\n" + ui[footer:ui.index(";", footer) + 1] + "\nreturn ESP_OK;}\n"
 (out / "analyzer_routes.h").write_text(route)
 assert '#include "wifi_channel_analyzer_ui.h"' in ui
-assert "channel_analyzer_prepare_sleep()) {\n            awake_brightness" in ui
+assert "channel_analyzer_prepare_sleep() && wifi_fox_hunt_prepare_sleep()) {\n            awake_brightness" in ui
 assert "if (learning_tool_active &&\n        !(current_page == UI_PAGE_WIFI && wifi_mode == UI_WIFI_MODE_CHANNEL_ANALYZER)" in ui
 live = (root / "s3_main/main/sentinel_live_ui.h").read_text()
 assert "|| wifi_packet_count_ui_busy() || channel_analyzer_ui_busy()" in live

@@ -425,7 +425,7 @@ static bool live_observe(uint32_t now)
      * C5 Wi-Fi scheduler think its own radio is occupied. */
     live_status_changed = false;
     const bool local_discovery = ble_discovery_page();
-    const bool defer_c5 = live_wifi_capture_defers_c5() || mesh_ui_busy() || wifi_packet_count_ui_busy() || channel_analyzer_ui_busy();
+    const bool defer_c5 = live_wifi_capture_defers_c5() || mesh_ui_busy() || wifi_packet_count_ui_busy() || channel_analyzer_ui_busy() || wifi_fox_hunt_ui_busy();
     const bool owned_wifi = live_session.active == SENTINEL_SCAN_WIFI;
     live_owned_wifi_observation = owned_wifi;
     wifi_scan_checked = ble_scan_checked = ieee802154_scan_checked = true;
@@ -989,7 +989,7 @@ static void live_scan_tick(uint32_t now, bool asleep)
         !live_ble_lease_epoch) return;
     live_last_poll = now;
     changed = live_observe(now) || changed;
-    if (c5_online && !live_wifi_capture_defers_c5() && !mesh_ui_busy() && !wifi_packet_count_ui_busy() && !channel_analyzer_ui_busy()) {
+    if (c5_online && !live_wifi_capture_defers_c5() && !mesh_ui_busy() && !wifi_packet_count_ui_busy() && !channel_analyzer_ui_busy() && !wifi_fox_hunt_ui_busy()) {
         if (live_session.active == SENTINEL_SCAN_DEFENSE && wifi_defense_status.state == CERBERUS_WIFI_DEFENSE_RUNNING)
             (void)refresh_wifi_defense_survey();
         sentinel_scan_tool_t active = live_session.active;

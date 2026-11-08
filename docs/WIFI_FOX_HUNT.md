@@ -1,0 +1,87 @@
+# Wi-Fi Fox Hunt
+
+Rev162 adds a tracker for a selected Wi-Fi transmitter. It uses the C5 receiver
+and the S3 for control, signal history and the display. Signal strength is a
+received measurement; it is not distance, bearing or proof of device identity.
+
+## Upstream reference
+
+The reference is JustCallMeKoko and the ESP32 Marauder contributors' develop
+commit `79cc6bcba1db6679baee1dab2b0c1ad5010e6363`. The upstream branch was
+checked again on 2026-11-08 UTC and still matched that commit.
+
+- `MenuFunctions.cpp:2195–2203` exposes AP, station, WiFi Pineapple and
+  MultiSSID target lists. The existing Cerberus inventories already provide
+  these four sources; they open the tracker directly from their
+  selected-target detail pages.
+- `MenuFunctions.cpp:2155–2161` binds a selected MAC and channel.
+- `WiFiScan.cpp:2846–2847` dispatches the signal mode to its receive path.
+- `WiFiScan.cpp:12438–12466` maintains the target reading and source time.
+- `WiFiScan.cpp:12538–12628` refreshes the signal view and begins a channel
+  search after 1,500 ms without a matching observation.
+
+Source: [Marauder target and signal handling](https://github.com/justcallmekoko/ESP32Marauder/blob/79cc6bcba1db6679baee1dab2b0c1ad5010e6363/esp32_marauder/WiFiScan.cpp#L12438),
+[Marauder source menus](https://github.com/justcallmekoko/ESP32Marauder/blob/79cc6bcba1db6679baee1dab2b0c1ad5010e6363/esp32_marauder/MenuFunctions.cpp#L2195).
+The original MIT notice remains in `LICENSES/ESP32Marauder.txt`.
+
+## Measurement rules
+
+Cerberus matches the selected **transmitter address** before using a
+frame's RSSI. A destination or BSSID match alone cannot establish that the
+selected device sent the frame. Short control frames without a transmitter
+address cannot refresh the target signal. This deliberately avoids assigning
+another transmitter's signal strength to the selected target.
+
+The selected name, address and starting channel are a frozen selection from
+an earlier observation. Starting a hunt clears the live reading. A later
+packet supplies the observed channel and source age; the listening channel
+is a separate field. A missing target starts channel search, not a zero-RSSI
+reading. Channel search uses only SDK-accepted channels and reports skipped
+channels or failed tuning explicitly.
+
+S3 polling may skip intermediate target observations. History therefore
+describes sampled readings, with visible gaps, rather than one point per
+received frame. A duplicate reading retains its age. Transport failures
+clear the current-signal claim, and clock discontinuities trigger cleanup.
+
+## Using the tracker
+
+Open **FOX HUNT** from the detail page of an AP, an observed client, a
+PineScan transmitter or a MultiSSID transmitter. The selected address,
+channel and label are copied before the prior receiver is stopped. **START**
+waits for that receiver to release and starts a fresh session. **STOP**
+retains the result; **RESTART** appends a new segment with a gap. Back waits
+for release and returns to the same source detail. Sleep stops reception;
+waking does not automatically restart it.
+
+AP, PineScan and MultiSSID searches stay in the selected transmitter's band.
+Client searches cover both bands for roaming. The screen shows that scope.
+After 1,500 ms without a target observation, C5 searches supported channels
+with at least 250 ms of successful reception per dwell. A matching
+transmitter stops the search on that channel. The last observation and its
+age remain separate from the currently reported listening channel.
+
+The S3 reads the latest signal at a 100 ms target, renews session status at
+a 500 ms target and draws at most four times per second. Each tick performs
+at most one bounded transport operation. Timing targets are scheduling
+settings, not measured field latency. Up to 160 signal/gap entries live in
+an optional PSRAM workspace that is freed after Back completes.
+
+The C5 shares Monitor and Analyzer's worker, exclusive reservation and radio
+restoration; no new task or second RF receiver is added. Capability 83 adds
+commands 198–202 with exact session identity. Older peers are refused.
+Lost Start replies are resolved by querying the same session, without
+replaying the mutation. Delayed callbacks carry an admission token so an
+old channel or session cannot update a newly armed hunt. Failed restoration
+retains ownership for Stop retry before another scan can start.
+
+This candidate also fixes the Channel Analyzer's cleanup status: an error
+remains visible while release is retried, including when Back is waiting.
+
+## Acceptance
+
+Full software verification is in progress. Physical tracking,
+reacquisition, Stop/Back/restart, sleep/wake and subsequent Wi-Fi/BLE scans
+remain unverified. No radio activity is started by this document or its
+source audit. The coverage ledger must remain partial until those remaining
+checks have evidence.

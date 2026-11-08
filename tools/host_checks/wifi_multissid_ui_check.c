@@ -44,6 +44,15 @@ static uint16_t source_count;
 static esp_err_t status_error,page_error,start_error,follow_error,release_error;
 static bool bad_generation,bad_variant_count,bad_variant_length;
 static bool last_save;
+static bool fox_hold,fox_supported=true;
+static unsigned fox_opens;
+static uint8_t fox_target[6],fox_channel,fox_label[32],fox_length,fox_origin;
+static bool wifi_fox_hunt_supported(void){return fox_supported;}
+static bool wifi_fox_hunt_holds_source(uint8_t origin){assert(origin==UI_WIFI_MODE_MULTISSID);return fox_hold;}
+static esp_err_t wifi_fox_hunt_open(const uint8_t target[6],uint8_t channel,const uint8_t *label,size_t length,uint8_t origin)
+{assert(length<=32&&origin==UI_WIFI_MODE_MULTISSID);memcpy(fox_target,target,6);memcpy(fox_label,label,length);
+ fox_channel=channel;fox_length=(uint8_t)length;fox_origin=origin;++fox_opens;return ESP_OK;}
+
 static void *heap_caps_calloc(size_t count,size_t size,unsigned caps)
 {
     assert(caps==(MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT));
@@ -188,6 +197,17 @@ int main(int argc,char **argv)
     actual_tap(30,380);render();assert(strstr(drawn,"HIDDEN-LIKE: EMPTY / ALL ZERO GROUP"));
     actual_tap(30,380);render();assert(strstr(drawn,"LATEST RAW SSID / 32 BYTES"));save(argv[1],"latest-32-binary");
     masked=true;render();assert(!strstr(drawn,"02:00:00:00:00:01")&&!strstr(drawn,"04:00:00:00:00:02")&&strstr(drawn,"TX CLAIM WIFI-"));save(argv[1],"masked");masked=false;
+
+    /* Fox Hunt receives the frozen transmitter and latest RX channel/SSID,
+     * independently of the selected historical variant. Adjacent gaps are inert. */
+    fox_supported=false;actual_tap(160,380);assert(!fox_opens);fox_supported=true;
+    actual_tap(159,380);actual_tap(228,380);actual_tap(235,380);assert(!fox_opens);
+    actual_tap(160,366);assert(fox_opens==1&&fox_origin==UI_WIFI_MODE_MULTISSID&&fox_channel==36&&fox_length==32);
+    assert(!memcmp(fox_target,painted.evidence.latest.transmitter,6)&&!memcmp(fox_label,painted.evidence.latest.ssid,32));
+    unsigned retained_frees=frees,retained_releases=releases;
+    fox_hold=true;now+=500;actual_tick(now,true);
+    assert(multissid_ui_store&&multissid_ui_detail&&!multissid_ui_exit_pending&&frees==retained_frees&&releases==retained_releases);
+    fox_hold=false;
     unsigned before=stops;actual_tap(150,380);assert(stops==before+1&&multissid_ui_follow_pending&&!follows);
     poll();assert(!follows); /* Stop is asynchronous, retain selected evidence. */
     assert(!memcmp(&painted,&multissid_ui_store->selected,sizeof(painted)));

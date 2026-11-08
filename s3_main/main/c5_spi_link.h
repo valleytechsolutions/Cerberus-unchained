@@ -1,6 +1,7 @@
 #pragma once
 #include "wifi_packet_monitor_session.h"
 #include "wifi_channel_analyzer.h"
+#include "wifi_fox_hunt.h"
 #include "esp_err.h"
 #include "device_identity.h"
 #include "wardrive_stream.h"
@@ -345,6 +346,12 @@ esp_err_t c5_spi_link_wifi_channel_analyzer_hint_peek(uint64_t session,
     cerberus_wifi_channel_analyzer_hint_status_t *out);
 esp_err_t c5_spi_link_wifi_channel_analyzer_hint_read(uint64_t session, uint32_t projection, uint8_t part,
     cerberus_wifi_channel_analyzer_hint_part_t *out);
+esp_err_t c5_spi_link_wifi_fox_hunt_info(cerberus_wifi_fox_hunt_status_t *out);
+esp_err_t c5_spi_link_wifi_fox_hunt_start(const cerberus_wifi_fox_hunt_start_t *request,
+    cerberus_wifi_fox_hunt_status_t *out);
+esp_err_t c5_spi_link_wifi_fox_hunt_status(uint64_t session, cerberus_wifi_fox_hunt_status_t *out);
+esp_err_t c5_spi_link_wifi_fox_hunt_stop(uint64_t session, cerberus_wifi_fox_hunt_status_t *out);
+esp_err_t c5_spi_link_wifi_fox_hunt_signal(uint64_t session, cerberus_wifi_fox_hunt_signal_t *out);
 /* Wi-Fi capture needs C5 firmware revision 45+. `read_frame` verifies CRC32
  * into caller storage and deliberately leaves the record pending until ACK. */
 esp_err_t c5_spi_link_wifi_capture_start(

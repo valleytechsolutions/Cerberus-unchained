@@ -663,6 +663,47 @@ static void prepare_v2_response(const cerberus_spi_frame_t *request)
         }
         break;
     }
+    case CERBERUS_SPI_COMMAND_WIFI_FOX_HUNT_INFO:
+    case CERBERUS_SPI_COMMAND_WIFI_FOX_HUNT_START:
+    case CERBERUS_SPI_COMMAND_WIFI_FOX_HUNT_STATUS:
+    case CERBERUS_SPI_COMMAND_WIFI_FOX_HUNT_STOP: {
+        cerberus_wifi_fox_hunt_status_t payload;
+        if (request->command == CERBERUS_SPI_COMMAND_WIFI_FOX_HUNT_INFO) {
+            if (request->payload_length != 0U) return;
+            cerberus_wifi_fox_hunt_info(&payload);
+        } else if (request->command == CERBERUS_SPI_COMMAND_WIFI_FOX_HUNT_START) {
+            if (request->payload_length != sizeof(cerberus_wifi_fox_hunt_start_t)) return;
+            cerberus_wifi_fox_hunt_start_t query;
+            memcpy(&query, request->payload, sizeof(query));
+            (void)cerberus_wifi_fox_hunt_start(&query, &payload);
+        } else {
+            if (request->payload_length != sizeof(uint64_t)) return;
+            uint64_t session;
+            memcpy(&session, request->payload, sizeof(session));
+            if (request->command == CERBERUS_SPI_COMMAND_WIFI_FOX_HUNT_STOP)
+                (void)cerberus_wifi_fox_hunt_stop(session, &payload);
+            else (void)cerberus_wifi_fox_hunt_status(session, &payload);
+        }
+        prepare_frame_response((cerberus_spi_command_t)request->command,
+            request->sequence, &payload, sizeof(payload));
+        break;
+    }
+    case CERBERUS_SPI_COMMAND_WIFI_FOX_HUNT_SIGNAL: {
+        if (request->payload_length != sizeof(uint64_t)) return;
+        uint64_t session;
+        cerberus_wifi_fox_hunt_signal_t payload;
+        memcpy(&session, request->payload, sizeof(session));
+        esp_err_t error = cerberus_wifi_fox_hunt_signal(session, &payload);
+        if (error == ESP_OK)
+            prepare_frame_response((cerberus_spi_command_t)request->command,
+                request->sequence, &payload, sizeof(payload));
+        else {
+            cerberus_wifi_fox_hunt_signal_error_t failure = {session, error};
+            prepare_frame_response((cerberus_spi_command_t)request->command,
+                request->sequence, &failure, sizeof(failure));
+        }
+        break;
+    }
     case CERBERUS_SPI_COMMAND_WIFI_PACKET_MONITOR_START:
     case CERBERUS_SPI_COMMAND_WIFI_PACKET_MONITOR_STOP:
     case CERBERUS_SPI_COMMAND_WIFI_PACKET_MONITOR_STATUS: {

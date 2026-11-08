@@ -74,6 +74,9 @@ static bool packet_monitor_disable_pending;
 static void packet_monitor_run(void);
 static bool packet_monitor_record_retained(void);
 static void packet_monitor_record_worker_tick(void);
+static atomic_uint wifi_fox_hunt_admission_token;
+static void wifi_fox_hunt_receive(const wifi_promiscuous_pkt_t *packet,
+    wifi_promiscuous_pkt_type_t type, int64_t entered, uint32_t token);
 static void packet_monitor_receive(const wifi_promiscuous_pkt_t *packet,
     wifi_promiscuous_pkt_type_t type);
 static void channel_survey_task(void *arg);
@@ -211,6 +214,7 @@ static void scan_observation_receive(const wifi_promiscuous_pkt_t *packet,
 
 static void wifi_promiscuous_callback(void *buffer, wifi_promiscuous_pkt_type_t type)
 {
+    const uint32_t fox_token=atomic_load_explicit(&wifi_fox_hunt_admission_token,memory_order_acquire);
     const uint32_t mac_token=atomic_load_explicit(&mac_admission_token,memory_order_acquire);
     const int64_t callback_us = esp_timer_get_time();
     if (buffer == NULL) return;
@@ -252,6 +256,7 @@ static void wifi_promiscuous_callback(void *buffer, wifi_promiscuous_pkt_type_t 
     }
     scan_observation_receive(packet, type);
     channel_survey_receive(packet, type);
+    wifi_fox_hunt_receive(packet, type, callback_us, fox_token);
     packet_monitor_receive(packet, type);
     if(cerberus_wifi_capture_service_active()&&rx->rx_state==0&&rx->sig_len>4U)
         cerberus_wifi_capture_service_receive(packet->payload,rx->sig_len-4U,

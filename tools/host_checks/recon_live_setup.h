@@ -42,6 +42,7 @@ static bool mesh_ui_busy(void){return false;}
 /* This scheduler fixture has no selected-target counter session. */
 static bool wifi_packet_count_ui_busy(void){return false;}
 static bool channel_analyzer_ui_busy(void){return false;}
+static bool wifi_fox_hunt_ui_busy(void){return false;}
 static bool live_wifi_capture_tick(uint32_t now,bool allowed,cerberus_wifi_readout_cancel_reason_t reason)
 {(void)now;(void)allowed;(void)reason;return false;}
 static bool live_wifi_capture_begin(uint32_t now)

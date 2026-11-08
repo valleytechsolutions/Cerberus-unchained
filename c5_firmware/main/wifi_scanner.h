@@ -1,6 +1,7 @@
 #pragma once
 #include "wifi_packet_monitor_session.h"
 #include "wifi_channel_analyzer.h"
+#include "wifi_fox_hunt.h"
 
 #include "cerberus_protocol.h"
 #include "csi_protocol.h"
@@ -14,6 +15,12 @@ extern "C" {
 #endif
 
 esp_err_t cerberus_wifi_scanner_init(void);
+void cerberus_wifi_fox_hunt_info(cerberus_wifi_fox_hunt_status_t *out);
+esp_err_t cerberus_wifi_fox_hunt_start(const cerberus_wifi_fox_hunt_start_t *request,
+    cerberus_wifi_fox_hunt_status_t *out);
+esp_err_t cerberus_wifi_fox_hunt_status(uint64_t session, cerberus_wifi_fox_hunt_status_t *out);
+esp_err_t cerberus_wifi_fox_hunt_stop(uint64_t session, cerberus_wifi_fox_hunt_status_t *out);
+esp_err_t cerberus_wifi_fox_hunt_signal(uint64_t session, cerberus_wifi_fox_hunt_signal_t *out);
 void cerberus_wifi_channel_analyzer_info(cerberus_wifi_channel_analyzer_status_t *out);
 esp_err_t cerberus_wifi_channel_analyzer_start(const cerberus_wifi_channel_analyzer_start_t *request,
     cerberus_wifi_channel_analyzer_status_t *out);

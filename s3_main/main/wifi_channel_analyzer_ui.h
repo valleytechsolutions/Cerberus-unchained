@@ -202,14 +202,17 @@ static esp_err_t channel_analyzer_draw(void)
     snprintf(text, sizeof(text), "CH %u / %s", channel, channel <= 14U ? "2.4 GHZ" : "5 GHZ");
     ESP_RETURN_ON_ERROR(draw_centered(88, text, UI_TEXT, 2), TAG, "analyzer channel");
     if (scan->error == ESP_ERR_NOT_SUPPORTED) snprintf(text, sizeof(text), "C5 UPDATE REQUIRED / ANALYZER UNSUPPORTED");
-    else if (s->action != CHANNEL_ANALYZER_NONE || scan->phase == WIFI_ANALYZER_STOP || scan->phase == WIFI_ANALYZER_DRAIN)
-        snprintf(text, sizeof(text), "RELEASING C5%s", s->action == CHANNEL_ANALYZER_BACK ? " / RETURNING TO MENU" : "");
+    else if (s->action != CHANNEL_ANALYZER_NONE || scan->phase == WIFI_ANALYZER_STOP || scan->phase == WIFI_ANALYZER_DRAIN) {
+        if (scan->error != ESP_OK) snprintf(text, sizeof(text), "C5 RELEASE RETRY: %.30s", esp_err_to_name(scan->error));
+        else if (scan->transport_error != ESP_OK) snprintf(text, sizeof(text), "LINK RELEASE RETRY: %.28s", esp_err_to_name(scan->transport_error));
+        else snprintf(text, sizeof(text), "RELEASING C5%s", s->action == CHANNEL_ANALYZER_BACK ? " / RETURNING TO MENU" : "");
+    }
     else if (scan->error != ESP_OK) snprintf(text, sizeof(text), "C5: %.43s", esp_err_to_name(scan->error));
     else if (scan->transport_error != ESP_OK) snprintf(text, sizeof(text), "LINK: %.41s", esp_err_to_name(scan->transport_error));
     else if (scan->phase == WIFI_ANALYZER_INFO || scan->phase == WIFI_ANALYZER_START) snprintf(text, sizeof(text), "WAITING FOR C5 RECEIVER");
     else snprintf(text, sizeof(text), "%s / CHANNEL-WIDE CALLBACKS",
         scan->phase == WIFI_ANALYZER_OFF ? "STOPPED" : "LISTENING");
-    ESP_RETURN_ON_ERROR(draw_centered(110, text, scan->error == ESP_OK ? UI_MUTED : UI_BAD, 1), TAG, "analyzer state");
+    ESP_RETURN_ON_ERROR(draw_centered(110, text, scan->error == ESP_OK && scan->transport_error == ESP_OK ? UI_MUTED : UI_BAD, 1), TAG, "analyzer state");
 
     wifi_channel_analyzer_summary_t summary;
     wifi_channel_analyzer_scan_summary(scan, &summary);

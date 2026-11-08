@@ -20,6 +20,7 @@ static uint64_t clock_ms, session=10U;
 static uint32_t sequence;
 static uint8_t receiver_channel;
 static bool held, hold_stop, oom, masked, have_hint, lose_start;
+static esp_err_t stop_error, stop_transport_error;
 enum {UI_PAGE_WIFI, UI_PAGE_OTHER};
 static unsigned current_page=UI_PAGE_WIFI;
 static ui_wifi_mode_t wifi_mode=UI_WIFI_MODE_MENU;
@@ -54,7 +55,8 @@ static esp_err_t c5_spi_link_wifi_channel_analyzer_start(uint64_t id,uint8_t ch,
 static esp_err_t c5_spi_link_wifi_channel_analyzer_status(uint64_t id,cerberus_wifi_channel_analyzer_status_t *r)
 { ++wire_calls;CHECK(id==session);status(r);return ESP_OK; }
 static esp_err_t c5_spi_link_wifi_channel_analyzer_stop(uint64_t id,cerberus_wifi_channel_analyzer_status_t *r)
-{ ++wire_calls;++stops;CHECK(id==session);if(!hold_stop)held=false;status(r);return ESP_OK; }
+{ ++wire_calls;++stops;CHECK(id==session);if(stop_transport_error)return stop_transport_error;if(!hold_stop)held=false;status(r);
+  if(stop_error){r->state=CERBERUS_WIFI_PACKET_MONITOR_ERROR;r->error_code=stop_error;}return ESP_OK; }
 static esp_err_t c5_spi_link_wifi_channel_analyzer_sample(uint64_t id,uint32_t seq,cerberus_wifi_channel_analyzer_sample_t *r)
 { ++wire_calls;CHECK(id==session&&seq&&seq<=sequence);*r=(cerberus_wifi_channel_analyzer_sample_t){
     .session_id=id,.sequence=seq,.channel=receiver_channel,.frames=seq==1U?0U:seq*10U,.window_us=seq==2U?300000U:100000U};return ESP_OK; }
@@ -79,7 +81,7 @@ static void ticks(unsigned n,bool awake)
 { for(unsigned i=0;i<n;++i){clock_ms+=25U;unsigned before=wire_calls;route_tick(clock_ms,!awake);CHECK(wire_calls-before<=1U);} }
 static void reset(void)
 { CHECK(!channel_analyzer_ui&&!held);clock_ms=1000U;starts=stops=wire_calls=normal_scans=0;sequence=0;have_hint=hold_stop=lose_start=masked=oom=false;
-  c5_status.firmware_version=82U;current_page=UI_PAGE_WIFI;wifi_mode=UI_WIFI_MODE_MENU;fail_after=0; }
+  c5_status.firmware_version=82U;current_page=UI_PAGE_WIFI;wifi_mode=UI_WIFI_MODE_MENU;fail_after=0;stop_error=stop_transport_error=ESP_OK; }
 static void enter(void)
 { reset();route_menu(30,190);CHECK(channel_analyzer_ui&&wifi_mode==UI_WIFI_MODE_CHANNEL_ANALYZER&&starts==0U);ticks(3,true);
   CHECK(held&&starts==1U&&receiver_channel==1U&&channel_analyzer_ui_busy()); }
@@ -128,6 +130,12 @@ static void navigation(void)
     CHECK(!held&&starts==1U&&channel_analyzer_prepare_sleep());leave();
     enter();hold_stop=true;route_launcher();ticks(30,true);CHECK(channel_analyzer_ui&&held&&wifi_mode==UI_WIFI_MODE_CHANNEL_ANALYZER);
     hold_stop=false;ticks(30,true);CHECK(!channel_analyzer_ui&&!held&&wifi_mode==UI_WIFI_MODE_MENU);
+    enter();hold_stop=true;stop_error=ESP_FAIL;route_back(20,420);ticks(30,true);
+    CHECK(channel_analyzer_ui&&held&&draw_detail_page()==ESP_OK&&strstr(drawn,"C5 RELEASE RETRY: ESP_FAIL"));
+    stop_error=ESP_OK;hold_stop=false;ticks(30,true);CHECK(!channel_analyzer_ui&&!held);
+    enter();stop_transport_error=ESP_ERR_TIMEOUT;route_back(20,420);ticks(30,true);
+    CHECK(channel_analyzer_ui&&held&&draw_detail_page()==ESP_OK&&strstr(drawn,"LINK RELEASE RETRY: ESP_ERR_TIMEOUT"));
+    stop_transport_error=ESP_OK;ticks(30,true);CHECK(!channel_analyzer_ui&&!held);
     enter();hold_stop=true;current_page=UI_PAGE_OTHER;ticks(30,true);CHECK(channel_analyzer_ui&&held);
     hold_stop=false;ticks(30,true);CHECK(!channel_analyzer_ui&&!held&&current_page==UI_PAGE_OTHER);
     /* Channel stepping wraps between the supported 2.4/5 GHz endpoints. */

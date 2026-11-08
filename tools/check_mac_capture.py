@@ -15,7 +15,7 @@ start = scanner.index('static void wifi_promiscuous_callback(void *buffer, wifi_
 end = scanner.index('    /* Snapshot admission', start)
 prefix = scanner[start:end]
 assert prefix.index('mac_admission_token') < prefix.index('esp_timer_get_time()') < prefix.index('mac_receive(')
-(out / 'mac_callback_entry.h').write_text(prefix + '    (void)rx; (void)relation_epoch;\n}\n')
+(out / 'mac_callback_entry.h').write_text(prefix + '    (void)fox_token; (void)rx; (void)relation_epoch;\n}\n')
 env = dict(os.environ, ZIG_GLOBAL_CACHE_DIR=str(out / 'zig-cache'))
 exe = out / ('mac-capture-check.exe' if os.name == 'nt' else 'mac-capture-check')
 subprocess.run([sys.executable, '-m', 'ziglang', 'cc', '-std=c11', '-O1', '-Wall', '-Wextra', '-Werror',

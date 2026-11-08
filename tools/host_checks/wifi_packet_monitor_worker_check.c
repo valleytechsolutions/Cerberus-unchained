@@ -1,16 +1,23 @@
 #undef NDEBUG
 #include "wifi_packet_monitor_core.h"
 #include "wifi_channel_analyzer.h"
+#include "wifi_fox_hunt.h"
 #include <assert.h>
 #include <setjmp.h>
 #include <stdatomic.h>
 static atomic_bool packet_count_radio_reserved;
+static atomic_uint wifi_fox_hunt_admission_token;
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "esp_err.h"
 typedef unsigned TickType_t;
+typedef struct {uint8_t schan, nchan; unsigned policy; uint32_t wifi_5g_channel_mask;} wifi_country_t;
+#define WIFI_COUNTRY_POLICY_MANUAL 1U
+static wifi_country_t test_country = {1U, 11U, 0U, 0U};
+static bool fail_country;
+static int esp_wifi_get_country(wifi_country_t *out) {*out=test_country;return fail_country ? -1 : 0;}
 typedef int wifi_band_mode_t;
 typedef int wifi_second_chan_t;
 typedef void *TaskHandle_t;
@@ -92,6 +99,9 @@ static bool fail_ctrl_filter_restore;
 static bool fail_filter_restore, record_heap_fail;
 static bool record_test_data;
 static void (*analyzer_test_delay)(void);
+static void (*fox_test_delay_hook)(void);
+static uint8_t reject_tune_channel;
+static bool fox_test_delay(TickType_t delay);
 static size_t record_heap_bytes, record_heap_free = 65536U;
 #define MALLOC_CAP_INTERNAL 1U
 #define MALLOC_CAP_8BIT 2U
@@ -126,6 +136,7 @@ static TickType_t xTaskGetTickCount(void) { return clock_ms; }
 static void vTaskDelayUntil(TickType_t *last, TickType_t period);
 static void vTaskDelay(TickType_t delay)
 {
+    if (fox_test_delay(delay)) return;
     if (delay == 20U) {
         if(atomic_load(&packet_count_radio_reserved)){clock_ms+=delay;atomic_store(&packet_count_radio_reserved,false);return;}
         if (atomic_load(&probe_sniff_radio_reserved)) {
@@ -168,6 +179,7 @@ static esp_err_t esp_wifi_set_band_mode(wifi_band_mode_t band)
 { if (fail_restore_band) return ESP_FAIL; current_band = band; return ESP_OK; }
 static esp_err_t esp_wifi_set_channel(uint8_t channel, wifi_second_chan_t second)
 {
+    if (channel == reject_tune_channel) return ESP_FAIL;
     if (channel == 6U && fail_restore_channel) return ESP_FAIL;
     current_channel = channel; current_second = second; return ESP_OK;
 }
@@ -202,9 +214,25 @@ static esp_err_t esp_wifi_set_promiscuous(bool enabled)
 
 #include "wifi_packet_monitor_service.h"
 
+static bool fox_test_delay(TickType_t delay)
+{
+    if (!wifi_fox_hunt_mode || !atomic_load(&packet_monitor_radio_reserved)) return false;
+    assert(delay==50U && !locked);
+    clock_ms+=delay;++samples;
+    if (fox_test_delay_hook) fox_test_delay_hook();
+    if (stop_after && samples>=stop_after) {
+        cerberus_wifi_fox_hunt_status_t out;
+        assert(cerberus_wifi_fox_hunt_stop(packet_monitor_session_id,&out)==ESP_OK);
+    }
+    return true;
+}
+
 static void cancel_receive_owner(void)
 {
-    if (channel_analyzer_mode) {
+    if (wifi_fox_hunt_mode) {
+        cerberus_wifi_fox_hunt_status_t reply;
+        assert(cerberus_wifi_fox_hunt_stop(packet_monitor_session_id, &reply) == ESP_OK);
+    } else if (channel_analyzer_mode) {
         cerberus_wifi_channel_analyzer_status_t reply;
         assert(cerberus_wifi_channel_analyzer_stop(packet_monitor_session_id, &reply) == ESP_OK);
     } else assert(cerberus_wifi_packet_monitor_stop(packet_monitor_status.generation) == ESP_OK);
@@ -273,6 +301,7 @@ static void dispatch(void)
 }
 static void reset(void)
 {
+    (void)wifi_fox_hunt_receive;
     assert(!locked);
     assert(!packet_monitor_record_context && !record_heap_bytes);
     packet_monitor_record_requested = false;
@@ -291,6 +320,13 @@ static void reset(void)
     memset(&packet_monitor_status, 0, sizeof(packet_monitor_status));
     memset(&packet_receive_history, 0, sizeof(packet_receive_history));
     channel_analyzer_mode = channel_analyzer_saturated = false;
+    wifi_fox_hunt_mode=false;wifi_fox_hunt_request=(cerberus_wifi_fox_hunt_start_t){0};
+    wifi_fox_hunt_latest=(cerberus_wifi_fox_hunt_signal_t){0};
+    wifi_fox_hunt_observed_us=-1;wifi_fox_hunt_armed_us=wifi_fox_hunt_clock_us=0;
+    wifi_fox_hunt_sweeps=0;wifi_fox_hunt_searching=wifi_fox_hunt_skipped=false;
+    wifi_fox_hunt_tune_error=ESP_OK;wifi_fox_hunt_channel_count=0;
+    atomic_store(&wifi_fox_hunt_admission_token,0U);fox_test_delay_hook=NULL;
+    test_country=(wifi_country_t){1U,11U,0U,0U};fail_country=false;reject_tune_channel=0;
     atomic_store(&channel_analyzer_clock_invalid, false);
     channel_analyzer_receive_session = 0U; channel_analyzer_frames = 0U;
     memset(&channel_analyzer_hint, 0, sizeof(channel_analyzer_hint));

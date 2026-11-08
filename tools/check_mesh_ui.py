@@ -50,8 +50,8 @@ menu = ui[begin:ui.index('\n    if (y < 364U', begin)]
 live = (root / "s3_main/main/sentinel_live_ui.h").read_text()
 begin = live.index('static bool live_is_view(void)')
 live_view = live[begin:live.index('\nstatic void live_status', begin)]
-assert 'const bool defer_c5 = live_wifi_capture_defers_c5() || mesh_ui_busy() || wifi_packet_count_ui_busy() || channel_analyzer_ui_busy();' in live
-assert 'if (c5_online && !live_wifi_capture_defers_c5() && !mesh_ui_busy() && !wifi_packet_count_ui_busy() && !channel_analyzer_ui_busy())' in live
+assert 'const bool defer_c5 = live_wifi_capture_defers_c5() || mesh_ui_busy() || wifi_packet_count_ui_busy() || channel_analyzer_ui_busy() || wifi_fox_hunt_ui_busy();' in live
+assert 'if (c5_online && !live_wifi_capture_defers_c5() && !mesh_ui_busy() && !wifi_packet_count_ui_busy() && !channel_analyzer_ui_busy() && !wifi_fox_hunt_ui_busy())' in live
 begin = ui.index('            if (mesh_archive_is_file(file_entries[index].name)) {')
 file_route = ui[begin:ui.index('            } else if', begin)] + '}'
 file_route = file_route.replace('file_entries[index].name', 'name')

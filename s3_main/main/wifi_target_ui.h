@@ -100,6 +100,7 @@ static cerberus_wifi_target_view_t wifi_target_view(char identifier[24],char met
             cerberus_wifi_packet_monitor_channel_valid(wifi_selected_result.channel),
         .can_csi=c5_online&&c5_status.firmware_version>=CERBERUS_CSI_MIN_FIRMWARE&&
             cerberus_csi_target_valid(&csi_target),
+        .can_fox_hunt=wifi_fox_hunt_supported(),
     };
 }
 static esp_err_t draw_wifi_target(void)
@@ -157,6 +158,11 @@ static void wifi_target_handle_tap(uint16_t x,uint16_t y)
     else if(action==CERBERUS_WIFI_TARGET_CSI){
         esp_err_t error=csi_open_selected();
         if(error!=ESP_OK)snprintf(wifi_target_message,sizeof(wifi_target_message),"CSI: %s",esp_err_to_name(error));
+    }
+    else if(action==CERBERUS_WIFI_TARGET_FOX_HUNT){
+        esp_err_t error=wifi_fox_hunt_open(wifi_selected_result.bssid,wifi_selected_result.channel,
+            (const uint8_t *)wifi_selected_result.ssid,strnlen(wifi_selected_result.ssid,32U),UI_WIFI_MODE_TARGET);
+        if(error!=ESP_OK)snprintf(wifi_target_message,sizeof(wifi_target_message),"FOX HUNT: %.37s",esp_err_to_name(error));
     }
     else if(action==CERBERUS_WIFI_TARGET_DETAILS)wifi_mode=UI_WIFI_MODE_DETAIL;
     else if(action==CERBERUS_WIFI_TARGET_CHANGE){

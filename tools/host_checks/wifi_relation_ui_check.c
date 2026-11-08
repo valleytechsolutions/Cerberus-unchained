@@ -41,6 +41,12 @@ static unsigned packet_count_entries;
 static wifi_packet_count_selection_t packet_count_selection;
 static esp_err_t wifi_packet_count_open_selection(const wifi_packet_count_selection_t *selection,unsigned origin)
 {assert(origin==UI_WIFI_MODE_OBSERVED_CLIENTS);packet_count_selection=*selection;++packet_count_entries;return ESP_OK;}
+static unsigned fox_opens;
+static uint8_t fox_target[6],fox_channel,fox_label[32],fox_length,fox_origin;
+static bool wifi_fox_hunt_supported(void){return true;}
+static esp_err_t wifi_fox_hunt_open(const uint8_t target[6],uint8_t channel,const uint8_t *label,size_t length,uint8_t origin)
+{assert(length<=32);memcpy(fox_target,target,6);memcpy(fox_label,label,length);
+ fox_channel=channel;fox_length=(uint8_t)length;fox_origin=origin;++fox_opens;return ESP_OK;}
 static bool dual_wifi_return_to_view;
 /* The retained parent footer can inspect this unrelated, closed view. */
 enum { CHANNEL_ANALYZER_BACK };
@@ -314,6 +320,11 @@ int main(int argc,char **argv)
         !memcmp(packet_count_selection.bssid,station.bssid,6)&&
         packet_count_selection.discovery_publication==wifi_relation_ui->selected_publication);
     assert(starts==before_starts&&steps==before_steps&&station_entries==before_station_entries&&!writes);
+    handle_tap(156,380);handle_tap(163,380);handle_tap(312,380);assert(!fox_opens);
+    handle_tap(164,378);assert(fox_opens==1&&fox_origin==UI_WIFI_MODE_OBSERVED_CLIENTS&&fox_channel==station.channel);
+    assert(!memcmp(fox_target,station.station,6)&&fox_length==16&&!memcmp(fox_label,"OBSERVED STATION",16));
+    assert(wifi_relation_ui->detail&&wifi_relation_ui->detail_index==4);
+
     handle_tap(160,442);assert(!wifi_relation_ui->detail);
     wifi_relation_tap(170,390);assert(writes==1&&strstr(written,"station_rssi,ap_rssi")&&strstr(written,",-80,-30,900000,950000,2\n"));
     assert(allocations==2&&frees==1); /* Persistent PSRAM store, one temporary report. */

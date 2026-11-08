@@ -166,8 +166,10 @@ static bool multissid_tick(uint32_t now, bool visible)
 {
     if (!multissid_ui_open) return false;
     if (!visible) {
-        multissid_ui_exit_pending = true;
-        multissid_request_stop();
+        bool retained = wifi_fox_hunt_holds_source(UI_WIFI_MODE_MULTISSID);
+        if (!retained) multissid_ui_exit_pending = true;
+        /* Retained Fox Hunt sources need no repeated Stop after release. */
+        if (!retained || multissid_ui_status.capture.busy) multissid_request_stop();
     }
     if ((uint32_t)(now - multissid_ui_last_poll) < 500U) return false;
     multissid_ui_last_poll = now;
@@ -276,11 +278,13 @@ static esp_err_t multissid_draw_detail(void)
     ESP_RETURN_ON_ERROR(multissid_line(350, message,
         multissid_ui_message[0] || multissid_ui_status.capture.error_code != ESP_OK ? UI_BAD : UI_MUTED), TAG, "multi note");
     snprintf(line, sizeof(line), "SSID %u/4 >", multissid_ui_variant + 1U);
-    ESP_RETURN_ON_ERROR(cerberus_ui_widget_draw_button((cerberus_ui_rect_t){8,366,96,42}, line, 1, true, UI_WIDGET_THEME), TAG, "multi variants");
+    ESP_RETURN_ON_ERROR(cerberus_ui_widget_draw_button((cerberus_ui_rect_t){8,366,68,42}, line, 1, true, UI_WIDGET_THEME), TAG, "multi variants");
     bool pending = multissid_ui_follow_pending || multissid_ui_list_pending || multissid_ui_exit_pending;
-    ESP_RETURN_ON_ERROR(cerberus_ui_widget_draw_button((cerberus_ui_rect_t){112,366,96,42}, "FOLLOW", 1,
+    ESP_RETURN_ON_ERROR(cerberus_ui_widget_draw_button((cerberus_ui_rect_t){84,366,68,42}, "FOLLOW", 1,
         !pending && !(multissid_ui_status.following && multissid_ui_status.capture.busy) && multissid_supported(), UI_WIDGET_THEME), TAG, "multi follow");
-    return cerberus_ui_widget_draw_button((cerberus_ui_rect_t){216,366,96,42}, "STOP", 1,
+    ESP_RETURN_ON_ERROR(cerberus_ui_widget_draw_button((cerberus_ui_rect_t){160,366,68,42}, "FOX HUNT", 1,
+        !pending && wifi_fox_hunt_supported(),UI_WIDGET_THEME),TAG,"multi fox hunt");
+    return cerberus_ui_widget_draw_button((cerberus_ui_rect_t){236,366,76,42}, "STOP", 1,
         multissid_ui_status.capture.busy || multissid_ui_follow_pending, UI_WIDGET_THEME);
 }
 
@@ -340,12 +344,16 @@ static void multissid_tap(uint16_t x, uint16_t y)
     if (multissid_ui_exit_pending || multissid_ui_list_pending) return;
     if (multissid_ui_detail) {
         if (y < 366U || y >= 408U) return;
-        if (x >= 8U && x < 104U) multissid_ui_variant = (uint8_t)((multissid_ui_variant + 1U) % 4U);
-        else if (x >= 112U && x < 208U && !multissid_ui_follow_pending &&
+        if (x >= 8U && x < 76U) multissid_ui_variant = (uint8_t)((multissid_ui_variant + 1U) % 4U);
+        else if (x >= 84U && x < 152U && !multissid_ui_follow_pending &&
             !(multissid_ui_status.following && multissid_ui_status.capture.busy) && multissid_supported()) {
             if (multissid_busy()) { cerberus_s3_multissid_stop(); multissid_ui_follow_pending = true; }
             else multissid_start_follow();
-        } else if (x >= 216U && x < 312U) multissid_request_stop();
+        } else if (x >= 160U && x < 228U && !multissid_ui_follow_pending && wifi_fox_hunt_supported() && multissid_ui_store) {
+            const cerberus_wifi_beacon_observation_t *beacon=&multissid_ui_store->selected.evidence.latest;
+            esp_err_t error=wifi_fox_hunt_open(beacon->transmitter,beacon->rx_channel,beacon->ssid,beacon->ssid_length,UI_WIFI_MODE_MULTISSID);
+            if(error!=ESP_OK)multissid_ui_error("FOX HUNT",error);
+        } else if (x >= 236U && x < 312U) multissid_request_stop();
         return;
     }
     if (x >= 8U && x < 312U && y >= 138U && y < 326U && (y - 138U) % 48U < 44U) {

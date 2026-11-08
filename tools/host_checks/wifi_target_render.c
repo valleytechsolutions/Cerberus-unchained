@@ -36,6 +36,14 @@ static bool packet_monitor_from_target;
 static unsigned monitor_entries;
 static unsigned csi_entries;
 static unsigned relation_entries;
+static unsigned fox_entries;
+static uint8_t fox_target[6],fox_channel,fox_label[32],fox_length;
+static esp_err_t fox_error;
+static bool wifi_fox_hunt_supported(void)
+{return c5_online&&c5_status.firmware_version>=CERBERUS_WIFI_FOX_HUNT_MIN_FIRMWARE;}
+static esp_err_t wifi_fox_hunt_open(const uint8_t target[6],uint8_t channel,const uint8_t *label,size_t length,uint8_t origin)
+{assert(origin==UI_WIFI_MODE_TARGET&&length<=32);++fox_entries;memcpy(fox_target,target,6);
+ fox_channel=channel;fox_length=(uint8_t)length;memcpy(fox_label,label,length);return fox_error;}
 static bool dual_wifi_return_to_view;
 static unsigned dual_reopens;
 static void dual_wifi_live_open(bool start_scan)
@@ -127,6 +135,18 @@ int main(int argc,char **argv)
     c5_online=true;wifi_mode=UI_WIFI_MODE_TARGET;
     save(argv[1],"observed-clients");
     wifi_target_handle_tap(30,320);assert(wifi_mode==UI_WIFI_MODE_DETAIL);
+    wifi_mode=UI_WIFI_MODE_TARGET;
+    c5_status.firmware_version=CERBERUS_WIFI_FOX_HUNT_MIN_FIRMWARE-1U;
+    wifi_target_handle_tap(164,296);assert(!fox_entries);
+    c5_status.firmware_version=CERBERUS_WIFI_FOX_HUNT_MIN_FIRMWARE;
+    wifi_target_handle_tap(156,296);wifi_target_handle_tap(163,296);
+    wifi_target_handle_tap(308,296);wifi_target_handle_tap(164,326);assert(!fox_entries);
+    wifi_target_handle_tap(164,296);assert(fox_entries==1&&fox_channel==wifi_selected_result.channel&&
+        !memcmp(fox_target,wifi_selected_result.bssid,6)&&fox_length==strlen(wifi_selected_result.ssid)&&
+        !memcmp(fox_label,wifi_selected_result.ssid,fox_length));
+    fox_error=ESP_ERR_NO_MEM;wifi_target_handle_tap(307,325);
+    assert(fox_entries==2&&strstr(wifi_target_message,"FOX HUNT: ESP_ERR_NO_MEM"));
+    fox_error=ESP_OK;wifi_target_message[0]=0;save(argv[1],"fox-ready");
     c5_status.firmware_version=CERBERUS_WIFI_PACKET_MONITOR_SESSION_MIN_FIRMWARE-1U;
     v=wifi_target_view(id,metadata);assert(!v.can_packet_monitor);
     c5_status.firmware_version=CERBERUS_WIFI_PACKET_MONITOR_SESSION_MIN_FIRMWARE;

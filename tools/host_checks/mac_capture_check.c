@@ -36,7 +36,7 @@ static bool locked,critical,scanner_ready=true,station_reserved,foreign,test_run
 /* Separate passive Probe owner; the actual admission body below checks it. */
 static atomic_bool probe_sniff_radio_reserved;
 static atomic_bool mac_radio_reserved,csi_radio_reserved,channel_survey_radio_reserved;
-static atomic_uint mac_admission_token;
+static atomic_uint mac_admission_token, wifi_fox_hunt_admission_token;
 static cerberus_wifi_scan_status_payload_t scan_status;
 static cerberus_wifi_relation_table_t relation_capture;
 static atomic_bool relation_receiving;
