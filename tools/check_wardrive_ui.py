@@ -40,7 +40,8 @@ begin = display.index("static const uint8_t *font5x7(")
 
 env = dict(os.environ, ZIG_GLOBAL_CACHE_DIR=str(out / "zig-cache"))
 exe = out / "wardrive-ui-check.exe"
-subprocess.run([sys.executable, "-m", "ziglang", "cc", "-std=c11", "-O1", "-Wall", "-Wextra", "-Werror",
+posix_flags = [] if os.name == "nt" else ["-D_POSIX_C_SOURCE=200809L"]
+subprocess.run([sys.executable, "-m", "ziglang", "cc", "-std=c11", *posix_flags, "-O1", "-Wall", "-Wextra", "-Werror",
     "-I", str(out), "-I", str(root / "tools/host_checks/stubs"),
     "-I", str(root / "s3_main/main"), "-I", str(root / "shared"),
     str(root / "tools/host_checks/wardrive_ui_check.c"),
@@ -49,7 +50,7 @@ subprocess.run([sys.executable, "-m", "ziglang", "cc", "-std=c11", "-O1", "-Wall
 subprocess.run([str(exe), str(out / "wardrive")], check=True, env=env)
 
 areas = out / "wardrive-areas-ui-check.exe"
-subprocess.run([sys.executable, "-m", "ziglang", "cc", "-std=c11", "-O1", "-Wall", "-Wextra", "-Werror",
+subprocess.run([sys.executable, "-m", "ziglang", "cc", "-std=c11", *posix_flags, "-O1", "-Wall", "-Wextra", "-Werror",
     "-I", str(out), "-I", str(root / "tools/host_checks/stubs"),
     "-I", str(root / "s3_main/main"), "-I", str(root / "shared"),
     str(root / "tools/host_checks/wardrive_geofence_ui_check.c"),

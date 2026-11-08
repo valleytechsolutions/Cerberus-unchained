@@ -31,8 +31,9 @@ compiler = ([sys.executable, "-m", "ziglang", "cc"] if use_zig
 environment = os.environ.copy()
 if not use_zig:
     environment["PATH"] = str(mingw_bin) + os.pathsep + environment.get("PATH", "")
+posix_flags = [] if os.name == "nt" else ["-D_POSIX_C_SOURCE=200809L"]
 subprocess.run(compiler + [
-    "-std=c11", "-O1", "-Wall", "-Wextra", "-Werror",
+    "-std=c11", *posix_flags, "-O1", "-Wall", "-Wextra", "-Werror",
     "-I", str(out), "-I", str(root / "tools/host_checks/stubs"),
     "-I", str(root / "s3_main/main"),
     "-I", str(root / "shared"),

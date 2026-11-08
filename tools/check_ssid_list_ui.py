@@ -30,7 +30,8 @@ exe = out / ("ssid-list-ui-check.exe" if os.name == "nt" else "ssid-list-ui-chec
 sources = ["tools/host_checks/ssid_list_ui_check.c", "s3_main/main/ssid_list.c",
     "s3_main/main/wifi_marauder.c", "s3_main/main/wifi_archive.c", "s3_main/main/keyboard.c",
     "s3_main/main/sentinel_tools.c", "s3_main/main/ui_widgets.c"]
-subprocess.run([sys.executable, "-m", "ziglang", "cc", "-std=c11", "-O1", "-Wall", "-Wextra", "-Werror",
+posix_flags = [] if os.name == "nt" else ["-D_POSIX_C_SOURCE=200809L"]
+subprocess.run([sys.executable, "-m", "ziglang", "cc", "-std=c11", *posix_flags, "-O1", "-Wall", "-Wextra", "-Werror",
     "-I", str(out), "-I", str(root / "tools/host_checks/stubs"), "-I", str(root / "s3_main/main"),
     "-I", str(root / "shared"), *[str(root / source) for source in sources], "-o", str(exe)], check=True, env=env)
 subprocess.run([str(exe), str(out)], check=True, env=env)
