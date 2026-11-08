@@ -27,11 +27,40 @@ Bluetooth claim followed by another Wi-Fi scan. A separate stopped-driver case
 fails deinitialization, confirms ownership remains held, then verifies that
 recovery retries only deinitialization before release.
 
-The focused scanner and dual-scan coordinator checks pass. Complete host/native
-validation and installation are pending at this source checkpoint. No new task,
-result bank, radio operation or wire command is added; C5 capability remains 81.
-Physical Wi-Fi/Bluetooth transition and sustained-use checks remain separate.
+All 171 host suites and five native targets passed on unchanged inputs. The
+matched package also passed its source, SDK/toolchain and image checks.
+No new task, result bank, radio operation or wire command is added; C5
+capability remains 81. Physical Wi-Fi/Bluetooth transition and sustained-use
+checks remain separate.
 
 The independent review also compared the GPS qualification changes and found
 no actionable regression in the reviewed cases. This is a review result,
 not proof of every receiver's output or field behavior.
+
+## Installed checkpoint
+
+Rev160 is installed from source `5cefe1f4432ebabe41b5e8b5de34d61683b4c731`,
+tagged `checkpoint/rev160-scan-startup-recovery`. Package:
+`cerberus-unchained-0.1.0-dev.rev160-20261108T072137Z`.
+Manifest SHA-256:
+`411c697e885abde64be1e5b35e264b357502460706ab3a48c4a4cf57054462ab`.
+
+Fresh S3/C5 backups matched the installed rev159 baseline and verified against
+flash. All nine image writes passed verification. Both processors' live build
+descriptors match the packaged versions, SDK, compile times and full ELF hashes.
+
+Two idle captures 58.3 seconds apart showed advancing uptimes, mounted SD and
+unchanged free memory: 134,244 internal bytes on S3, a 94,208-byte largest
+internal block and 1,426,140 bytes of PSRAM. S3 had ten tasks; the C5 snapshot
+reported 53,268 free bytes and one boot. Four initial READY timeouts/fallbacks
+were present in both captures; mutex, READY-fall, READY-high and driver errors
+were zero. The monitored error counters did not increase. The saved home
+Wi-Fi, WiGLE and WDGWars profile readiness flags remain set. No upload was
+requested.
+
+This establishes the tested startup-cleanup logic and paired idle installation.
+It does not inject a real SDK startup failure on the board or establish
+sustained RF/GUI behavior. Repeated Wi-Fi/Bluetooth transitions and earlier
+Channel Activity/GPS field checks remain pending. The distinct
+[Channel Analyzer workflow](CHANNEL_ANALYZER_PLAN.md) is also still pending;
+the source audit records its requirements without adding a placeholder menu.

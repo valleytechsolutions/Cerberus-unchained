@@ -29,22 +29,19 @@ reference revisions and the distinction between adapted code and independently
 implemented workflows. This acknowledgment does not change any license or
 imply upstream endorsement of Cerberus Unchained.
 
-**Local development checkpoint:** `0.1.0-dev.rev159` is installed on the
+**Local development checkpoint:** `0.1.0-dev.rev160` is installed on the
 development board with onboard C5 capability 81. It includes the
 [Channel Activity graph and measured receive windows](docs/CHANNEL_ACTIVITY.md),
 rejects estimated or contradictory GPS fixes before Wardriving starts or
-writes a row, and lets the existing S3 scan worker retry failed cleanup.
+writes a row, and lets the existing S3 scan worker retry failed cleanup,
+including recovery when Wi-Fi startup fails before the driver starts.
 All 171 host suites and five firmware targets passed; both live build
-fingerprints match the package. Two idle captures 61.6 seconds apart showed
+fingerprints match the package. Two idle captures 58.3 seconds apart showed
 mounted SD, unchanged free memory and no increase in the listed SPI error
 counters. The saved upload profile loads. Physical graph/navigation, GPS
 recording and repeated radio-transition checks remain pending. See
-[GPS qualification, radio recovery and installation evidence](docs/GPS_AND_RADIO_RECOVERY.md).
-
-Rev160 is a development candidate correcting cleanup after an early S3 Wi-Fi
-startup failure. The worker can reach deinitialization when the driver never
-started, while still retaining ownership if deinitialization fails. See
-[startup recovery and its regression checks](docs/SCAN_STARTUP_RECOVERY.md).
+[startup recovery and installation evidence](docs/SCAN_STARTUP_RECOVERY.md),
+with the earlier [GPS qualification and retry changes](docs/GPS_AND_RADIO_RECOVERY.md).
 
 **Tools → System health → DEVICE INFO** reports each processor's application
 build, SDK, partition and memory/status information. The owner confirmed

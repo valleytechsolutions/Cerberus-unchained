@@ -87,9 +87,9 @@ checks. The linked S3 scan worker's entry frame is 288 bytes within its existing
 4 KiB task allocation; the GPS feed entry frame is 64 bytes. These measurements
 are individual function frames, not full call-tree or runtime stack bounds.
 
-## Installed checkpoint
+## Rev159 installation checkpoint
 
-Rev159 is installed from source `090993024bf3b439964b39049ae93804fa710411`,
+Rev159 was installed from source `090993024bf3b439964b39049ae93804fa710411`,
 tagged `checkpoint/rev159-gps-radio-recovery`. Package:
 `cerberus-unchained-0.1.0-dev.rev159-20261108T065320Z`.
 Manifest SHA-256:
@@ -115,3 +115,7 @@ graph also needs physical 2.4/5 GHz and navigation checks. Injected host faults
 demonstrate recovery logic, not the frequency or recoverability of actual SDK
 failures in the field. Loaded memory, moving capture and long-session behavior
 remain separate checks. Full Marauder option and feature parity remains open.
+
+The current installed [rev160 checkpoint](SCAN_STARTUP_RECOVERY.md) includes
+these changes and corrects cleanup after an early Wi-Fi startup failure. The
+physical acceptance limits above remain open.
