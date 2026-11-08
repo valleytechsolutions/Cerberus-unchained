@@ -189,6 +189,9 @@ static inline void cerberus_remote_id_ui_messages(const cerberus_remote_id_ui_vi
         !view->selection.present?"SOURCE ABSENT / RETAINED GROUP":"PRESENT / SELF-REPORTED GROUP");
     if(!present)return;
     char a[20],b[20],c[20];
+    /* Decoded wire limits need at most seven altitude characters, six for
+     * horizontal speed, five for vertical speed and three for direction.
+     * Bound combined lines explicitly without shortening valid numbers. */
     if(group==SENTINEL_WATCH_PROFILE_BASIC){
         sentinel_watch_profile_basic_t v;
         if(!sentinel_watch_profile_basic(profile,&v))return;
@@ -217,14 +220,14 @@ static inline void cerberus_remote_id_ui_messages(const cerberus_remote_id_ui_vi
             }else snprintf(out->detail[4],49,"POSITION UNAVAILABLE");
             cerberus_remote_id_ui_fixed(a,sizeof(a),v.pressure_altitude_dm,10U,1U,v.pressure_valid);
             cerberus_remote_id_ui_fixed(b,sizeof(b),v.geo_altitude_dm,10U,1U,v.geo_valid);
-            snprintf(out->detail[6],49,"ALT M: PRESS %s / GEO %s",a,b);
+            snprintf(out->detail[6],49,"ALT M: PRESS %.7s / GEO %.7s",a,b);
             cerberus_remote_id_ui_fixed(a,sizeof(a),v.height_dm,10U,1U,v.height_valid);
             snprintf(out->detail[7],49,"HEIGHT %s M / %s",a,v.height_agl?"AGL":"TAKEOFF");
         }
         cerberus_remote_id_ui_fixed(a,sizeof(a),(int32_t)v.speed_qms*25,100U,2U,v.speed_valid);
         cerberus_remote_id_ui_fixed(b,sizeof(b),(int32_t)v.vertical_speed_half_ms*5,10U,1U,v.vertical_speed_valid);
         if(v.direction_valid)snprintf(c,sizeof(c),"%u",v.direction_deg);else snprintf(c,sizeof(c),"N/A");
-        snprintf(out->detail[8],49,"M/S H:%s V:%s / DIR:%s",a,b,c);
+        snprintf(out->detail[8],49,"M/S H:%.6s V:%.5s / DIR:%.3s",a,b,c);
         static const char *hacc[]={"?","18.52KM","7.408KM","3.704KM","1.852KM","926M","555.6M",
             "185.2M","92.6M","30M","10M","3M","1M"};
         static const char *vacc[]={"?","150M","45M","25M","10M","3M","1M"};
@@ -270,7 +273,7 @@ static inline void cerberus_remote_id_ui_messages(const cerberus_remote_id_ui_vi
             snprintf(out->detail[6],49,"OP ALTITUDE %s M / WGS84 HAE",a);
             cerberus_remote_id_ui_fixed(a,sizeof(a),v.floor_dm,10U,1U,v.floor_valid);
             cerberus_remote_id_ui_fixed(b,sizeof(b),v.ceiling_dm,10U,1U,v.ceiling_valid);
-            snprintf(out->detail[8],49,"AREA M: FLOOR %s / CEILING %s",a,b);
+            snprintf(out->detail[8],49,"AREA M: FLOOR %.7s / CEILING %.7s",a,b);
         }
         snprintf(out->detail[7],49,"AREA COUNT %u / RADIUS %u M",v.area_count,v.radius_m);
         snprintf(out->detail[9],49,"EU CATEGORY %u / CLASS %u",v.category_eu,v.class_eu);
