@@ -181,7 +181,9 @@ static esp_err_t scan_cleanup_step(scan_cleanup_t *cleanup)
     }
     if (cleanup->clear_needed) {
         error = esp_wifi_clear_ap_list();
-        if (error != ESP_OK) return error;
+        /* A stopped driver cannot service this API. Deinit below still has
+         * to acknowledge resource release before we give up the owner. */
+        if (error != ESP_OK && error != ESP_ERR_WIFI_NOT_STARTED) return error;
         cleanup->clear_needed = false;
     }
     if (cleanup->wifi_started) {
@@ -275,7 +277,7 @@ static void scan_worker(void *unused)
     }
 
     scan_cleanup_t remaining = {.scan_started = started_scan && !complete,
-        .clear_needed = initialized, .wifi_started = started_wifi,
+        .clear_needed = started_wifi, .wifi_started = started_wifi,
         .registered = registered, .initialized = initialized, .handler = handler};
     esp_err_t cleanup;
     while ((cleanup = scan_cleanup_step(&remaining)) != ESP_OK) {

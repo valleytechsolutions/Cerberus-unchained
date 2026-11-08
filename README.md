@@ -41,6 +41,11 @@ counters. The saved upload profile loads. Physical graph/navigation, GPS
 recording and repeated radio-transition checks remain pending. See
 [GPS qualification, radio recovery and installation evidence](docs/GPS_AND_RADIO_RECOVERY.md).
 
+Rev160 is a development candidate correcting cleanup after an early S3 Wi-Fi
+startup failure. The worker can reach deinitialization when the driver never
+started, while still retaining ownership if deinitialization fails. See
+[startup recovery and its regression checks](docs/SCAN_STARTUP_RECOVERY.md).
+
 **Tools → System health → DEVICE INFO** reports each processor's application
 build, SDK, partition and memory/status information. The owner confirmed
 the S3/C5 tabs, Refresh and Back on rev157. See [Device Info](docs/DEVICE_INFO.md).

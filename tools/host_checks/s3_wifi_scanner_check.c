@@ -186,9 +186,20 @@ static esp_err_t esp_wifi_scan_get_ap_records(uint16_t *count, wifi_ap_record_t 
     return ESP_OK;
 }
 static esp_err_t esp_wifi_scan_stop(void)
-{ ++scan_stop_calls; if(failing("scan_stop"))return ESP_FAIL;driver_scanning = false;return ESP_OK; }
+{
+    ++scan_stop_calls;
+    if (!driver_started) return ESP_ERR_WIFI_NOT_STARTED;
+    if (failing("scan_stop")) return ESP_FAIL;
+    driver_scanning = false;
+    return ESP_OK;
+}
 static esp_err_t esp_wifi_clear_ap_list(void)
-{ ++clear_calls; return failing("clear") ? ESP_FAIL : ESP_OK; }
+{
+    ++clear_calls;
+    /* ESP-IDF requires a started station for this API, even with no AP list. */
+    if (!driver_started) return ESP_ERR_WIFI_NOT_STARTED;
+    return failing("clear") ? ESP_FAIL : ESP_OK;
+}
 static esp_err_t esp_wifi_stop(void)
 {
     ++stop_calls;
@@ -461,6 +472,21 @@ static void failure_and_cleanup(void)
     assert(scan_cleanup_step(&foreign)==ESP_ERR_INVALID_STATE);
     assert(!scan_stop_calls&&!clear_calls&&!stop_calls&&!unregister_calls&&!deinit_calls);
     assert(cerberus_s3_wifi_owner()==CERBERUS_S3_WIFI_WEB);
+
+    /* NOT_STARTED is not a release acknowledgement. Even with RF already
+     * stopped, failed deinit keeps the owner and retries only that last stage. */
+    reset_all();assert(cerberus_s3_wifi_claim(CERBERUS_S3_WIFI_SCAN)==ESP_OK);
+    driver_initialized=true;fail_stage="deinit";
+    scan_cleanup_t stopped={.scan_started=true,.clear_needed=true,.wifi_started=true,
+        .registered=true,.initialized=true,.handler=(void *)(uintptr_t)1};
+    assert(scan_cleanup_step(&stopped)==ESP_FAIL);
+    assert(driver_initialized&&!driver_started&&stopped.initialized);
+    assert(cerberus_s3_wifi_owner()==CERBERUS_S3_WIFI_SCAN);
+    assert(scan_stop_calls==1&&clear_calls==1&&stop_calls==1&&unregister_calls==1&&deinit_calls==1);
+    fail_stage=NULL;assert(scan_cleanup_step(&stopped)==ESP_OK);
+    assert(!driver_initialized&&cerberus_s3_wifi_owner()==CERBERUS_S3_WIFI_NONE);
+    assert(scan_stop_calls==1&&clear_calls==1&&stop_calls==1&&unregister_calls==1&&deinit_calls==2);
+
     const char *setup[] = {"netif", "init", "storage", "mode", "register", "start", "scan", "num", "records"};
     for (unsigned i = 0; i < sizeof(setup) / sizeof(setup[0]); ++i) {
         reset_all();
@@ -475,6 +501,15 @@ static void failure_and_cleanup(void)
         assert(status.state == CERBERUS_S3_WIFI_SCAN_ERROR && status.error_code && !status.cleanup_error);
         assert(status.generation == generation && alloc_count == 1 && !status.radio_owned &&
             cerberus_s3_wifi_owner() == CERBERUS_S3_WIFI_NONE);
+        bool was_initialized=strcmp(setup[i],"netif")&&strcmp(setup[i],"init");
+        bool was_started=!strcmp(setup[i],"scan")||!strcmp(setup[i],"num")||!strcmp(setup[i],"records");
+        bool was_registered=was_started||!strcmp(setup[i],"start");
+        assert(!cleanup_delays&&clear_calls==1U+was_started&&stop_calls==1U+was_started);
+        assert(deinit_calls==1U+was_initialized&&unregister_calls==1U+was_registered);
+        fail_stage=NULL;emitted_done=false;
+        assert(cerberus_s3_ble_host_claim(CERBERUS_S3_BLE_OWNER_SCANNER,&test_ble_lease)==ESP_OK);
+        assert(cerberus_s3_ble_host_release(&test_ble_lease)==ESP_OK);
+        start_and_complete();
     }
     reset_all();
     start_and_complete();
