@@ -49,6 +49,7 @@ static void wardrive_stream_worker(void *unused)
     bool storage_failed=false;
     portENTER_CRITICAL(&wardrive_lock);wardrive_status.gps_error=gps_error;portEXIT_CRITICAL(&wardrive_lock);
     if(failure!=ESP_OK)publish_error(failure,'G');
+    if(failure==ESP_OK)begin_rssi_filter();
     while(!wants_stop()&&failure==ESP_OK){
         for(unsigned chip=0;chip<2&&failure==ESP_OK&&!wants_stop();++chip){
             bool c5=chip==1;cerberus_wd_request_t *q=&queries[chip];

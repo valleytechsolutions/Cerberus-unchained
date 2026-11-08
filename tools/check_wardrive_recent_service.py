@@ -37,6 +37,6 @@ subprocess.run([sys.executable, "-m", "ziglang", "cc", "-std=gnu11", "-O1",
     "-I", str(root / "s3_main/main"), "-I", str(root / "shared"),
     str(root / "tools/host_checks/wardrive_recent_service_check.c"),
     *[str(root / "s3_main/main" / name) for name in
-      ("wardrive_core.c", "wardrive_wigle.c", "wardrive_plan.c", "wardrive_recent.c")],
+      ("wardrive_core.c", "wardrive_wigle.c", "wardrive_plan.c", "wardrive_recent.c", "wardrive_rssi_filter.c")],
     "-o", str(exe)], check=True, env=env)
 subprocess.run([str(exe)], check=True, env=env)

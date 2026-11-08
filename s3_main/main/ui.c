@@ -8077,7 +8077,7 @@ static esp_err_t draw_wardrive(void)
     const char *roles=mode==CERBERUS_WD_BLE?"OBSERVATIONS / S3 BLE + C5 BLE":
         mode==CERBERUS_WD_WIFI?"OBSERVATIONS / S3 2.4G + C5 5G":"OBSERVATIONS / S3 2.4G+BLE / C5 5G";
     ESP_RETURN_ON_ERROR(draw_centered(200,roles,UI_MUTED,1),TAG,"wardrive receiver roles");
-    snprintf(line, sizeof(line), "VALID: AP %lu / BLE %lu / R1-R6 %lu",
+    snprintf(line, sizeof(line), "SD: AP %lu / BLE %lu / R1-R6 %lu",
         (unsigned long)(status.c5_wifi_logged+status.s3_wifi_logged),
         (unsigned long)(status.s3_ble_logged+status.c5_ble_logged),
         (unsigned long)status.expansion_logged);
@@ -8090,7 +8090,8 @@ static esp_err_t draw_wardrive(void)
     if (status.files_saved) snprintf(line, sizeof(line), "CSV: %lu ROWS / %lu DEVICES / %llu KiB",
         (unsigned long)status.csv_rows, (unsigned long)status.csv_devices,
         (unsigned long long)(status.sd_bytes / 1024U));
-    else snprintf(line, sizeof(line), "SD JOURNAL: %lu VALID OBSERVATIONS", (unsigned long)status.sd_rows);
+    else snprintf(line, sizeof(line), "SD ROWS %lu / FILTERED %lu",
+        (unsigned long)status.sd_rows, (unsigned long)status.rssi_filtered);
     ESP_RETURN_ON_ERROR(draw_centered(260, line, UI_TEXT, 1), TAG, "wardrive storage");
     snprintf(line, sizeof(line), "LAST FILE: %s", status.last_file_name[0] ?
         status.last_file_name : unsaved ? "NO CSV CREATED" : "NONE YET");

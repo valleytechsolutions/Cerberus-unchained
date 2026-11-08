@@ -1,7 +1,7 @@
 {
   "format": 1,
-  "checkpoint": "rev150-development",
-  "scope": "Marauder develop was rechecked on 2026-11-08 UTC at 79cc6bcba1db6679baee1dab2b0c1ad5010e6363. Rev149 is the installed GPS-wait and RSSI-extrema baseline: the user confirmed waiting, Stop cancellation and layout; a later read-only console capture confirms live located recording without a reported service error. Rev150 adds a source implementation of GPS track and POI recording with host-tested formatting, worker, storage and UI boundaries. Physical GPX acceptance, final compacted CSV readback, sustained RF/GPS performance, expansion hardware and complete upstream parity remain open. Earlier provider acknowledgement is distinct from provider-side processing; uploads remain manual.",
+  "checkpoint": "rev151-development",
+  "scope": "Marauder develop was rechecked on 2026-11-08 UTC at 79cc6bcba1db6679baee1dab2b0c1ad5010e6363. Rev149 is the installed GPS-wait and RSSI-extrema baseline: the user confirmed waiting, Stop cancellation and layout; a later read-only console capture confirms live located recording without a reported service error. Rev150 adds a source implementation of GPS track and POI recording with host-tested formatting, worker, storage and UI boundaries. Rev151 adds an optional PSRAM RSSI cache to avoid redundant journal appends while retaining the same final CSV rows. Physical GPX acceptance, final compacted CSV readback, sustained RF/GPS performance, expansion hardware and complete upstream parity remain open. Earlier provider acknowledgement is distinct from provider-side processing; uploads remain manual.",
   "status_definitions": {
     "partial": "A related Cerberus workflow exists, but upstream option/behavior parity or hardware acceptance remains open.",
     "pending": "The distinct upstream workflow has no verified implementation at this checkpoint.",
@@ -2044,7 +2044,7 @@
       "status": "partial",
       "related_menu_entries": [],
       "related_cli_commands": [],
-      "next_gap": "Rev149 provides GPS-wait/autostart UI and post-Stop RSSI-extrema CSV compaction. Wait/cancel/layout are user-confirmed, and a later read-only console capture confirms RUNNING with valid rows and no reported service error. Verify the finalized compacted file, moving capture/Stop latency, sustained coexistence and expansion hardware. Uploads stay manual; provider acknowledgement does not establish completed account-side processing. GPX is an optional independent local record in rev150.",
+      "next_gap": "Rev149 provides GPS-wait/autostart UI and post-Stop RSSI-extrema CSV compaction. Wait/cancel/layout are user-confirmed, and a later read-only console capture confirms RUNNING with valid rows and no reported service error. Verify the finalized compacted file, moving capture/Stop latency, sustained coexistence and expansion hardware. Uploads stay manual; provider acknowledgement does not establish completed account-side processing. GPX is an optional independent local record in rev150. Rev151 filters redundant journal writes in the S3 writer; host checks preserve byte-identical final extrema, but SD throughput and Stop latency require physical validation.",
       "external_reference": "docs/WARDRIVE_RECENT_SOURCE_CONTRACT.md"
     }
   ]

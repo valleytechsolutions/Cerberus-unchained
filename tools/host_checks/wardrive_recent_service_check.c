@@ -11,6 +11,7 @@
 #include "s3_ble_scanner.h"
 #include "s3_wifi_owner.h"
 #include "wardrive_wigle.h"
+#include "wardrive_rssi_filter.h"
 #include "wardrive_gps_uart.h"
 #include "wifi_capture_session.h"
 #include "wardrive_compact.h"
@@ -310,6 +311,11 @@ static cerberus_wardrive_recent_snapshot_t snapshot(void)
 
 int main(void)
 {
+    reset();fail_alloc_at=1;begin_rssi_filter();
+    CHECK(!rssi_filter&&!wardrive_status.rssi_filter_enabled&&!wardrive_status.error_code);
+    begin_rssi_filter();
+    CHECK(rssi_filter&&wardrive_status.rssi_filter_enabled);
+    release_workspace();CHECK(!rssi_filter);
     reset();lose_fix_on_sd_open=true;field_status.present_mask=1;
     CHECK(cerberus_wardrive_start(true,true)==ESP_ERR_NOT_FINISHED);
     CHECK(!worker_active&&!workspace&&!storage_owned&&!field_status.requested&&!task_creates);

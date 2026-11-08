@@ -41,6 +41,7 @@ program = r'''
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include "wardrive_rssi_filter.h"
 #define CERBERUS_WIFI_SCAN_MAX_RESULTS 32U
 #define CERBERUS_BLE_SCAN_MAX_RESULTS 32U
 #define CERBERUS_WIFI_PROBE_LIMIT 16U
@@ -51,6 +52,11 @@ program = r'''
 #define ESP_ERR_INVALID_STATE 1
 #define ESP_ERR_NO_MEM 2
 typedef int esp_err_t;
+static cerberus_wardrive_rssi_filter_t *rssi_filter;
+static struct { bool rssi_filter_enabled; } wardrive_status;
+static unsigned wardrive_lock;
+#define portENTER_CRITICAL(p) ((void)(p))
+#define portEXIT_CRITICAL(p) ((void)(p))
 typedef struct { uint64_t session_id, sequence; } cerberus_wardrive_recent_ticket_t;
 typedef struct { uint8_t data[64]; } cerberus_wardrive_dedupe_t;
 typedef struct { uint8_t data[64]; } cerberus_wardrive_probe_dedupe_t;
@@ -104,6 +110,17 @@ int main(void)
     assert(allocate_workspace() == ESP_OK);
     release_workspace();
     assert(workspace == NULL && free_calls == 2U);
+    fail_next=true;begin_rssi_filter();
+    assert(!rssi_filter&&!wardrive_status.rssi_filter_enabled);
+    begin_rssi_filter();
+    assert(rssi_filter&&wardrive_status.rssi_filter_enabled);
+    assert(last_caps==(MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT)&&last_bytes==sizeof(*rssi_filter));
+    assert(sizeof(*rssi_filter)<=5120U);
+    assert(rssi_filter->entries[0][0].type==0);
+    rssi_filter->entries[0][0].type=1;
+    release_workspace();assert(!rssi_filter&&free_calls==3U);
+    begin_rssi_filter();assert(rssi_filter->entries[0][0].type==0);
+    release_workspace();assert(!rssi_filter&&free_calls==4U);
     return 0;
 }
 '''
@@ -120,6 +137,7 @@ environment = os.environ.copy()
 if not use_zig:
     environment["PATH"] = str(mingw_bin) + os.pathsep + environment.get("PATH", "")
 subprocess.run(compiler + ["-std=c11", "-O1", "-Wall", "-Wextra", "-Werror",
+    "-I", str(root / "s3_main/main"),
     str(fixture), "-o", str(exe)], check=True, env=environment)
 subprocess.run([str(exe)], check=True, env=environment)
 print("wardrive PSRAM workspace allocation and Stop teardown: pass")

@@ -7,6 +7,7 @@ static unsigned long long stream_observed_ms;
 #include "wardrive_recent.h"
 #include "wardrive_wigle.h"
 #include "wardrive_compact.h"
+#include "wardrive_rssi_filter.h"
 #include "esp_err.h"
 #include <assert.h>
 #include <stdio.h>
@@ -23,6 +24,7 @@ static uint32_t plus_one(uint32_t v) { return v == UINT32_MAX ? v : v + 1U; }
 static cerberus_wardrive_dedupe_t dedupe, wigle_dedupe;
 static cerberus_wardrive_probe_dedupe_t probe_dedupe;
 static cerberus_wardrive_relation_dedupe_t relation_dedupe;
+static cerberus_wardrive_rssi_filter_t *rssi_filter;
 static cerberus_wardrive_gps_snapshot_t gps_fixture;
 static const char wardrive_header[] = CERBERUS_WARDRIVE_UNLOCATED_HEADER;
 static const char wigle_header[] = CERBERUS_WIGLE_METADATA_HEADER CERBERUS_WIGLE_COLUMN_HEADER;
@@ -35,6 +37,7 @@ static struct {
     bool gps_requested;
     bool compacting;
     uint32_t csv_rows, csv_devices, compacted_rows;
+    uint32_t rssi_filtered;
     uint32_t files_saved, geotagged_rows, unlocated_rows, gps_fallback_rows;
     uint32_t skipped_no_fix, skipped_time, skipped_format;
     uint64_t sd_bytes;
@@ -224,7 +227,7 @@ int main(void)
         untouched,sizeof(untouched),&written)==CERBERUS_WIGLE_INVALID_ARG);
     assert(!strcmp(untouched,"unchanged")&&written==123);
     }
-    /* Streaming mode retains equal sightings from both radio assignments.
+    /* Without the optional cache, streaming retains every valid sighting.
      * A delayed queue entry must not borrow the current GPS position. */
     stream_recording=true;stream_observed_ms=clock_ms;
     assert(history_lookups > 0U);
@@ -263,6 +266,42 @@ int main(void)
     assert(append_observation(&ap)==ESP_ERR_INVALID_SIZE&&begins[1]==stream_begins&&closes[1]==stream_closes);
     assert(save_log_stream(true,true)==ESP_OK);
     assert(history_lookups == legacy_lookups);
-    puts("wardrive routing: one streaming CSV, GPS loss/recovery counters, repeated rows, size-limit stop and legacy evidence passed");
+    /* The cache sees only successful valid appends, and it never rewrites the
+     * earlier complete row when signal, location, name or channel changes. */
+    cerberus_wardrive_rssi_filter_t filter = {0};
+    rssi_filter = &filter;
+    ap.type = CERBERUS_WARDRIVE_WIFI; ap.channel = 6; ap.rssi_dbm = -60;
+    recorded = appends[1];
+    assert(append_observation(&ap)==ESP_OK && appends[1]==recorded+1);
+    for(unsigned i=0;i<1000;++i)assert(append_observation(&ap)==ESP_OK);
+    assert(appends[1]==recorded+1 && wardrive_status.rssi_filtered==1000);
+    ap.rssi_dbm=-50;assert(append_observation(&ap)==ESP_OK && appends[1]==recorded+2);
+    ap.rssi_dbm=-90;assert(append_observation(&ap)==ESP_OK && appends[1]==recorded+3);
+    ap.rssi_dbm=-70;ap.channel=11;ap.label[0]='B';
+    assert(append_observation(&ap)==ESP_OK && appends[1]==recorded+3);
+    /* A failed append must not teach a new extreme. The fixture's error is
+     * known to write no bytes; production stops rather than replaying it. */
+    ap.rssi_dbm=-40;fail_append=ESP_FAIL;
+    assert(append_observation(&ap)==ESP_FAIL && appends[1]==recorded+3);
+    assert(append_observation(&ap)==ESP_OK && appends[1]==recorded+4);
+    assert(append_observation(&ap)==ESP_OK && appends[1]==recorded+4);
+    /* Neither an invalid fix nor a stale RF timestamp changes the cache. */
+    ap.rssi_dbm=-30;gps_fixture.state=CERBERUS_WARDRIVE_GPS_STALE;
+    assert(append_observation(&ap)==ESP_OK && appends[1]==recorded+4);
+    gps_fixture.state=CERBERUS_WARDRIVE_GPS_FRESH;stream_observed_ms=clock_ms-1001;
+    assert(append_observation(&ap)==ESP_OK && appends[1]==recorded+4);
+    stream_observed_ms=clock_ms;
+    assert(append_observation(&ap)==ESP_OK && appends[1]==recorded+5);
+    ap.rssi_dbm=-20;ap.label[0]=0xff;
+    assert(append_observation(&ap)==ESP_OK && appends[1]==recorded+5);
+    ap.label[0]='B';
+    assert(append_observation(&ap)==ESP_OK && appends[1]==recorded+6);
+    ap.type=CERBERUS_WARDRIVE_BLE;ap.channel=0;
+    assert(append_observation(&ap)==ESP_OK && appends[1]==recorded+7);
+    ap.radio=CERBERUS_WARDRIVE_RADIO_S3;ap.address_type=1;
+    assert(append_observation(&ap)==ESP_OK && appends[1]==recorded+7);
+    assert(save_log_stream(true,true)==ESP_OK);
+    rssi_filter=NULL;
+    puts("wardrive routing: GPS/UTC validation, optional RSSI filtering, rejected writes, fallback and legacy evidence passed");
     return 0;
 }

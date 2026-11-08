@@ -31,6 +31,7 @@ static void vTaskDelay(unsigned ticks){CHECK(!depth&&ticks);clock_value+=ticks*F
 static void vTaskDelete(void *p){CHECK(!depth&&!p&&!worker_active&&storage_closed);}
 static bool wants_stop(void){return stop_requested;}
 static void recent_begin_session(void){memset(&model,0,sizeof(model));recent_worker_session=true;}
+static void begin_rssi_filter(void){CHECK(!depth&&stream_recording);}
 typedef struct {cerberus_wardrive_recent_ticket_t ticket;} wardrive_recent_attempt_t;
 static void recent_preview(const cerberus_wardrive_observation_t *o,wardrive_recent_attempt_t *a){(void)o;(void)a;}
 static void recent_outcome(cerberus_wardrive_recent_ticket_t t,cerberus_wardrive_recent_outcome_t o){(void)t;(void)o;}

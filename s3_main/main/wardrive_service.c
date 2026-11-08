@@ -9,6 +9,7 @@
 #include "storage.h"
 #include "wardrive_core.h"
 #include "wardrive_wigle.h"
+#include "wardrive_rssi_filter.h"
 #include "wardrive_gps_uart.h"
 #include "wifi_capture_session.h"
 #include "esp_heap_caps.h"
@@ -36,6 +37,7 @@ static cerberus_wardrive_status_t wardrive_status;
 static bool worker_active, start_in_progress, stop_requested;
 static uint8_t wardrive_selected_mode;
 static bool stream_recording;
+static cerberus_wardrive_rssi_filter_t *rssi_filter;
 static uint64_t stream_observed_ms;
 esp_err_t cerberus_wardrive_set_mode(uint8_t mode)
 {
@@ -134,8 +136,19 @@ static esp_err_t allocate_workspace(void)
 
 static void release_workspace(void)
 {
+    heap_caps_free(rssi_filter);
+    rssi_filter = NULL;
     heap_caps_free(workspace);
     workspace = NULL;
+}
+
+static void begin_rssi_filter(void)
+{
+    rssi_filter = heap_caps_calloc(1U, sizeof(*rssi_filter),
+        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    portENTER_CRITICAL(&wardrive_lock);
+    wardrive_status.rssi_filter_enabled = rssi_filter != NULL;
+    portEXIT_CRITICAL(&wardrive_lock);
 }
 
 static size_t post_ble_reserve_bytes(bool enable_gps) __attribute__((unused));
@@ -500,8 +513,20 @@ static esp_err_t append_observation_impl(const cerberus_wardrive_observation_t *
             return ESP_ERR_INVALID_SIZE;
         }
     }
-    /* Streaming journals every valid observation. Final RSSI compaction runs
-     * after RF stops; skip the legacy history walk in this capture path. */
+    /* Only accepted valid rows teach the filter. New extrema and cache misses
+     * reach the journal; final compaction retains the original earliest ties. */
+    cerberus_ward_log_identity_t identity = {
+        .type = (uint8_t)observation->type, .rssi = observation->rssi_dbm,
+    };
+    memcpy(identity.address, observation->address, sizeof(identity.address));
+    if (stream_recording && !cerberus_wardrive_rssi_needs_append(rssi_filter, &identity)) {
+        portENTER_CRITICAL(&wardrive_lock);
+        wardrive_status.rssi_filtered = plus_one(wardrive_status.rssi_filtered);
+        portEXIT_CRITICAL(&wardrive_lock);
+        *outcome = CERBERUS_WARDRIVE_RECENT_DUPLICATE;
+        publish_sighting(observation, false, true);
+        return ESP_OK;
+    }
     cerberus_wardrive_dedupe_t *history = located ? &wigle_dedupe : &dedupe;
     cerberus_wardrive_decision_t decision = {0};
     if (!stream_recording) {
@@ -537,7 +562,7 @@ static esp_err_t append_observation_impl(const cerberus_wardrive_observation_t *
         publish_error(error, 'S');
         return error;
     }
-    if(stream_recording) { /* Already appended to the recovery journal. */ }
+    if (stream_recording) cerberus_wardrive_rssi_record_append(rssi_filter, &identity);
     else if (relation) cerberus_wardrive_relation_commit(&relation_dedupe, observation, decision, (uint32_t)uptime);
     else if (probe) cerberus_wardrive_probe_commit(&probe_dedupe, observation, decision, (uint32_t)uptime);
     else cerberus_wardrive_commit(history, observation, decision, (uint32_t)uptime);

@@ -1,8 +1,9 @@
 # Wardriving GPS admission and RSSI extrema
 
 RSSI extrema filtering was introduced in rev148. Rev149 simplifies the GPS
-start control. These changes affect new recordings; existing CSVs and upload
-receipts are left intact.
+start control. Rev151 reduces capture-time SD writes while preserving the
+same final rows. These changes affect new recordings; existing CSVs and
+upload receipts are left intact.
 
 ## Starting a recording
 
@@ -16,8 +17,9 @@ Opening the page alone does not start a recording.
 
 **STOP** or **Back** cancels a pending start. Mode changes and log uploads are
 unavailable while waiting or recording. The enlarged **WI-FI** and **BLE**
-counters show received observations from the participating radios; the valid
-and saved row counts below them describe what reaches the log.
+counters show received observations from the participating radios. Below them,
+**SD ROWS** counts accepted journal appends; **FILTERED** counts valid readings
+already between the strongest and weakest saved readings for their identity.
 
 The service checks the same condition before allocating recording resources,
 after radio preparation and before each receiver starts. The receiver must be
@@ -57,16 +59,31 @@ The filtering is per recording, not across files or past uploads.
 
 ## Capture and storage behavior
 
-RF callbacks and scan schedules are unchanged. During capture, the existing
-writer appends valid observations to the recovery journal. Compaction runs
-after RF stops, using a fixed 10,352-byte workspace and an external merge of
-16-byte row references. Its memory use does not grow with the number of
-identities. This adds work to **STOP / SAVING**, not to RF callbacks.
+RF callbacks, receive queues and scan schedules are unchanged. The S3 writer
+uses an optional 4,736-byte PSRAM cache to remember accepted RSSI extremes for
+up to 512 identities. It checks four entries per lookup, after GPS, RF-time
+and CSV validation. The first valid sighting and any new extreme reach the
+journal. A reading between previously appended extremes needs no SD write.
+Only a successful append updates the cache; a failed write cannot suppress
+a later valid reading. A full cache replaces an entry within its group.
+Evictions cause additional writes, never loss of a new extreme. If allocation
+fails, capture uses the original append-every-valid-row path without taking
+memory from the internal radio heap.
+
+Final compaction still runs after RF stops, using a fixed 10,352-byte workspace
+and an external merge of 16-byte row references. It handles evicted identities
+and changing extrema over the entire recording, preserving the same earliest
+ties and complete original rows. No sorting or file I/O runs in RF callbacks.
+Cache memory is released with the recording workspace after finalization.
 
 The screen distinguishes valid observations written to the journal from rows
 in the finished CSV. **SAVING RSSI EXTREMES** means the receivers have stopped
 and the log is being finalized. Wait for **STOPPED** before removing the card.
 The console reports `csv_rows`, `csv_devices`, `compacted_rows` and `compacting`.
+`rssi_filtered` counts avoided journal appends; `rssi_filter_enabled` says
+whether that session obtained the cache. These are separate from GPS/format
+exclusions and RF queue drops. `sd_rows` and the per-radio logged counters
+count actual appends, not all valid observations.
 
 The `.TMP` journal is synced before compaction. A fresh `.NEW` file is synced
 and closed before publication; only then is the journal removed. Read, write,
@@ -76,9 +93,11 @@ recovery and do not publish an incomplete CSV. Interrupted `.TMP`, `.D0`,
 the unsynced tail of a recording. Automatic recovery is not implemented.
 
 Compaction needs free SD space for the output plus two row-index scratch files.
-It does not reduce capture-time SD writes or extend the existing 64 MiB raw
-recording limit. A full card can prevent finalization while preserving the
-source journal.
+The capture filter can reduce journal and sorting work when identities repeat;
+savings depend on signal changes, population size and cache churn. The 64 MiB
+journal limit remains. A full card can prevent finalization while preserving
+the source journal. Power-loss recovery contains accepted candidate extrema,
+not every intermediate valid observation.
 
 ## Validation
 
@@ -88,7 +107,11 @@ lost between the two receiver starts, Stop/Back cleanup,
 CSV quoting and UTF-8, equal RSSI ties, shared names and mixed radio identities.
 Independent Python CSV checks compare complete retained rows against the
 production C compactor, including a 100,000-row sample with more identities
-than fit in its working memory. Real-file tests inject allocation, read,
+than fit in its working memory. Filtered and allocation-fallback pipelines
+must produce byte-for-byte identical final CSVs to the original pipeline.
+Cases cover monotonic RSSI, ties, mixed Wi-Fi/BLE addresses, changed names and
+channels, cache evictions, invalid GPS/time/format and failed append decisions.
+Real-file tests inject allocation, read,
 write, seek, flush, sync, close and publication failures.
 
 The 100,000-row host sample retained 36,248 rows from 19,189 identities. Host
@@ -98,3 +121,5 @@ read-only console capture showed a live located recording with over 75,000
 valid observations and no reported service error. That sampled RUNNING state
 does not establish the exact automatic-start transition, finalization latency,
 or correctness of the new compacted file; those checks remain open.
+The rev151 filter also needs physical capture, final-CSV readback and Stop
+latency checks. Host savings do not establish device throughput or endurance.

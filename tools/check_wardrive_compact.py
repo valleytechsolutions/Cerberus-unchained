@@ -21,7 +21,7 @@ subprocess.run([sys.executable, "-m", "ziglang", "cc", "-std=c11", "-O2",
     "-I", str(root / "tools/host_checks/stubs"), "-I", str(root / "s3_main/main"),
     "-I", str(root / "shared"),
     *[str(root / "s3_main/main" / name) for name in
-      ("wardrive_compact.c", "wardrive_log.c", "wardrive_core.c")],
+      ("wardrive_compact.c", "wardrive_log.c", "wardrive_core.c", "wardrive_rssi_filter.c")],
     str(root / "tools/host_checks/wardrive_compact_check.c"), "-o", str(exe)], check=True)
 
 header = ("WigleWifi-1.6,appRelease=Cerberus,model=Cerberus,release=test,device=S3-C5,"
@@ -68,16 +68,44 @@ def verify(directory, rows, invalid=False):
     assert stats["input_bytes"] == source.stat().st_size and stats["output_bytes"] == final.stat().st_size
     if len(rows) > 512:
         assert stats["yields"] > 1
-    return {**stats, "host_seconds": round(time.perf_counter() - started, 3)}
+    original = final.read_bytes()
+    baseline_seconds = round(time.perf_counter() - started, 3)
+    variants = {}
+    for mode in ("filter", "no-cache"):
+        subprocess.run([str(exe), *map(str, (source, a, b, final, report)), mode], check=True)
+        filtered = json.loads(report.read_text())
+        assert filtered["error"] == 0 and final.read_bytes() == original, "filter changed final CSV"
+        assert filtered["devices"] == stats["devices"] and filtered["output_rows"] == stats["output_rows"]
+        assert filtered["received"] == len(rows)
+        assert filtered["input_rows"] + filtered["filtered"] == len(rows)
+        assert filtered["filter_bytes"] <= 5120
+        if mode == "no-cache":
+            assert filtered["filtered"] == 0 and filtered["input_bytes"] == stats["input_bytes"]
+        assert hashlib.sha256(source.read_bytes()).digest() == digest
+        variants[mode] = filtered
+    return {**stats, "host_seconds": baseline_seconds, "capture_filter": variants["filter"]}
 
 rng = random.Random(147)
 with tempfile.TemporaryDirectory(dir=out) as temporary:
     directory = Path(temporary)
     verify(directory, [row(1, -45, 1)])
     verify(directory, [row(1, rssi, i) for i, rssi in enumerate((-70, -50, -90, -50, -90, -40, -60))])
-    verify(directory, [row(1, -50, i) for i in range(1025)])
+    repeats = verify(directory, [row(1, -50, i) for i in range(1025)])
+    assert repeats["capture_filter"]["filtered"] == 1024
     verify(directory, [row(i, -50, i) for i in range(1025)])
     verify(directory, [row(1, -50, 1), row(1, -50, 2, True), row(2, -40, 3)])
+    verify(directory, [row(1, rssi, i) for i, rssi in enumerate(range(-127, 1))])
+    verify(directory, [row(1, rssi, i) for i, rssi in enumerate(range(0, -128, -1))])
+    # Revisit evicted identities with equal extremes and changed names/channels.
+    rows = [row(i, -60, i) for i in range(2048)]
+    rows += [row(i, -60, i + 2048).replace('"Shared, ""café"""', 'Changed').replace(',6,2437,', ',11,2462,')
+             for i in range(2048)]
+    rows += [row(i, -90 if i % 2 else -30, i + 4096) for i in range(2048)]
+    verify(directory, rows)
+    resident_rng = random.Random(151)
+    resident = verify(directory, [row(resident_rng.randrange(64), -resident_rng.randrange(20, 100), i)
+                                  for i in range(100000)])
+    assert resident["capture_filter"]["filtered"] > 90000
     for count in (511, 512, 513, 1024, 1025, 8193):
         verify(directory, [row(rng.randrange(400), -rng.randrange(20, 100), i, i % 3 == 0) for i in range(count)])
     # Bounded workspace with more identities than can fit in an in-memory map.
@@ -85,7 +113,8 @@ with tempfile.TemporaryDirectory(dir=out) as temporary:
     verify(directory, [row(1, -50, 1).rstrip("\n")], invalid=True)
     verify(directory, [row(1, -128, 1)], invalid=True)
     verify(directory, [], invalid=True)
-(out / "summary.json").write_text(json.dumps(benchmark, indent=2) + "\n")
-print(f"Wardrive extrema: 15 real-file cases passed; 100000 rows, {benchmark['devices']} identities, "
+(out / "summary.json").write_text(json.dumps({"many_identities": benchmark, "resident_identities": resident}, indent=2) + "\n")
+print(f"Wardrive extrema: 19 real-file cases passed; filtered/fallback CSVs match the original byte for byte; "
+      f"100000 rows, {benchmark['devices']} identities, "
       f"{benchmark['output_rows']} retained; {benchmark['workspace_bytes']} bytes workspace. "
       "Host timing is not SD/hardware acceptance.")

@@ -30,6 +30,7 @@ idf_component_register(
         "wardrive_wigle.c"
         "wardrive_log.c"
         "wardrive_compact.c"
+        "wardrive_rssi_filter.c"
         "wardrive_upload_config.c"
         "wardrive_upload_json.c"
         "wardrive_upload_settings.c"

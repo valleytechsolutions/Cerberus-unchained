@@ -1547,6 +1547,8 @@ static void print_radio(void)
     console_printf("csv_rows=%lu\r\ncsv_devices=%lu\r\ncompacted_rows=%lu\r\ncompacting=%u\r\n",
         (unsigned long)wardrive.csv_rows, (unsigned long)wardrive.csv_devices,
         (unsigned long)wardrive.compacted_rows, wardrive.compacting ? 1U : 0U);
+    console_printf("rssi_filtered=%lu\r\nrssi_filter_enabled=%u\r\n",
+        (unsigned long)wardrive.rssi_filtered, wardrive.rssi_filter_enabled ? 1U : 0U);
     console_printf("skipped_no_fix=%lu\r\nskipped_time=%lu\r\nskipped_format=%lu\r\n",
         (unsigned long)wardrive.skipped_no_fix,
         (unsigned long)wardrive.skipped_time,

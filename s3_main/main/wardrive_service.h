@@ -70,6 +70,8 @@ typedef struct {
     uint32_t duplicate_sightings, invalid_sightings, dedupe_evicted;
     uint32_t sd_rows, files_saved;
     uint32_t csv_rows, csv_devices, compacted_rows;
+    uint32_t rssi_filtered; /* Valid rows already inside accepted RSSI extrema. */
+    bool rssi_filter_enabled; /* This session obtained the optional PSRAM cache. */
     bool compacting;
     uint32_t geotagged_rows, unlocated_rows, gps_fallback_rows;
     uint32_t skipped_no_fix, skipped_time, skipped_format;
