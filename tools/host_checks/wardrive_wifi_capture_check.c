@@ -11,9 +11,6 @@
 #include "wardrive_service.h"
 #include "wardrive_recent_attempt_type.h"
 
-#define CERBERUS_WIFI_SCAN_MAX_RESULTS 4U
-#define CERBERUS_WIFI_SCAN_COMPLETE 2U
-#define CERBERUS_WIFI_CHANNEL_SURVEY_RUNNING 1U
 #define WARDRIVE_C5_STATUS_GRACE_MS 12000U
 
 typedef struct {
@@ -24,11 +21,6 @@ typedef struct {
     char ssid[33];
 } cerberus_c5_wifi_result_t;
 
-typedef struct {
-    uint8_t state, generation, stored_count;
-    uint16_t total_count;
-} cerberus_wifi_scan_status_payload_t;
-typedef struct { uint8_t state; } cerberus_wifi_channel_survey_status_payload_t;
 typedef struct { cerberus_wifi_probe_status_t status; uint32_t peer; } cerberus_c5_wifi_probe_bank_t;
 typedef bool (*cerberus_c5_probe_continue_fn)(void *);
 typedef struct { cerberus_wifi_relation_status_t status; uint32_t peer; } cerberus_c5_wifi_relation_bank_t;
