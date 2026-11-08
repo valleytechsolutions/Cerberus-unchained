@@ -110,6 +110,26 @@ def verify(directory, rows, invalid=False):
         variants[mode] = filtered
     return {**stats, "host_seconds": compact_seconds, "capture_filter": variants["filter"], "baseline": baseline_stats}
 
+def verify_parts(directory, parts, different_header=False):
+    rows = [line for part in parts for line in part]
+    verify(directory, rows)
+    expected = (directory / "out.csv").read_bytes()
+    sources = [directory / f"part-{i}.tmp" for i in range(len(parts))]
+    for i, (path, lines) in enumerate(zip(sources, parts)):
+        preamble = header.replace("release=test", "release=oops") if different_header and i else header
+        path.write_bytes((preamble + "".join(lines)).encode())
+    hashes = [hashlib.sha256(path.read_bytes()).digest() for path in sources]
+    a, b, final, report = [directory / name for name in ("a", "b", "out.csv", "stats.json")]
+    subprocess.run([str(exe), *map(str, (sources[0], a, b, final, report)), "parts", *map(str, sources[1:])], check=True)
+    stats = json.loads(report.read_text())
+    assert hashes == [hashlib.sha256(path.read_bytes()).digest() for path in sources]
+    if different_header or any(not part for part in parts):
+        assert stats["error"] != 0
+    else:
+        assert stats["error"] == 0 and final.read_bytes() == expected, "cross-journal extrema/ties changed"
+        assert stats["input_parts"] == len(parts) and stats["input_rows"] == len(rows)
+        assert stats["workspace_bytes"] == 10352
+
 rng = random.Random(147)
 with tempfile.TemporaryDirectory(dir=out) as temporary:
     directory = Path(temporary)
@@ -142,12 +162,20 @@ with tempfile.TemporaryDirectory(dir=out) as temporary:
     extended = None
     if args.extended:
         extended = verify(directory, [row((i * 31337) % 128, -20 - ((i * 37) % 80), i) for i in range(500000)])
+    # Equal offsets in different journals remain different capture positions;
+    # ties retain the earlier journal, even across multiple merge passes.
+    verify_parts(directory, [[row(1, -90, 0)], [row(1, -20, 1)]])
+    verify_parts(directory, [[row(1, -50, 0)], [row(1, -50, 1)]])
+    verify_parts(directory, [[row(rng.randrange(200), -rng.randrange(20, 100), i * 600 + j, j % 3 == 0)
+                             for j in range(511 + i % 3)] for i in range(17)])
+    verify_parts(directory, [[row(1, -50, 0)], [row(2, -30, 1)]], different_header=True)
+    verify_parts(directory, [[row(1, -50, 0)], []])
     verify(directory, [row(1, -50, 1).rstrip("\n")], invalid=True)
     verify(directory, [row(1, -128, 1)], invalid=True)
     verify(directory, [], invalid=True)
 (out / "summary.json").write_text(json.dumps({"many_identities": benchmark, "resident_identities": resident,
     "all_unique": unique, "extended": extended}, indent=2) + "\n")
-print(f"Wardrive extrema: {21 if args.extended else 20} real-file cases passed; filtered/fallback CSVs match the independent oracle byte for byte; "
+print(f"Wardrive extrema: {21 if args.extended else 20} single-journal and 5 multi-journal cases passed; filtered/fallback CSVs match the independent oracle byte for byte; "
       f"100000 rows, {benchmark['devices']} identities, "
       f"{benchmark['output_rows']} retained; {benchmark['workspace_bytes']} bytes workspace. "
       "Host timing is not SD/hardware acceptance.")

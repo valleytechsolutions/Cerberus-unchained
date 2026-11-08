@@ -5,6 +5,8 @@ start control. Rev151 reduces capture-time SD writes; rev155 reduces the
 scratch-index work needed to save the final RSSI extremes after Stop. Both
 preserve the same final rows. These changes affect new recordings; existing CSVs and
 upload receipts are left intact.
+Rev156 adds [private journal segments](WARDRIVE_LONG_SESSIONS.md) so the first
+64 MiB of journal data no longer ends a recording. Stop still publishes one CSV.
 
 ## Starting a recording
 
@@ -101,17 +103,20 @@ Index counters measure successful transfers through C stdio, including run
 headers; they are not physical SD block counts or total recording I/O. They
 exclude source CSV reads and output CSV writes. The next session resets them.
 
-The `.TMP` journal is synced before compaction. A fresh `.NEW` file is synced
-and closed before publication; only then is the journal removed. Read, write,
+The `.TMP` journal and any `.TMP.P#####` continuations are synced before
+compaction. A fresh `.NEW` file is synced and closed before publication;
+only then are the journals removed. Read, write,
 allocation, sync, close or rename failures leave the journal available for
-recovery and do not publish an incomplete CSV. Interrupted `.TMP`, `.D0`,
+recovery and do not publish an incomplete CSV. Interrupted `.TMP`, `.TMP.P#####`, `.D0`,
 `.D1` and `.NEW` files are not upload candidates. Power loss can still lose
 the unsynced tail of a recording. Automatic recovery is not implemented.
 
 Compaction needs free SD space for the output plus two row-index scratch files.
 The capture filter can reduce journal and sorting work when identities repeat;
-savings depend on signal changes, population size and cache churn. The 64 MiB
-journal limit remains. A full card can prevent finalization while preserving
+savings depend on signal changes, population size and cache churn. Each private
+journal is limited to 64 MiB; capture can continue into further segments.
+The final uploadable CSV retains its existing 64 MiB validation limit. A full
+card or an oversized final result can prevent finalization while preserving
 the source journal. Power-loss recovery contains accepted candidate extrema,
 not every intermediate valid observation.
 

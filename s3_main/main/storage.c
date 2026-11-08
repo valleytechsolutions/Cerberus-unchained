@@ -89,6 +89,8 @@ static char sd_wifi_capture_name[CERBERUS_STORAGE_NAME_MAX];
 typedef struct {
     FILE *file;
     uint64_t bytes;
+    uint32_t part_bytes;
+    uint16_t parts, header_length;
     uint32_t pending_rows;
     int64_t last_sync_us;
     bool write_failed;
@@ -1233,12 +1235,17 @@ static esp_err_t wardrive_stream_begin(wardrive_storage_stream_t *stream,
     }
     stream->file = file;
     stream->bytes = header_length;
+    stream->part_bytes = (uint32_t)header_length;
+    stream->header_length = (uint16_t)header_length;
+    stream->parts = 1U;
     stream->pending_rows = 0U;
     stream->last_sync_us = esp_timer_get_time();
     stream->write_failed = false;
     release_storage_mutex();
     return ESP_OK;
 }
+
+#include "storage_wardrive_journal_impl.h"
 
 static esp_err_t wardrive_stream_sync(wardrive_storage_stream_t *stream)
 {
@@ -1277,9 +1284,12 @@ static esp_err_t wardrive_stream_append(wardrive_storage_stream_t *stream,
         release_storage_mutex();
         return ESP_FAIL;
     }
-    if (row_length > CERBERUS_STORAGE_WARDRIVE_MAX_BYTES - stream->bytes) {
-        release_storage_mutex();
-        return ESP_ERR_INVALID_SIZE;
+    if (row_length > CERBERUS_STORAGE_WARDRIVE_MAX_BYTES - stream->part_bytes) {
+        esp_err_t error = stream == &sd_wigle_stream ? wardrive_journal_advance(stream) : ESP_ERR_INVALID_SIZE;
+        if (error != ESP_OK) {
+            release_storage_mutex();
+            return error;
+        }
     }
     if (fwrite(row, 1U, row_length, stream->file) != row_length) {
         /* The FILE can contain a partial row even if a later flush succeeds. */
@@ -1288,6 +1298,7 @@ static esp_err_t wardrive_stream_append(wardrive_storage_stream_t *stream,
         return ESP_FAIL;
     }
     stream->bytes += row_length;
+    stream->part_bytes += row_length;
     ++stream->pending_rows;
     bool due = stream->pending_rows >= 256U ||
         esp_timer_get_time() - stream->last_sync_us >= 2000000LL;

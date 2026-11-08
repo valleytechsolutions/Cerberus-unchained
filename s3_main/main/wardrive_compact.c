@@ -12,7 +12,7 @@ typedef struct {
     cerberus_ward_log_identity_t identity;
     uint32_t offset;
     uint16_t length;
-    uint16_t reserved;
+    uint16_t part;
 } row_ref_t;
 _Static_assert(sizeof(row_ref_t) == 16U, "bounded on-card row index");
 
@@ -48,12 +48,18 @@ static int key_compare(const row_ref_t *a, const row_ref_t *b)
     return difference ? difference : (int)a->identity.type - (int)b->identity.type;
 }
 
+static int position_compare(const row_ref_t *a, const row_ref_t *b)
+{
+    int difference = (int)a->part - (int)b->part;
+    return difference ? difference : a->offset < b->offset ? -1 : a->offset > b->offset;
+}
+
 static int row_compare(const void *left, const void *right)
 {
     const row_ref_t *a = left, *b = right;
     int difference = key_compare(a, b);
     if (!difference) difference = (int)a->identity.rssi - (int)b->identity.rssi;
-    if (!difference) difference = a->offset < b->offset ? -1 : a->offset > b->offset;
+    if (!difference) difference = position_compare(a, b);
     return difference;
 }
 
@@ -117,7 +123,7 @@ static bool writer_push(writer_t *writer, const row_ref_t *row)
 
 static bool writer_pair(writer_t *writer, const row_ref_t *low, const row_ref_t *high)
 {
-    return writer_push(writer, low) && (low->offset == high->offset || writer_push(writer, high));
+    return writer_push(writer, low) && (!position_compare(low, high) || writer_push(writer, high));
 }
 
 static uint32_t reduce_sorted(row_ref_t *rows, uint32_t count)
@@ -130,7 +136,7 @@ static uint32_t reduce_sorted(row_ref_t *rows, uint32_t count)
             ++i;
         }
         rows[kept++] = low;
-        if (low.offset != high.offset) rows[kept++] = high;
+        if (position_compare(&low, &high)) rows[kept++] = high;
     }
     return kept;
 }
@@ -140,6 +146,8 @@ static bool write_sorted_run(FILE *file, workspace_t *w, unsigned count,
 {
     qsort(w->data.sort, count, sizeof(row_ref_t), row_compare);
     uint32_t kept = reduce_sorted(w->data.sort, count);
+    if (stats->index_write_bytes + sizeof(kept) + kept * sizeof(row_ref_t) > INT32_MAX)
+        return false;
     if (!index_write(file, &kept, sizeof(kept), stats) ||
         !index_write(file, w->data.sort, kept * sizeof(row_ref_t), stats)) return false;
     stats->initial_refs += kept;
@@ -191,11 +199,16 @@ static bool merge_runs(FILE *input, FILE *output, workspace_t *w,
     return true;
 }
 
-static bool copy_row(FILE *source, FILE *output, const row_ref_t *row,
+static bool copy_row(const cerberus_wardrive_journals_t *sources, FILE *output, const row_ref_t *row,
     workspace_t *w, cerberus_wardrive_compact_stats_t *stats)
 {
-    if (!row->length || row->length >= sizeof(w->line) ||
-        (uint64_t)row->offset + row->length > stats->input_bytes ||
+    FILE *source = NULL;
+    uint32_t bytes = 0;
+    if (row->part >= sources->count ||
+        sources->select(sources->context, row->part, &source, &bytes) != ESP_OK || !source || source == output ||
+        !row->length || row->length >= sizeof(w->line) ||
+        (uint64_t)row->offset + row->length > bytes ||
+        stats->output_bytes + row->length > CERBERUS_WARD_LOG_MAX_BYTES ||
         fseek(source, (long)row->offset, SEEK_SET) ||
         fread(w->line, 1, row->length, source) != row->length ||
         fwrite(w->line, 1, row->length, output) != row->length) return false;
@@ -204,59 +217,82 @@ static bool copy_row(FILE *source, FILE *output, const row_ref_t *row,
     return true;
 }
 
-static bool copy_pair(FILE *source, FILE *output, const row_ref_t *low,
+static bool copy_pair(const cerberus_wardrive_journals_t *sources, FILE *output, const row_ref_t *low,
     const row_ref_t *high, workspace_t *w, cerberus_wardrive_compact_stats_t *stats)
 {
     ++stats->devices;
     /* Preserve capture order within each pair. Equal RSSI keeps one earliest
      * observation, not two copies of an identical extremum. */
-    const row_ref_t *first = low->offset < high->offset ? low : high;
+    const row_ref_t *first = position_compare(low, high) < 0 ? low : high;
     const row_ref_t *second = first == low ? high : low;
-    return copy_row(source, output, first, w, stats) &&
-        (low->offset == high->offset || copy_row(source, output, second, w, stats));
+    return copy_row(sources, output, first, w, stats) &&
+        (!position_compare(low, high) || copy_row(sources, output, second, w, stats));
 }
 
-esp_err_t cerberus_wardrive_compact(FILE *source, FILE *a, FILE *b, FILE *output,
+esp_err_t cerberus_wardrive_compact_journals(const cerberus_wardrive_journals_t *sources,
+    FILE *a, FILE *b, FILE *output,
     void *memory, size_t capacity, void (*yield)(void),
     cerberus_wardrive_compact_stats_t *stats)
 {
-    if (!source || !a || !b || !output || !memory || !stats || capacity < sizeof(workspace_t) ||
-        source == a || source == b || source == output || a == b || a == output || b == output)
+    if (!sources || !sources->count || !sources->select || !a || !b || !output ||
+        !memory || !stats || capacity < sizeof(workspace_t) || a == b || a == output || b == output)
         return ESP_ERR_INVALID_ARG;
     workspace_t *w = memory;
     memset(w, 0, sizeof(*w));
     memset(stats, 0, sizeof(*stats));
-    cerberus_ward_log_init(&w->parser);
-    unsigned pending = 0;
     uint32_t runs = 0;
-    while (fgets(w->line, sizeof(w->line), source)) {
-        size_t length = strlen(w->line);
-        if (!length || w->line[length - 1] != '\n' ||
-            !cerberus_ward_log_feed(&w->parser, w->line, length) ||
-            w->parser.summary.kind != CERBERUS_WARD_LOG_WIGLE) return ESP_ERR_INVALID_RESPONSE;
-        if (w->parser.summary.lines <= 2U) {
-            if (fwrite(w->line, 1, length, output) != length) return ESP_FAIL;
-            stats->output_bytes += length;
-        } else {
-            w->data.sort[pending++] = (row_ref_t){.identity = w->parser.last_row,
-                .offset = (uint32_t)stats->input_bytes, .length = (uint16_t)length};
-            ++stats->input_rows;
+    uint16_t header_lengths[2] = {0};
+    for (uint32_t part = 0; part < sources->count; ++part) {
+        FILE *source = NULL;
+        uint32_t bytes = 0, offset = 0;
+        if (sources->select(sources->context, (uint16_t)part, &source, &bytes) != ESP_OK ||
+            !source || source == a || source == b || source == output ||
+            !bytes || bytes > CERBERUS_WARD_LOG_MAX_BYTES || fseek(source, 0, SEEK_SET)) return ESP_FAIL;
+        cerberus_ward_log_init(&w->parser);
+        unsigned pending = 0;
+        while (fgets(w->line, sizeof(w->line), source)) {
+            size_t length = strlen(w->line);
+            if (!length || w->line[length - 1] != '\n' ||
+                !cerberus_ward_log_feed(&w->parser, w->line, length) ||
+                w->parser.summary.kind != CERBERUS_WARD_LOG_WIGLE) return ESP_ERR_INVALID_RESPONSE;
+            if (w->parser.summary.lines <= 2U) {
+                unsigned line = w->parser.summary.lines - 1U;
+                if (!part) {
+                    if (fwrite(w->line, 1, length, output) != length) return ESP_FAIL;
+                    header_lengths[line] = (uint16_t)length;
+                    stats->output_bytes += length;
+                } else {
+                    /* No rows are pending yet, so the sort buffer can compare
+                     * headers without another allocation. Output still has
+                     * only the first journal's two header lines. */
+                    if (length != header_lengths[line] ||
+                        fseek(output, line ? header_lengths[0] : 0, SEEK_SET) ||
+                        fread(w->data.sort, 1, length, output) != length ||
+                        memcmp(w->data.sort, w->line, length)) return ESP_ERR_INVALID_RESPONSE;
+                }
+            } else {
+                if (stats->input_rows == UINT32_MAX) return ESP_ERR_INVALID_SIZE;
+                w->data.sort[pending++] = (row_ref_t){.identity = w->parser.last_row,
+                    .offset = offset, .length = (uint16_t)length, .part = (uint16_t)part};
+                ++stats->input_rows;
+            }
+            offset += length;
+            stats->input_bytes += length;
+            if (pending == SORT_ROWS) {
+                if (!write_sorted_run(a, w, pending, stats)) return ESP_FAIL;
+                ++runs; pending = 0;
+                if (yield) yield();
+            }
         }
-        stats->input_bytes += length;
-        if (pending == SORT_ROWS) {
+        if (ferror(source) || offset != bytes) return ESP_FAIL;
+        if (!cerberus_ward_log_finish(&w->parser)) return ESP_ERR_INVALID_RESPONSE;
+        if (pending) {
             if (!write_sorted_run(a, w, pending, stats)) return ESP_FAIL;
             ++runs;
-            pending = 0;
-            if (yield) yield();
         }
+        ++stats->input_parts;
     }
-    if (ferror(source)) return ESP_FAIL;
-    if (!cerberus_ward_log_finish(&w->parser)) return ESP_ERR_INVALID_RESPONSE;
-    if (pending) {
-        if (!write_sorted_run(a, w, pending, stats)) return ESP_FAIL;
-        ++runs;
-    }
-    if (fflush(a)) return ESP_FAIL;
+    if (fflush(a) || fseek(output, (long)stats->output_bytes, SEEK_SET)) return ESP_FAIL;
     FILE *sorted = a, *other = b;
     uint32_t refs = stats->initial_refs;
     while (runs > 1U) {
@@ -275,11 +311,35 @@ esp_err_t cerberus_wardrive_compact(FILE *source, FILE *a, FILE *b, FILE *output
         row_ref_t row = cursor->rows[cursor->used++];
         if (!i) low = high = row;
         else if (key_compare(&low, &row)) {
-            if (!copy_pair(source, output, &low, &high, w, stats)) return ESP_FAIL;
+            if (!copy_pair(sources, output, &low, &high, w, stats)) return ESP_FAIL;
             low = high = row;
         } else if (row.identity.rssi > high.identity.rssi) high = row;
         if (yield && i % SORT_ROWS == 0) yield();
     }
-    if (!copy_pair(source, output, &low, &high, w, stats) || fflush(output)) return ESP_FAIL;
+    if (!copy_pair(sources, output, &low, &high, w, stats) || fflush(output)) return ESP_FAIL;
     return ESP_OK;
+}
+
+typedef struct { FILE *file; uint32_t bytes; } single_journal_t;
+static esp_err_t single_journal_select(void *context, uint16_t part, FILE **file, uint32_t *bytes)
+{
+    if (part) return ESP_ERR_INVALID_ARG;
+    single_journal_t *source = context;
+    *file = source->file; *bytes = source->bytes;
+    return ESP_OK;
+}
+
+esp_err_t cerberus_wardrive_compact(FILE *source, FILE *a, FILE *b, FILE *output,
+    void *memory, size_t capacity, void (*yield)(void), cerberus_wardrive_compact_stats_t *stats)
+{
+    if (!source || !a || !b || !output || !memory || !stats || capacity < sizeof(workspace_t) ||
+        source == a || source == b || source == output || a == b || a == output || b == output)
+        return ESP_ERR_INVALID_ARG;
+    memset(stats, 0, sizeof(*stats));
+    if (fseek(source, 0, SEEK_END)) return ESP_FAIL;
+    long bytes = ftell(source);
+    if (bytes < 0 || (uint64_t)bytes > CERBERUS_WARD_LOG_MAX_BYTES) return ESP_ERR_INVALID_SIZE;
+    single_journal_t context = {.file = source, .bytes = (uint32_t)bytes};
+    cerberus_wardrive_journals_t sources = {.context = &context, .count = 1, .select = single_journal_select};
+    return cerberus_wardrive_compact_journals(&sources, a, b, output, memory, capacity, yield, stats);
 }
