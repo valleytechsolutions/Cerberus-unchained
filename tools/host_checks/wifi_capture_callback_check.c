@@ -61,10 +61,12 @@ static void assert_empty(void)
 }
 static void assert_entry_record(int64_t entered)
 {
-    static uint32_t last_sequence;
+    static uint32_t last_sequence,last_generation;
     cerberus_wifi_capture_peek_payload_t p;
     assert(cerberus_wifi_capture_service_peek(capture_request.generation,&p)==ESP_OK);
-    assert(p.generation==capture_request.generation&&p.sequence==last_sequence+1U&&p.length==73U);
+    uint32_t expected=p.generation==last_generation?last_sequence+1U:1U;
+    assert(p.generation==capture_request.generation&&p.sequence==expected&&p.length==73U);
+    last_generation=p.generation;
     last_sequence=p.sequence;
     assert(p.channel==149U&&p.rssi_dbm==-40);
     assert(p.crc32==cerberus_protocol_crc32(packet.payload,73U));
@@ -98,6 +100,22 @@ int main(void)
     clock_us=-1;receive();assert_empty();
     clock_us=INT64_C(0x1000000000000);receive();assert_empty();
     stop_drain();
-    puts("C5 actual capture callback: entry timestamp/CRC/FCS, same-channel generation turnover, closed admission, rearm boundary, negative/48-bit clock rejection passed.");
+    ++capture_request.generation;capture_request.mode_mask=CERBERUS_WIFI_CAPTURE_MODE_RAW;
+    clock_us=2000000;start_capture();capture_callback_hook=delay_only;
+    memset(packet.payload,0,sizeof(packet.payload));packet.payload[0]=0xd4;
+    packet.rx_ctrl.sig_len=14U; /* Ten-byte ACK header and four FCS bytes. */
+    memset(packet.payload+10,0xb7,4);
+    wifi_promiscuous_callback(&packet,WIFI_PKT_CTRL);
+    cerberus_wifi_capture_peek_payload_t control;
+    assert(cerberus_wifi_capture_service_peek(capture_request.generation,&control)==ESP_OK);
+    assert(control.sequence==1&&control.length==10&&control.channel==149&&control.rssi_dbm==-40);
+    assert(control.crc32==cerberus_protocol_crc32(packet.payload,10));
+    uint64_t entered=0;for(unsigned i=0;i<6;++i)entered|=(uint64_t)control.monotonic_us_le48[i]<<(8U*i);
+    assert(entered==2000000U&&clock_us==2005000U);
+    packet.rx_ctrl.rx_state=1;wifi_promiscuous_callback(&packet,WIFI_PKT_CTRL);
+    packet.rx_ctrl.rx_state=0;wifi_promiscuous_callback(&packet,WIFI_PKT_MISC);
+    packet.rx_ctrl.sig_len=4;wifi_promiscuous_callback(&packet,WIFI_PKT_CTRL);
+    assert(capture_status().accepted==1);stop_drain();
+    puts("C5 actual capture callback: entry timestamp/CRC/FCS, short CTRL, same-channel generation turnover, closed admission, rearm boundary, negative/48-bit clock rejection passed.");
     return 0;
 }

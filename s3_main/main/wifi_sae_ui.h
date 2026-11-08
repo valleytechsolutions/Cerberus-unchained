@@ -33,7 +33,7 @@ static bool sae_ui_pending(void)
 static bool sae_ui_supported(void)
 { return c5_online && c5_status.firmware_version >= CERBERUS_WIFI_CAPTURE_PLAN_MIN_FIRMWARE; }
 static const char *sae_ui_back_label(void)
-{ return sae_ui_pending() && sae_ui && sae_ui->exit ? "STOPPING" : sae_ui_from_menu ? "AUTH MENU" : "TARGET"; }
+{ return sae_ui_pending() && sae_ui && sae_ui->exit ? "STOPPING" : sae_ui_from_menu ? "RX TOOLS" : "TARGET"; }
 
 static void sae_ui_allocate(void)
 {
@@ -53,7 +53,7 @@ static void sae_ui_allocate(void)
 
 static void sae_ui_open(bool menu)
 {
-    if (sae_ui_opened || eapol_ui_is_open()) return;
+    if (sae_ui_opened || eapol_ui_is_open() || frame_ui_is_open()) return;
     sae_ui_opened = true; sae_ui_from_menu = menu;
     sae_ui_allocate();
     capture_mode_index = 4U;
@@ -74,7 +74,7 @@ static void sae_ui_close(bool back)
     if (!back && sae_ui_from_menu) return;
     if (!sae_ui) {
         sae_ui_opened = false;
-        if (back) wifi_mode = sae_ui_from_menu ? UI_WIFI_MODE_AUTH : UI_WIFI_MODE_TARGET;
+        if (back) wifi_mode = sae_ui_from_menu ? UI_WIFI_MODE_RX_TOOLS : UI_WIFI_MODE_TARGET;
         else capture_mode_index = 0U;
         return;
     }
@@ -125,7 +125,7 @@ static void sae_ui_choose_aps(void)
     dual_wifi_return_to_view = false;
     dual_wifi_live_cancel_handoff(); dual_wifi_ui_leave();
     wifi_mode = UI_WIFI_MODE_LIST;
-    auth_monitor_picker_begin();
+    capture_picker_begin();
 }
 
 static void sae_ui_selection_done(void)
@@ -186,9 +186,8 @@ static bool sae_ui_tick(uint32_t now, bool visible)
                 capture_target = s->target; memcpy(capture_ssid, s->ssid, sizeof(capture_ssid));
             }
             heap_caps_free(s); sae_ui = NULL; sae_ui_opened = false;
-            capture_has_last_status = false;
             if (here) {
-                if (exit == SAE_EXIT_BACK) wifi_mode = sae_ui_from_menu ? UI_WIFI_MODE_AUTH : UI_WIFI_MODE_TARGET;
+                if (exit == SAE_EXIT_BACK) wifi_mode = sae_ui_from_menu ? UI_WIFI_MODE_RX_TOOLS : UI_WIFI_MODE_TARGET;
                 else if (exit == SAE_EXIT_NEXT) capture_mode_index = 0U;
             }
             return visible;

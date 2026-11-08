@@ -6,6 +6,8 @@ static const uint8_t capture_hop_channels[]={
     120,124,128,132,136,140,144,149,153,157,161,165,
 };
 static bool capture_hopping,capture_restore_pending,capture_disable_pending;
+static bool capture_ctrl_restore_pending;
+static wifi_promiscuous_filter_t capture_previous_ctrl_filter;
 static wifi_band_mode_t capture_previous_band_mode;
 static uint8_t capture_previous_channel,capture_hop_index;
 static wifi_second_chan_t capture_previous_second;
@@ -38,9 +40,32 @@ static esp_err_t capture_hop_pause(void)
     return ESP_OK;
 }
 
+static esp_err_t capture_restore_controls(void)
+{
+    if(!capture_ctrl_restore_pending)return ESP_OK;
+    esp_err_t error=esp_wifi_set_promiscuous_ctrl_filter(&capture_previous_ctrl_filter);
+    if(error==ESP_OK)capture_ctrl_restore_pending=false;
+    return error;
+}
+
+static esp_err_t capture_set_filter(const wifi_promiscuous_filter_t *filter,bool raw)
+{
+    esp_err_t error=esp_wifi_set_promiscuous_filter(filter);
+    if(error!=ESP_OK||!raw)return error;
+    error=esp_wifi_get_promiscuous_ctrl_filter(&capture_previous_ctrl_filter);
+    if(error!=ESP_OK)return error;
+    /* A failed setter may still have changed controller state. Preserve the
+     * snapshot and ownership until an explicit restore succeeds. */
+    capture_ctrl_restore_pending=true;
+    const wifi_promiscuous_filter_t controls={.filter_mask=WIFI_PROMIS_CTRL_FILTER_MASK_ALL};
+    return esp_wifi_set_promiscuous_ctrl_filter(&controls);
+}
+
 static esp_err_t capture_hop_restore(void)
 {
     esp_err_t error=capture_hop_pause();
+    if(error!=ESP_OK)return error;
+    error=capture_restore_controls();
     if(error!=ESP_OK)return error;
     if(capture_restore_pending){
         /* Restore the actual previous channel before restoring its mode.
@@ -148,6 +173,7 @@ static esp_err_t capture_fixed_finish(esp_err_t reason)
     if(cerberus_wifi_capture_service_active())capture_terminal_reason=reason;
     cerberus_wifi_capture_service_stop(capture_terminal_reason);
     esp_err_t cleanup=capture_hop_pause();
+    if(cleanup==ESP_OK)cleanup=capture_restore_controls();
     if(cleanup==ESP_OK)
         atomic_store_explicit(&capture_radio_reserved,false,memory_order_release);
     else cerberus_wifi_capture_service_cleanup_error(cleanup);
@@ -190,6 +216,7 @@ esp_err_t cerberus_wifi_capture_start(const cerberus_wifi_capture_start_request_
     capture_terminal_reason=ESP_OK;
     capture_restore_pending=false;
     capture_disable_pending=false;
+    capture_ctrl_restore_pending=false;
     wifi_promiscuous_filter_t filter={.filter_mask=0U};
     if(request->mode_mask&CERBERUS_WIFI_CAPTURE_MODE_RAW)
         filter.filter_mask=WIFI_PROMIS_FILTER_MASK_MGMT|
@@ -211,7 +238,7 @@ esp_err_t cerberus_wifi_capture_start(const cerberus_wifi_capture_start_request_
             err=capture_hop_pause();
         }
         if(err==ESP_OK)err=esp_wifi_set_band_mode(WIFI_BAND_MODE_AUTO);
-        if(err==ESP_OK)err=esp_wifi_set_promiscuous_filter(&filter);
+        if(err==ESP_OK)err=capture_set_filter(&filter,(request->mode_mask&CERBERUS_WIFI_CAPTURE_MODE_RAW)!=0U);
         capture_hop_index=0U;
         if(err==ESP_OK)err=capture_hop_next();
         if(err==ESP_OK)cerberus_wifi_capture_service_set_deadline(
@@ -224,7 +251,7 @@ esp_err_t cerberus_wifi_capture_start(const cerberus_wifi_capture_start_request_
     }
     err=esp_wifi_set_band(request->channel<=14U?WIFI_BAND_2G:WIFI_BAND_5G);
     if(err==ESP_OK)err=esp_wifi_set_channel(request->channel,WIFI_SECOND_CHAN_NONE);
-    if(err==ESP_OK)err=esp_wifi_set_promiscuous_filter(&filter);
+    if(err==ESP_OK)err=capture_set_filter(&filter,(request->mode_mask&CERBERUS_WIFI_CAPTURE_MODE_RAW)!=0U);
     bool enable_attempted=err==ESP_OK;
     if(enable_attempted){
         capture_disable_pending=true;

@@ -26,6 +26,7 @@ typedef enum {
     CERBERUS_WIFI_CAPTURE_DROP_OVERSIZE,
     CERBERUS_WIFI_CAPTURE_DROP_TRUNCATED,
     CERBERUS_WIFI_CAPTURE_DROP_INVALID,
+    CERBERUS_WIFI_CAPTURE_DROP_EXHAUSTED,
 } cerberus_wifi_capture_push_result_t;
 
 typedef struct {
@@ -45,7 +46,8 @@ typedef struct {
 } cerberus_wifi_capture_ring_t;
 
 void cerberus_wifi_capture_ring_init(cerberus_wifi_capture_ring_t *ring);
-/* Main-task control only. A generation may never be reused or decreased. */
+/* Main-task control only. A generation may never be reused or decreased.
+ * Sequences restart at one only after a new generation safely takes over. */
 bool cerberus_wifi_capture_ring_start(cerberus_wifi_capture_ring_t *ring,uint32_t generation);
 void cerberus_wifi_capture_ring_stop(cerberus_wifi_capture_ring_t *ring);
 /* Nonblocking producer API. `original_length` includes any FCS included in

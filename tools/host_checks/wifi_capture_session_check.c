@@ -417,6 +417,29 @@ static void plan_cases(void)
     reset_case();planned_options(&plan);expected.mode_mask=CERBERUS_WIFI_CAPTURE_MODE_EAPOL;
     assert(cerberus_s3_capture_start_options(&expected)==ESP_ERR_INVALID_ARG && !task_creates && !allocations);
 
+    /* Generic frame plans use the same copied plan and exact drain path.
+     * RAW has its own dwell; probe/disconnect retain the dual-band scan dwell. */
+    const uint8_t frame_modes[]={CERBERUS_WIFI_CAPTURE_MODE_RAW,
+        CERBERUS_WIFI_CAPTURE_MODE_PROBE,CERBERUS_WIFI_CAPTURE_MODE_DEAUTH};
+    for(unsigned mode=0U;mode<3U;++mode){
+        for(unsigned save=0U;save<2U;++save){
+            cerberus_wifi_capture_plan_clear(&plan);
+            plan.channel_mask=cerberus_wifi_capture_plan_channel_bit(6U)|
+                cerberus_wifi_capture_plan_channel_bit(36U);
+            plan.dwell_ms=mode?CERBERUS_WIFI_CAPTURE_PLAN_DWELL_MS:CERBERUS_WIFI_CAPTURE_PLAN_RAW_DWELL_MS;
+            reset_case();planned_options(&plan);expected.mode_mask=frame_modes[mode];expected.save_pcap=save!=0U;
+            frozen=plan;assert(cerberus_s3_capture_start_options(&expected)==ESP_OK);
+            memset(&plan,0,sizeof(plan));expected.plan=&frozen;
+            state=run_capture();
+            assert(state.state==(save?CERBERUS_S3_CAPTURE_SAVED:CERBERUS_S3_CAPTURE_COMPLETE));
+            assert(observed==1U && plan_stages==1U && !plan_targets && saved==save);
+            plan=frozen;
+        }
+    }
+    plan.dwell_ms=CERBERUS_WIFI_CAPTURE_PLAN_DWELL_MS;
+    reset_case();planned_options(&plan);expected.mode_mask=CERBERUS_WIFI_CAPTURE_MODE_RAW;
+    assert(cerberus_s3_capture_start_options(&expected)==ESP_ERR_INVALID_ARG && !task_creates && !allocations);
+
     /* Abandoned staged IDs also fence a later legacy fixed-channel capture. */
     reset_case();plan_supported=true;staged.generation=20000U;stop_after=100U;
     assert(cerberus_s3_capture_start_options_generation(&expected,&reserved)==ESP_OK && reserved>20000U);

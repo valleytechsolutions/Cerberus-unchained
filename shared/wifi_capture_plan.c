@@ -32,11 +32,16 @@ bool cerberus_wifi_capture_plan_mask_valid(uint64_t mask)
 
 bool cerberus_wifi_capture_plan_dwell_valid(uint16_t dwell_ms)
 { return dwell_ms == CERBERUS_WIFI_CAPTURE_PLAN_DWELL_MS ||
+    dwell_ms == CERBERUS_WIFI_CAPTURE_PLAN_RAW_DWELL_MS ||
     dwell_ms == CERBERUS_WIFI_CAPTURE_PLAN_EAPOL_DWELL_MS; }
 
 bool cerberus_wifi_capture_plan_mode_valid(uint8_t mode_mask, uint16_t dwell_ms)
 {
-    if (mode_mask == CERBERUS_WIFI_CAPTURE_MODE_SAE_COMMIT)
+    if (mode_mask == CERBERUS_WIFI_CAPTURE_MODE_RAW)
+        return dwell_ms == CERBERUS_WIFI_CAPTURE_PLAN_RAW_DWELL_MS;
+    if (mode_mask == CERBERUS_WIFI_CAPTURE_MODE_SAE_COMMIT ||
+        mode_mask == CERBERUS_WIFI_CAPTURE_MODE_PROBE ||
+        mode_mask == CERBERUS_WIFI_CAPTURE_MODE_DEAUTH)
         return dwell_ms == CERBERUS_WIFI_CAPTURE_PLAN_DWELL_MS;
     return (mode_mask == CERBERUS_WIFI_CAPTURE_MODE_EAPOL ||
         mode_mask == (CERBERUS_WIFI_CAPTURE_MODE_EAPOL | CERBERUS_WIFI_CAPTURE_MODE_BEACON)) &&
@@ -91,9 +96,10 @@ bool cerberus_wifi_capture_plan_add_target(cerberus_wifi_capture_plan_t *plan,
 bool cerberus_wifi_capture_plan_matches(const cerberus_wifi_capture_plan_t *plan,
     const uint8_t bssid[6], uint8_t channel)
 {
-    if (!plan || !bssid || plan->target_count > CERBERUS_WIFI_CAPTURE_PLAN_MAX_TARGETS ||
+    if (!plan || plan->target_count > CERBERUS_WIFI_CAPTURE_PLAN_MAX_TARGETS ||
         !(plan->channel_mask & cerberus_wifi_capture_plan_channel_bit(channel))) return false;
     if (!plan->target_count) return true;
+    if (!bssid) return false;
     for (unsigned i = 0U; i < plan->target_count; ++i)
         if (!memcmp(plan->bssids[i], bssid, 6U)) return true;
     return false;

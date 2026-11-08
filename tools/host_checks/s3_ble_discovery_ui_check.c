@@ -62,7 +62,9 @@ enum { UI_IEEE802154_MODE_ENERGY, UI_IEEE802154_MODE_BEACONS, UI_IEEE802154_MODE
 static struct { bool attack; } field_menu;
 static unsigned wifi_mode,ieee802154_mode,wifi_target_count,wifi_selected_index,wifi_analysis_generation;
 static bool wifi_attack_selecting,wifi_selection_valid,c5_online=true,live_radio_busy;
-static bool sae_ui_selecting, eapol_ui_selecting;
+static bool sae_ui_selecting, eapol_ui_selecting, frame_ui_selecting;
+static void frame_ui_selection_done(void)
+{assert(!"Frame selection reached in BLE-only fixture");}
 static void eapol_ui_selection_done(void)
 {assert(!"EAPOL selection reached in BLE-only fixture");}
 static void sae_ui_selection_done(void)

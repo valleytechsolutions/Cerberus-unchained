@@ -1,8 +1,8 @@
 # Passive SAE monitor
 
 Rev165 adds live SAE observations and planned channel scanning to the existing
-capture service. From rev167, open **Scan -> Wi-Fi -> TOOLS -> AUTH RX ->
-SAE MONITOR** without first selecting an AP. AUTH RX is the shared idle
+capture service. From rev167, open **Scan -> Wi-Fi -> TOOLS -> RX TOOLS ->
+SAE MONITOR** without first selecting an AP. RX TOOLS is the shared idle
 authentication-monitor chooser in the Wi-Fi tools footer. For a selected AP, open
 **CAPTURE THIS AP** and cycle the existing selector to **SAE MONITOR**. Both
 routes open the same page; neither starts RF reception until **START**.

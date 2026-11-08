@@ -1,5 +1,14 @@
 # Adaptive two-radio scanning
 
+## Rev168 source candidate
+
+[FRAME CAPTURE](WIFI_CAPTURE_DESIGN.md) extends generic receive/recording with
+RAW, probe and disconnect scopes, live delivered-frame summaries and bounded
+recent disconnect evidence. C5 owns channel plans and control-subtype filter
+restoration; S3 owns frozen options, verified interpretation and optional SD
+writing. RX TOOLS shares one flat chooser with EAPOL and SAE. Build and
+installation evidence will be recorded after the candidate passes its gates.
+
 ## Current installed checkpoint: rev167
 
 [Scoped passive EAPOL monitoring](WIFI_EAPOL_MONITOR.md) adds direct all-band,

@@ -145,6 +145,23 @@ static void gates(void)
         expected_start.mode_mask|=CERBERUS_WIFI_CAPTURE_MODE_RAW;
         assert(c5_spi_link_wifi_capture_start(&expected_start,&out)==ESP_ERR_INVALID_ARG);
     }
+    const uint8_t frame_modes[]={CERBERUS_WIFI_CAPTURE_MODE_RAW,
+        CERBERUS_WIFI_CAPTURE_MODE_PROBE,CERBERUS_WIFI_CAPTURE_MODE_DEAUTH};
+    for(unsigned m=0;m<sizeof(frame_modes);++m)for(unsigned version=86;version<=88;++version){
+        reset(version,frame_modes[m],true);expected_start.flags|=CERBERUS_WIFI_CAPTURE_FLAG_PLAN;
+        assert(c5_spi_link_wifi_capture_start(&expected_start,&out)==
+            (version==88?ESP_OK:ESP_ERR_NOT_SUPPORTED));
+        assert(exchanges==(version==88?1U:0U));
+        if(version!=88){assert(zero(&out,sizeof(out)));continue;}
+        response_status.channel=0;
+        assert(c5_spi_link_wifi_capture_start(&expected_start,&out)==ESP_OK);
+        response_status.channel=177;
+        assert(c5_spi_link_wifi_capture_start(&expected_start,&out)==ESP_OK);
+        response_status.channel=35;
+        assert(c5_spi_link_wifi_capture_start(&expected_start,&out)==ESP_ERR_INVALID_RESPONSE);
+        expected_start.mode_mask|=CERBERUS_WIFI_CAPTURE_MODE_SAE_COMMIT;
+        assert(c5_spi_link_wifi_capture_start(&expected_start,&out)==ESP_ERR_INVALID_ARG);
+    }
     reset(85,CERBERUS_WIFI_CAPTURE_MODE_EAPOL,false);
     assert(c5_spi_link_wifi_capture_start(&expected_start,&out)==ESP_OK); /* Existing fixed path. */
 }
@@ -167,7 +184,7 @@ static void status_validation(void)
         if(kind==3)response_status.mode_mask=0;
         if(kind==4)response_status.channel=35;
         if(kind==5){response_status.mode_mask=CERBERUS_WIFI_CAPTURE_MODE_RAW;response_status.channel=178;}
-        if(kind==6){response_status.mode_mask=CERBERUS_WIFI_CAPTURE_MODE_RAW;response_status.channel=0;}
+        if(kind==6){response_status.mode_mask=CERBERUS_WIFI_CAPTURE_MODE_RAW|CERBERUS_WIFI_CAPTURE_MODE_PROBE;response_status.channel=0;}
         memset(&out,0xa5,sizeof(out));
         assert(c5_spi_link_wifi_capture_status(&out)==ESP_ERR_INVALID_RESPONSE&&zero(&out,sizeof(out)));
         response_status=saved;

@@ -83,10 +83,22 @@ static bool eapol_ui_pending(void){return false;}
 static void eapol_ui_open(bool menu){(void)menu;CHECK(false);}
 static void eapol_ui_selection_done(void){CHECK(false);}
 static void eapol_ui_close(bool back){(void)back;CHECK(false);}
-static void eapol_ui_start(void){CHECK(false);}
 static esp_err_t eapol_ui_draw(void){CHECK(false);return ESP_FAIL;}
 static void eapol_ui_tap(uint16_t x,uint16_t y){(void)x;(void)y;CHECK(false);}
 static bool eapol_ui_tick(uint32_t now,bool visible){(void)now;(void)visible;return false;}
+/* Frame capture is exercised by check_wifi_frame_ui.py; these hooks check
+ * dispatch and release between monitor families without another RF owner. */
+static bool frame_opened,frame_ui_selecting;
+static unsigned frame_opens;
+static bool frame_ui_is_open(void){return frame_opened;}
+static bool frame_ui_busy(void){return false;}
+static bool frame_ui_pending(void){return false;}
+static void frame_ui_selection_done(void){CHECK(false);}
+static void frame_ui_open(bool menu,uint8_t filter){(void)menu;CHECK(filter<3);frame_opened=true;++frame_opens;}
+static void frame_ui_close(bool back){CHECK(back);frame_opened=false;wifi_mode=UI_WIFI_MODE_TARGET;}
+static esp_err_t frame_ui_draw(void){return ESP_OK;}
+static void frame_ui_tap(uint16_t x,uint16_t y){(void)x;(void)y;CHECK(false);}
+static bool frame_ui_tick(uint32_t now,bool visible){(void)now;(void)visible;return false;}
 static bool sae_ui_is_open(void);
 static bool sae_ui_busy(void);
 static bool sae_ui_pending(void);
@@ -121,7 +133,7 @@ static esp_err_t draw_current_page(void){return draw_detail_page();}
 #include "sae_routes.h"
 static esp_err_t draw_detail_page(void)
 {drawn_size=0;drawn[0]=0;esp_err_t e=cerberus_display_fill_rect(0,0,320,480,UI_BACKGROUND);
- if(!e)e=draw_centered(20,"WI-FI TOOLS",UI_TEXT,2);if(!e&&wifi_mode==UI_WIFI_MODE_CAPTURE)e=capture_draw();if(!e&&wifi_mode==UI_WIFI_MODE_AUTH)e=auth_monitor_draw();
+ if(!e)e=draw_centered(20,"WI-FI TOOLS",UI_TEXT,2);if(!e&&wifi_mode==UI_WIFI_MODE_CAPTURE)e=capture_draw();if(!e&&wifi_mode==UI_WIFI_MODE_RX_TOOLS)e=rx_tools_draw();
  return e?e:cerberus_ui_widget_draw_button((cerberus_ui_rect_t){8,420,304,44},sae_ui_is_open()?sae_ui_back_label():route_auth_back_label(),2,true,UI_WIDGET_THEME);}
 static void tick(unsigned n,bool asleep){for(unsigned i=0;i<n;++i){now_ms+=25;route_tick(now_ms,asleep);}}
 static void reset(void)
@@ -132,11 +144,11 @@ static void reset(void)
  current_page=UI_PAGE_WIFI;wifi_mode=UI_WIFI_MODE_CAPTURE;wifi_selected_result=(cerberus_c5_wifi_result_t){.ssid="Field Kit",.channel=6,.rssi=-35};
  memcpy(wifi_selected_result.bssid,ap,6);wifi_selected_index=7;wifi_selection_valid=true;capture_enter();}
 static void enter(bool menu)
-{reset();if(menu){wifi_mode=UI_WIFI_MODE_MENU;route_menu(270,380);CHECK(wifi_mode==UI_WIFI_MODE_AUTH&&!sae_ui_is_open()&&!starts);CHECK(draw_detail_page()==ESP_OK);route_tap(100,270);}else{capture_mode_index=4;CHECK(draw_detail_page()==ESP_OK);}
+{reset();if(menu){wifi_mode=UI_WIFI_MODE_MENU;route_menu(270,380);CHECK(wifi_mode==UI_WIFI_MODE_RX_TOOLS&&!sae_ui_is_open()&&!starts);CHECK(draw_detail_page()==ESP_OK);route_tap(100,340);}else{capture_mode_index=4;CHECK(draw_detail_page()==ESP_OK);}
  CHECK(sae_ui_is_open()&&!starts&&!old_stops);tick(2,false);}
 static void start(void){route_tap(100,390);tick(2,false);CHECK(starts==1&&model.capture.busy&&!model.capture.save_pcap);}
 static void leave(void)
-{bool menu=sae_ui_from_menu;route_back();tick(3,false);CHECK(!sae_ui_is_open()&&!sae_ui&&!model.capture.busy&&wifi_mode==(menu?UI_WIFI_MODE_AUTH:UI_WIFI_MODE_TARGET));}
+{bool menu=sae_ui_from_menu;route_back();tick(3,false);CHECK(!sae_ui_is_open()&&!sae_ui&&!model.capture.busy&&wifi_mode==(menu?UI_WIFI_MODE_RX_TOOLS:UI_WIFI_MODE_TARGET));}
 static void choose_scope(unsigned scope)
 {for(unsigned i=0;i<6&&sae_ui->scope!=scope;++i)route_tap(100,230);CHECK(sae_ui->scope==scope);}
 static void tests(void)
@@ -175,7 +187,7 @@ static void tests(void)
  enter(true);prior_live=prior_dual=prior_capture=true;route_tap(100,390);tick(4,false);CHECK(!starts&&sae_ui_pending());route_back();route_tap(100,390);
  prior_live=prior_dual=prior_capture=false;tick(3,false);CHECK(!starts&&!sae_ui_is_open());
  enter(true);start();hold_stop=true;route_tap(100,390);route_back();tick(4,false);CHECK(sae_ui_is_open()&&model.capture.busy);route_tap(100,230);route_tap(100,390);CHECK(starts==1);
- hold_stop=false;cerberus_s3_sae_stop();tick(3,false);CHECK(!sae_ui_is_open()&&wifi_mode==UI_WIFI_MODE_AUTH);
+ hold_stop=false;cerberus_s3_sae_stop();tick(3,false);CHECK(!sae_ui_is_open()&&wifi_mode==UI_WIFI_MODE_RX_TOOLS);
  enter(true);start();model.summary.observations=7;route_tap(100,390);tick(2,false);CHECK(sae_ui->status.summary.observations==7&&!model.capture.busy);route_tap(100,390);tick(2,false);CHECK(starts==2&&!model.summary.observations);leave();
  enter(true);start();ignored_stops=1;route_tap(100,390);CHECK(model.capture.busy&&sae_ui_pending());tick(2,false);CHECK(!model.capture.busy&&!sae_ui_pending());leave();
  enter(true);start();ignored_stops=2;route_back();tick(1,false);CHECK(model.capture.busy&&sae_ui_is_open());tick(2,false);CHECK(!model.capture.busy&&!sae_ui_is_open());
@@ -184,14 +196,14 @@ static void tests(void)
  enter(true);prior_live=true;route_tap(100,390);tick(2,true);prior_live=false;tick(3,false);CHECK(!starts&&!sae_ui_pending());leave();
  enter(true);choose_scope(SAE_SCOPE_SELECTED);route_tap(100,260);current_page=UI_PAGE_OTHER;tick(3,false);CHECK(!sae_ui_is_open()&&!sae_ui_selecting&&!wifi_attack_selecting);
  enter(false);release_error=ESP_ERR_TIMEOUT;route_tap(100,160);tick(3,false);CHECK(sae_ui_is_open());route_back();release_error=ESP_OK;tick(3,false);CHECK(!sae_ui_is_open()&&wifi_mode==UI_WIFI_MODE_TARGET);
- enter(false);route_tap(100,160);tick(3,false);CHECK(!sae_ui_is_open()&&capture_mode_index==0);route_tap(100,380);CHECK(generic_starts==1);route_tap(100,380);route_back();
+ enter(false);route_tap(100,160);tick(3,false);CHECK(!sae_ui_is_open()&&capture_mode_index==0&&frame_opened&&frame_opens);route_back();CHECK(!frame_opened);
  enter(true);c5_status.firmware_version=85;route_tap(100,390);tick(3,false);CHECK(!starts&&draw_detail_page()==ESP_OK&&strstr(drawn,"CAPABILITY 86"));leave();
  enter(true);start_error=ESP_ERR_NO_MEM;route_tap(100,390);tick(3,false);CHECK(!model.capture.busy&&draw_detail_page()==ESP_OK&&strstr(drawn,"ESP_ERR_NO_MEM"));leave();
- reset();oom=true;route_menu(270,380);route_tap(100,270);CHECK(sae_ui_is_open()&&!sae_ui&&draw_detail_page()==ESP_OK);route_back();CHECK(!sae_ui_is_open());
- reset();oom=true;route_menu(270,380);route_tap(100,270);oom=false;route_tap(100,390);tick(3,false);CHECK(starts==1);leave();
+ reset();oom=true;route_menu(270,380);route_tap(100,340);CHECK(sae_ui_is_open()&&!sae_ui&&draw_detail_page()==ESP_OK);route_back();CHECK(!sae_ui_is_open());
+ reset();oom=true;route_menu(270,380);route_tap(100,340);oom=false;route_tap(100,390);tick(3,false);CHECK(starts==1);leave();
  enter(true);const uint16_t misses[][2]={{11,390},{308,390},{12,381},{12,412},{156,360},{163,360}};
  for(unsigned i=0;i<sizeof(misses)/sizeof(misses[0]);++i)route_tap(misses[i][0],misses[i][1]);CHECK(!starts&&!sae_ui_pending()&&sae_ui->view==SAE_VIEW_OPTIONS);leave();
- enter(true);start();route_launcher();tick(3,false);CHECK(!sae_ui_is_open()&&wifi_mode==UI_WIFI_MODE_AUTH);CHECK(allocations==freed);route_auth_back();CHECK(wifi_mode==UI_WIFI_MODE_MENU&&!sae_ui_is_open());
+ enter(true);start();route_launcher();tick(3,false);CHECK(!sae_ui_is_open()&&wifi_mode==UI_WIFI_MODE_RX_TOOLS);CHECK(allocations==freed);route_auth_back();CHECK(wifi_mode==UI_WIFI_MODE_MENU&&!sae_ui_is_open());
 }
 static void save(const char*folder,const char*name)
 {char path[1024];snprintf(path,sizeof(path),"%s/%s.ppm",folder,name);FILE*f=fopen(path,"wb");CHECK(f);fprintf(f,"P6\n320 480\n255\n");

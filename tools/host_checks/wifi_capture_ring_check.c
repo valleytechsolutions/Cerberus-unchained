@@ -54,17 +54,41 @@ int main(void)
     meta.frame_has_fcs=false;
     assert(cerberus_wifi_capture_ring_push(&ring,8,&meta,frames[0],6,6)==CERBERUS_WIFI_CAPTURE_ACCEPTED);
     first=cerberus_wifi_capture_ring_peek(&ring);
-    assert(first&&first->sequence==4&&first->generation==8);
+    assert(first&&first->sequence==1&&first->generation==8);
     uint8_t pcap[CERBERUS_WIFI_PCAP_RECORD_MAX_SIZE];
     assert(cerberus_wifi_pcapng_record(&first->metadata,first->frame,
         first->captured_length,first->original_length,pcap,sizeof(pcap))==40);
-    assert(cerberus_wifi_capture_ring_ack(&ring,8,4));
+    assert(cerberus_wifi_capture_ring_ack(&ring,8,1));
     cerberus_wifi_capture_ring_stop(&ring);
     assert(!cerberus_wifi_capture_ring_start(&ring,7)); /* old generation cannot return */
     cerberus_wifi_capture_ring_stats(&ring,&stats);
     assert(stats.generation==8&&stats.pending==0&&stats.accepted==1&&stats.dropped_stale==1&&
         stats.dropped_oversize==1&&stats.dropped_truncated==1&&stats.dropped_invalid==2&&
         stats.dropped_full==0&&stats.dropped_stopped==0&&stats.high_watermark==1);
-    puts("Wi-Fi capture ring passed: 2-slot bound, producer/consumer order, generation, stop/drain, exact ACK, PCAP serialization and per-cause drops.");
+    assert(cerberus_wifi_capture_ring_start(&ring,9));
+    atomic_store(&ring.next_sequence,UINT32_MAX-2U);
+    assert(cerberus_wifi_capture_ring_push(&ring,9,&meta,frames[0],6,6)==CERBERUS_WIFI_CAPTURE_ACCEPTED);
+    assert(cerberus_wifi_capture_ring_push(&ring,9,&meta,frames[1],6,6)==CERBERUS_WIFI_CAPTURE_ACCEPTED);
+    first=cerberus_wifi_capture_ring_peek(&ring);
+    cerberus_wifi_capture_record_t frozen=*first;
+    assert(first->sequence==UINT32_MAX-1U);
+    /* Exhaustion wins even when the ring is full. Neither pinned record is rewritten. */
+    assert(cerberus_wifi_capture_ring_push(&ring,9,&meta,frames[2],6,6)==CERBERUS_WIFI_CAPTURE_DROP_EXHAUSTED);
+    assert(!memcmp(first,&frozen,sizeof(frozen)));
+    cerberus_wifi_capture_ring_stats(&ring,&stats);
+    assert(!stats.active&&stats.pending==2&&stats.accepted==2&&stats.dropped_invalid==1);
+    assert(!cerberus_wifi_capture_ring_start(&ring,10));
+    assert(!cerberus_wifi_capture_ring_ack(&ring,9,1));
+    assert(cerberus_wifi_capture_ring_ack(&ring,9,UINT32_MAX-1U));
+    first=cerberus_wifi_capture_ring_peek(&ring);
+    assert(first->sequence==UINT32_MAX&&!memcmp(first->frame,frames[1],6));
+    assert(cerberus_wifi_capture_ring_ack(&ring,9,UINT32_MAX));
+    assert(cerberus_wifi_capture_ring_push(&ring,9,&meta,frames[0],6,6)==CERBERUS_WIFI_CAPTURE_DROP_STOPPED);
+    assert(!cerberus_wifi_capture_ring_start(&ring,9));
+    assert(cerberus_wifi_capture_ring_start(&ring,10));
+    assert(cerberus_wifi_capture_ring_push(&ring,10,&meta,frames[0],6,6)==CERBERUS_WIFI_CAPTURE_ACCEPTED);
+    first=cerberus_wifi_capture_ring_peek(&ring);
+    assert(first->generation==10&&first->sequence==1);
+    puts("Wi-Fi capture ring passed: 2-slot bound, producer/consumer order, generation, exhaustion/drain, exact ACK, PCAP serialization and per-cause drops.");
     return 0;
 }

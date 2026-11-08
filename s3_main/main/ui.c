@@ -216,7 +216,7 @@ typedef enum {
 
 typedef enum {
     UI_WIFI_MODE_MENU,
-    UI_WIFI_MODE_AUTH,
+    UI_WIFI_MODE_RX_TOOLS,
     UI_WIFI_MODE_FIELD_SURVEY,
     UI_WIFI_MODE_LIST,
     UI_WIFI_MODE_STATS,
@@ -434,6 +434,17 @@ static esp_err_t saved_ble_lookup_draw(void);
 static void saved_ble_lookup_tap(uint16_t x, uint16_t y);
 static bool saved_ble_lookup_tick(bool asleep);
 static bool saved_ble_lookup_fox_return(bool asleep);
+static bool frame_ui_is_open(void);
+static bool frame_ui_busy(void);
+static bool frame_ui_pending(void);
+static bool frame_ui_selecting;
+static void frame_ui_open(bool menu, uint8_t filter_index);
+static void frame_ui_selection_done(void);
+static const char *frame_ui_back_label(void);
+static void frame_ui_close(bool back);
+static esp_err_t frame_ui_draw(void);
+static void frame_ui_tap(uint16_t x, uint16_t y);
+static bool frame_ui_tick(uint32_t now, bool visible);
 static bool eapol_ui_is_open(void);
 static bool eapol_ui_busy(void);
 static bool eapol_ui_pending(void);
@@ -441,9 +452,9 @@ static bool eapol_ui_selecting;
 static void eapol_ui_open(bool menu);
 static void eapol_ui_selection_done(void);
 static const char *eapol_ui_back_label(void);
-static void auth_monitor_picker_begin(void);
-static esp_err_t auth_monitor_draw(void);
-static void auth_monitor_tap(uint16_t x, uint16_t y);
+static void capture_picker_begin(void);
+static esp_err_t rx_tools_draw(void);
+static void rx_tools_tap(uint16_t x, uint16_t y);
 static void eapol_ui_close(bool back);
 static void eapol_ui_start(void);
 static esp_err_t eapol_ui_draw(void);
@@ -3406,7 +3417,7 @@ static esp_err_t draw_wifi(void)
     if (wifi_mode == UI_WIFI_MODE_AP_JOB) return ap_draw();
     if (wifi_mode == UI_WIFI_MODE_PORTAL) return portal_draw();
     if (wifi_mode == UI_WIFI_MODE_CAPTURE) return capture_draw();
-    if (wifi_mode == UI_WIFI_MODE_AUTH) return auth_monitor_draw();
+    if (wifi_mode == UI_WIFI_MODE_RX_TOOLS) return rx_tools_draw();
     if (wifi_mode == UI_WIFI_MODE_MULTISSID) return multissid_draw();
     if (wifi_mode == UI_WIFI_MODE_PINESCAN) return pinescan_draw();
     if (wifi_mode == UI_WIFI_MODE_PACKET_MONITOR) return draw_wifi_packet_monitor();
@@ -8462,10 +8473,12 @@ static esp_err_t draw_detail_page(void)
         back_label = "ATTACKS";
     } else if (current_page == UI_PAGE_WIFI && wifi_mode == UI_WIFI_MODE_CAPTURE) {
         back_label = sae_ui_is_open() ? sae_ui_back_label() :
-            eapol_ui_is_open() ? eapol_ui_back_label() : "TARGET";
+            eapol_ui_is_open() ? eapol_ui_back_label() :
+            frame_ui_is_open() ? frame_ui_back_label() : "TARGET";
     } else if (current_page == UI_PAGE_WIFI && wifi_mode == UI_WIFI_MODE_LIST &&
-        (sae_ui_selecting || eapol_ui_selecting)) {
-        back_label = sae_ui_selecting ? "SAE MONITOR" : "EAPOL MONITOR";
+        (sae_ui_selecting || eapol_ui_selecting || frame_ui_selecting)) {
+        back_label = sae_ui_selecting ? "SAE MONITOR" :
+            eapol_ui_selecting ? "EAPOL MONITOR" : "FRAME CAPTURE";
     } else if (current_page == UI_PAGE_WIFI && wifi_mode == UI_WIFI_MODE_MULTISSID) {
         back_label = multissid_ui_exit_pending || multissid_ui_list_pending ? "STOPPING" :
             multissid_ui_detail ? "RESULTS" : "WIFI MENU";
@@ -8734,6 +8747,9 @@ static void open_main_menu(void)
 
 static void return_to_launcher(void)
 {
+    if (current_page == UI_PAGE_WIFI && wifi_mode == UI_WIFI_MODE_CAPTURE && frame_ui_is_open()) {
+        frame_ui_close(true); ESP_ERROR_CHECK(draw_detail_page()); return;
+    }
     if (current_page == UI_PAGE_WIFI && wifi_mode == UI_WIFI_MODE_CAPTURE && sae_ui_is_open()) {
         sae_ui_close(true); ESP_ERROR_CHECK(draw_detail_page()); return;
     }
@@ -9266,7 +9282,7 @@ static void handle_wifi_tap(uint16_t x, uint16_t y)
     if (wifi_mode == UI_WIFI_MODE_AP_JOB) {ap_tap(x,y);ESP_ERROR_CHECK(draw_detail_page());return;}
     if (wifi_mode == UI_WIFI_MODE_PORTAL) {portal_tap(x,y);ESP_ERROR_CHECK(draw_detail_page());return;}
     if (wifi_mode == UI_WIFI_MODE_CAPTURE) {capture_tap(x,y);ESP_ERROR_CHECK(draw_detail_page());return;}
-    if (wifi_mode == UI_WIFI_MODE_AUTH) {auth_monitor_tap(x,y);ESP_ERROR_CHECK(draw_detail_page());return;}
+    if (wifi_mode == UI_WIFI_MODE_RX_TOOLS) {rx_tools_tap(x,y);ESP_ERROR_CHECK(draw_detail_page());return;}
     if (wifi_mode == UI_WIFI_MODE_MULTISSID) {multissid_tap(x,y);ESP_ERROR_CHECK(draw_detail_page());return;}
     if (wifi_mode == UI_WIFI_MODE_PINESCAN) {pinescan_tap(x,y);ESP_ERROR_CHECK(draw_detail_page());return;}
     if (wifi_mode == UI_WIFI_MODE_FIELD_SURVEY) {
@@ -9279,7 +9295,7 @@ static void handle_wifi_tap(uint16_t x, uint16_t y)
         int item = sentinel_hub_hit_test(SENTINEL_HUB_WIFI, x, y);
         if (item == 6) { open_learning_lesson(0); return; }
         switch (item) {
-        case 12: wifi_mode = UI_WIFI_MODE_AUTH; break;
+        case 12: wifi_mode = UI_WIFI_MODE_RX_TOOLS; break;
         case 11: channel_analyzer_open(); break;
         case 10: probe_sniff_open(); break;
         case 8: multissid_enter(); wifi_mode = UI_WIFI_MODE_MULTISSID; break;
@@ -11647,6 +11663,7 @@ static void handle_scripts_tap(uint16_t x, uint16_t y)
 #include "wifi_fox_hunt_ui.h"
 #include "wifi_eapol_ui.h"
 #include "wifi_sae_ui.h"
+#include "wifi_frame_ui.h"
 #include "probe_sniff_ui.h"
 #include "mesh_ui.h"
 #include "mesh_archive_ui.h"
@@ -12577,6 +12594,7 @@ static void handle_tap(uint16_t x, uint16_t y)
             } else if (current_page == UI_PAGE_WIFI && wifi_mode == UI_WIFI_MODE_LIST && wifi_attack_selecting) {
                 if (sae_ui_selecting) sae_ui_selection_done();
                 else if (eapol_ui_selecting) eapol_ui_selection_done();
+                else if (frame_ui_selecting) frame_ui_selection_done();
                 else { wifi_attack_selecting = false; current_page = UI_PAGE_FIELD_MENU; }
                 ESP_ERROR_CHECK(draw_current_page());
             } else if (current_page == UI_PAGE_WIFI && wifi_mode == UI_WIFI_MODE_PROBE_SNIFF) {
@@ -12797,7 +12815,7 @@ void cerberus_ui_run(const cerberus_ui_config_t *config)
             ESP_ERROR_CHECK(draw_detail_page());
         if (sae_ui_tick((uint32_t)now_ms, capture_visible) && capture_visible)
             ESP_ERROR_CHECK(draw_detail_page());
-        if (capture_visible && capture_tick((uint32_t)now_ms))
+        if (frame_ui_tick((uint32_t)now_ms, capture_visible) && capture_visible)
             ESP_ERROR_CHECK(draw_detail_page());
         bool pinescan_visible = current_page == UI_PAGE_WIFI &&
             wifi_mode == UI_WIFI_MODE_PINESCAN && !screen_asleep;

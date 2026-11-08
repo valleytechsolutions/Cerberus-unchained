@@ -61,7 +61,8 @@ esp_err_t c5_spi_link_wifi_capture_plan_stage(const cerberus_wifi_capture_plan_r
        request->target_count>CERBERUS_WIFI_CAPTURE_PLAN_MAX_TARGETS||
        !cerberus_wifi_capture_plan_mask_valid(request->channel_mask)))return ESP_ERR_INVALID_ARG;
     esp_err_t error=capture_plan_exchange(CERBERUS_SPI_COMMAND_WIFI_CAPTURE_PLAN,
-        request,sizeof(*request),out,0U,request->dwell_ms==CERBERUS_WIFI_CAPTURE_PLAN_EAPOL_DWELL_MS?
+        request,sizeof(*request),out,0U,request->dwell_ms==CERBERUS_WIFI_CAPTURE_PLAN_RAW_DWELL_MS?
+            CERBERUS_WIFI_FRAME_SCOPE_MIN_FIRMWARE:request->dwell_ms==CERBERUS_WIFI_CAPTURE_PLAN_EAPOL_DWELL_MS?
             CERBERUS_WIFI_EAPOL_PLAN_MIN_FIRMWARE:CERBERUS_WIFI_CAPTURE_PLAN_MIN_FIRMWARE);
     if(error==ESP_OK&&!capture_plan_status_valid(out))error=ESP_ERR_INVALID_RESPONSE;
     if(error==ESP_OK&&out->error_code)error=out->error_code;

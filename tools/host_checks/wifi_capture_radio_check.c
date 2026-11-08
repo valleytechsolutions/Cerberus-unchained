@@ -24,6 +24,7 @@ enum {WIFI_BAND_MODE_AUTO=0,WIFI_BAND_MODE_2G_ONLY=1,WIFI_BAND_MODE_5G_ONLY=2,
       WIFI_BAND_2G=1,WIFI_BAND_5G=2,WIFI_SECOND_CHAN_NONE=0,
       WIFI_PROMIS_FILTER_MASK_MGMT=1,WIFI_PROMIS_FILTER_MASK_CTRL=2,
       WIFI_PROMIS_FILTER_MASK_DATA=4};
+#define WIFI_PROMIS_CTRL_FILTER_MASK_ALL 0xff800000U
 #define portMAX_DELAY UINT32_MAX
 #define pdMS_TO_TICKS(ms) (ms)
 static int scanner_mutex=1,scanner_task_handle=1;
@@ -36,6 +37,7 @@ static atomic_bool capture_radio_reserved;
 static atomic_bool csi_radio_reserved, mac_radio_reserved;
 static unsigned notifications,delay_count;
 static uint32_t drain_at_ms;
+static bool drain_error;
 static int xSemaphoreTake(int mutex,unsigned ticks)
 {(void)ticks;assert(mutex==1&&!locked);locked=true;return 1;}
 static void xSemaphoreGive(int mutex){assert(mutex==1&&locked);locked=false;}
@@ -43,8 +45,10 @@ static void xTaskNotifyGive(int handle){assert(handle==1);++notifications;}
 static void vTaskDelay(unsigned ticks)
 {
     fake_us+=(int64_t)ticks*1000;++delay_count;
-    if(drain_at_ms&&(uint32_t)(fake_us/1000)>=drain_at_ms)
+    if(drain_at_ms&&(uint32_t)(fake_us/1000)>=drain_at_ms){
+        if(drain_error)atomic_store(&receive_error,ESP_ERR_INVALID_STATE);
         atomic_store(&callback_inflight,0);
+    }
 }
 static unsigned survey_preempts;
 static esp_err_t cerberus_wifi_channel_survey_preempt(void){++survey_preempts;return ESP_OK;}
@@ -52,12 +56,13 @@ static bool cerberus_c5_test_running(void){return false;}
 static bool another_radio_operation_is_active(void){return false;}
 static bool wifi_connection_is_active_locked(void){assert(locked);return false;}
 
-enum operation {GET_MODE,GET_CHANNEL,SET_MODE,SET_BAND,SET_CHANNEL,FILTER,ENABLE,DISABLE,OP_COUNT};
+enum operation {GET_MODE,GET_CHANNEL,SET_MODE,SET_BAND,SET_CHANNEL,FILTER,ENABLE,DISABLE,GET_CTRL,SET_CTRL,OP_COUNT};
 static unsigned calls[OP_COUNT],fail_count[OP_COUNT];
 static bool hop_expected,promiscuous,reject_channel[178],reject_all;
 static uint8_t radio_channel=11;
 static unsigned radio_band=WIFI_BAND_2G,radio_mode=WIFI_BAND_MODE_AUTO;
 static wifi_second_chan_t radio_second=1;
+static unsigned radio_ctrl_filter=0x00800000U;
 static uint8_t beacon[48]={0x80};
 
 static esp_err_t operation(enum operation op)
@@ -101,9 +106,19 @@ static esp_err_t esp_wifi_set_promiscuous_filter(const wifi_promiscuous_filter_t
         unsigned expected=current_request.mode_mask&CERBERUS_WIFI_CAPTURE_MODE_EAPOL?
             WIFI_PROMIS_FILTER_MASK_DATA:WIFI_PROMIS_FILTER_MASK_MGMT;
         if(current_request.mode_mask&CERBERUS_WIFI_CAPTURE_MODE_BEACON)expected|=WIFI_PROMIS_FILTER_MASK_MGMT;
+        if(current_request.mode_mask&CERBERUS_WIFI_CAPTURE_MODE_RAW)
+            expected=WIFI_PROMIS_FILTER_MASK_MGMT|WIFI_PROMIS_FILTER_MASK_CTRL|WIFI_PROMIS_FILTER_MASK_DATA;
         assert(filter->filter_mask==expected);
     }
     return operation(FILTER);
+}
+static esp_err_t esp_wifi_get_promiscuous_ctrl_filter(wifi_promiscuous_filter_t *out)
+{esp_err_t e=operation(GET_CTRL);if(e==ESP_OK)out->filter_mask=radio_ctrl_filter;return e;}
+static esp_err_t esp_wifi_set_promiscuous_ctrl_filter(const wifi_promiscuous_filter_t *filter)
+{
+    verify_paused();esp_err_t e=operation(SET_CTRL);
+    radio_ctrl_filter=filter->filter_mask; /* Fault may follow a controller write. */
+    return e;
 }
 static esp_err_t esp_wifi_set_promiscuous(bool enable)
 {
@@ -129,9 +144,10 @@ static void reset_driver(void)
 {
     assert(!atomic_load(&capture_radio_reserved)&&!cerberus_wifi_capture_service_active());
     assert(!locked);memset(calls,0,sizeof(calls));memset(fail_count,0,sizeof(fail_count));
-    memset(reject_channel,0,sizeof(reject_channel));reject_all=false;drain_at_ms=0;
+    memset(reject_channel,0,sizeof(reject_channel));reject_all=false;drain_at_ms=0;drain_error=false;
     promiscuous=false;radio_channel=11;radio_band=WIFI_BAND_2G;
     radio_mode=WIFI_BAND_MODE_2G_ONLY;radio_second=1;delay_count=0;
+    radio_ctrl_filter=0x00800000U;
 }
 static void drain(uint32_t gen)
 {
@@ -184,7 +200,7 @@ static void successful_hops(void)
 }
 static void faults_and_retries(void)
 {
-    for(enum operation op=GET_MODE;op<OP_COUNT;++op){
+    for(enum operation op=GET_MODE;op<=DISABLE;++op){
         reset_driver();cerberus_wifi_capture_start_request_t r=request(true);
         /* A single channel/band rejection is correctly skipped. Exhaust the
          * candidate list instead to exercise full-cycle failure. */
@@ -289,6 +305,72 @@ static void drain_and_lease(void)
     assert(!cerberus_wifi_capture_service_admission_token());
     assert(!promiscuous&&!atomic_load(&capture_radio_reserved));
 }
+static void raw_controls_and_exhaustion(void)
+{
+    for(unsigned failure=0;failure<3;++failure){
+        reset_driver();cerberus_wifi_capture_start_request_t r=request(false);
+        r.mode_mask=CERBERUS_WIFI_CAPTURE_MODE_RAW;
+        unsigned previous=radio_ctrl_filter;
+        if(failure==0)fail_count[GET_CTRL]=1;
+        else fail_count[SET_CTRL]=failure;
+        assert(cerberus_wifi_capture_start(&r)==ESP_FAIL);
+        assert(!cerberus_wifi_capture_service_admission_token()&&!promiscuous);
+        if(failure==2){
+            assert(atomic_load(&capture_radio_reserved)&&capture_ctrl_restore_pending);
+            cerberus_wifi_capture_start_request_t blocked=r;++blocked.generation;
+            assert(cerberus_wifi_capture_start(&blocked)==ESP_ERR_INVALID_STATE);
+            advance(1);
+        }
+        assert(!atomic_load(&capture_radio_reserved)&&!capture_ctrl_restore_pending);
+        assert(radio_ctrl_filter==previous);
+    }
+    reset_driver();cerberus_wifi_capture_start_request_t r=request(false);
+    r.mode_mask=CERBERUS_WIFI_CAPTURE_MODE_RAW;
+    unsigned previous=radio_ctrl_filter;
+    assert(cerberus_wifi_capture_start(&r)==ESP_OK);
+    assert(radio_ctrl_filter==WIFI_PROMIS_CTRL_FILTER_MASK_ALL&&capture_ctrl_restore_pending);
+    atomic_store(&capture_ring->next_sequence,UINT32_MAX-2U);
+    uint8_t control[10]={0xd4};
+    for(unsigned i=0;i<2;++i)
+        cerberus_wifi_capture_service_receive(control,sizeof(control),6,-41,fake_us,
+            cerberus_wifi_capture_service_admission_token());
+    cerberus_wifi_capture_peek_payload_t frozen,after;
+    assert(cerberus_wifi_capture_service_peek(r.generation,&frozen)==ESP_OK&&frozen.sequence==UINT32_MAX-1U);
+    cerberus_wifi_capture_service_receive(control,sizeof(control),6,-41,fake_us,
+        cerberus_wifi_capture_service_admission_token());
+    assert(!cerberus_wifi_capture_service_active()&&!cerberus_wifi_capture_service_admission_token());
+    assert(status().state==CERBERUS_WIFI_CAPTURE_ERROR&&status().error_code==ESP_ERR_INVALID_STATE);
+    assert(status().accepted==2&&status().pending==2&&status().dropped_other==1);
+    assert(promiscuous&&atomic_load(&capture_radio_reserved)); /* Worker, not RX, owns the driver. */
+    fail_count[SET_CTRL]=1;advance(1);
+    assert(!promiscuous&&atomic_load(&capture_radio_reserved)&&capture_ctrl_restore_pending);
+    advance(1);
+    assert(!atomic_load(&capture_radio_reserved)&&radio_ctrl_filter==previous);
+    assert(status().error_code==ESP_ERR_INVALID_STATE);
+    assert(cerberus_wifi_capture_service_peek(r.generation,&after)==ESP_OK&&!memcmp(&frozen,&after,sizeof(frozen)));
+    cerberus_wifi_capture_ack_request_t ack={r.generation,UINT32_MAX-1U};
+    assert(cerberus_wifi_capture_service_ack(&ack)==ESP_OK);
+    assert(cerberus_wifi_capture_service_peek(r.generation,&after)==ESP_OK&&after.sequence==UINT32_MAX);
+    ack.sequence=UINT32_MAX;
+    assert(cerberus_wifi_capture_service_ack(&ack)==ESP_OK);
+    assert(cerberus_wifi_capture_service_ack(&ack)==ESP_OK); /* Lost final ACK reply. */
+    reset_driver();r=request(false);r.mode_mask=CERBERUS_WIFI_CAPTURE_MODE_RAW;
+    assert(cerberus_wifi_capture_start(&r)==ESP_OK);
+    cerberus_wifi_capture_service_receive(control,sizeof(control),6,-41,fake_us,
+        cerberus_wifi_capture_service_admission_token());
+    assert(cerberus_wifi_capture_service_peek(r.generation,&after)==ESP_OK&&after.sequence==1U);
+    assert(cerberus_wifi_capture_stop(r.generation)==ESP_OK);
+    assert(radio_ctrl_filter==previous&&!capture_ctrl_restore_pending);
+    drain(r.generation);
+    reset_driver();r=request(false);r.mode_mask=CERBERUS_WIFI_CAPTURE_MODE_RAW;
+    assert(cerberus_wifi_capture_start(&r)==ESP_OK);
+    atomic_store(&callback_inflight,1U);drain_error=true;
+    drain_at_ms=(uint32_t)(fake_us/1000)+1U;
+    assert(cerberus_wifi_capture_stop(r.generation)==ESP_OK);
+    assert(status().state==CERBERUS_WIFI_CAPTURE_STOPPED&&status().error_code==ESP_ERR_INVALID_STATE);
+    assert(!atomic_load(&capture_radio_reserved)&&!capture_ctrl_restore_pending);
+}
+
 int main(void)
 {
     reset_driver();cerberus_wifi_capture_start_request_t blocked=request(true);
@@ -307,7 +389,7 @@ int main(void)
     assert(cerberus_wifi_capture_start(&blocked)==ESP_ERR_INVALID_STATE&&!atomic_load(&capture_radio_reserved));
     assert(survey_preempts==prior_preempts);
     atomic_store(&mac_radio_reserved,false);
-    successful_hops();faults_and_retries();drain_and_lease();
+    successful_hops();faults_and_retries();raw_controls_and_exhaustion();drain_and_lease();
     puts("C5 production capture radio: dual-band hop/pause, pinned CRC/sequence, SDK rejection, drain, rollback/Stop retries, lease wrap, fixed-mode regression passed.");
     return 0;
 }

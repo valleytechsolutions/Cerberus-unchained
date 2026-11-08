@@ -1,7 +1,7 @@
 # Passive EAPOL monitor
 
 Rev167 extends the selected-AP monitor with a direct entry at **Scan -> Wi-Fi
--> TOOLS -> AUTH RX -> EAPOL MONITOR**. The same AUTH RX menu also opens
+-> TOOLS -> RX TOOLS -> EAPOL MONITOR**. The same RX TOOLS menu also opens
 **SAE MONITOR**. Opening either monitor or its AP picker starts no receiver.
 The picker shows the held inventory; **SCAN** explicitly requests a new sweep.
 **DONE** and Back return to the owning monitor without starting capture.

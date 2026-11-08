@@ -18,6 +18,8 @@ static uint8_t state;
 static atomic_bool receiving;
 static atomic_uint callback_inflight;
 static atomic_uint context_skipped;
+/* RX can exhaust frame identities while the scanner task owns cleanup. */
+static atomic_int receive_error;
 static atomic_uchar receive_channel;
 static atomic_uint receive_token;
 static uint32_t last_admission_token;
@@ -139,6 +141,7 @@ esp_err_t cerberus_wifi_capture_service_start(
     bool hopping=request&&(request->flags&CERBERUS_WIFI_CAPTURE_FLAG_HOP)!=0U;
     bool planned=request&&(request->flags&CERBERUS_WIFI_CAPTURE_FLAG_PLAN)!=0U;
     bool plan_mode=request&&(cerberus_wifi_capture_plan_mode_valid(request->mode_mask,
+        CERBERUS_WIFI_CAPTURE_PLAN_RAW_DWELL_MS)||cerberus_wifi_capture_plan_mode_valid(request->mode_mask,
         CERBERUS_WIFI_CAPTURE_PLAN_DWELL_MS)||cerberus_wifi_capture_plan_mode_valid(
         request->mode_mask,CERBERUS_WIFI_CAPTURE_PLAN_EAPOL_DWELL_MS));
     if(!request||!request->generation||
@@ -176,6 +179,7 @@ esp_err_t cerberus_wifi_capture_service_start(
     last_generation=request->generation;
     last_acked_sequence=0;
     atomic_store_explicit(&context_skipped,0U,memory_order_relaxed);
+    atomic_store_explicit(&receive_error,ESP_OK,memory_order_relaxed);
     atomic_store_explicit(&deadline_ms,0U,memory_order_relaxed);
     last_error=ESP_OK;
     state=CERBERUS_WIFI_CAPTURE_RUNNING;
@@ -191,6 +195,8 @@ void cerberus_wifi_capture_service_stop(esp_err_t reason)
     atomic_store_explicit(&receiving,false,memory_order_release);
     atomic_store_explicit(&receive_channel,0U,memory_order_release);
     if(capture_ring)cerberus_wifi_capture_ring_stop(capture_ring);
+    int failure=atomic_load_explicit(&receive_error,memory_order_acquire);
+    if((reason==ESP_OK||reason==ESP_ERR_TIMEOUT)&&failure!=ESP_OK)reason=failure;
     last_error=reason;
     state=reason==ESP_OK||reason==ESP_ERR_TIMEOUT?
         CERBERUS_WIFI_CAPTURE_STOPPED:CERBERUS_WIFI_CAPTURE_ERROR;
@@ -207,8 +213,13 @@ void cerberus_wifi_capture_service_cleanup_error(esp_err_t reason)
 
 void cerberus_wifi_capture_service_confirm_stopped(void)
 {
-    if(!atomic_load_explicit(&receiving,memory_order_acquire)&&last_generation)
+    if(!atomic_load_explicit(&receiving,memory_order_acquire)&&last_generation){
+        /* An admitted callback may have reported exhaustion during the
+         * owner's final drain, after stop first sampled its error. */
+        if(last_error==ESP_OK)
+            last_error=atomic_load_explicit(&receive_error,memory_order_acquire);
         state=CERBERUS_WIFI_CAPTURE_STOPPED;
+    }
 }
 
 uint32_t cerberus_wifi_capture_service_generation(void)
@@ -302,8 +313,13 @@ void cerberus_wifi_capture_service_receive(const uint8_t *frame,size_t length,
         .frame_has_fcs=false,.time_kind=CERBERUS_WIFI_PCAP_TIME_MONOTONIC,
         .capture_time_us=(uint64_t)callback_us,
     };
-    (void)cerberus_wifi_capture_ring_push(capture_ring,request->generation,
-        &metadata,frame,length,length);
+    if(cerberus_wifi_capture_ring_push(capture_ring,request->generation,
+        &metadata,frame,length,length)==CERBERUS_WIFI_CAPTURE_DROP_EXHAUSTED){
+        atomic_store_explicit(&receive_error,ESP_ERR_INVALID_STATE,memory_order_release);
+        atomic_store_explicit(&receive_token,0U,memory_order_seq_cst);
+        atomic_store_explicit(&receive_channel,0U,memory_order_release);
+        atomic_store_explicit(&receiving,false,memory_order_release);
+    }
 done:
     atomic_fetch_sub_explicit(&callback_inflight,1U,memory_order_seq_cst);
 }
@@ -318,6 +334,11 @@ void cerberus_wifi_capture_service_status(cerberus_wifi_capture_status_payload_t
         atomic_load_explicit(&receive_channel,memory_order_acquire):current_request.channel;
     out->mode_mask=current_request.mode_mask;
     out->error_code=last_error;
+    int failure=atomic_load_explicit(&receive_error,memory_order_acquire);
+    if(failure!=ESP_OK&&out->error_code==ESP_OK){
+        out->error_code=failure;
+        out->state=CERBERUS_WIFI_CAPTURE_ERROR;
+    }
     if(!capture_ring)return;
     cerberus_wifi_capture_ring_stats_t stats;
     cerberus_wifi_capture_ring_stats(capture_ring,&stats);

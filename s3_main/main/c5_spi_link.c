@@ -1066,6 +1066,9 @@ static bool wifi_capture_status_channel_valid(const cerberus_wifi_capture_status
         return status->state != CERBERUS_WIFI_CAPTURE_RUNNING ||
             status->mode_mask == CERBERUS_WIFI_CAPTURE_MODE_BEACON ||
             status->mode_mask == CERBERUS_WIFI_CAPTURE_MODE_SAE_COMMIT ||
+            status->mode_mask == CERBERUS_WIFI_CAPTURE_MODE_RAW ||
+            status->mode_mask == CERBERUS_WIFI_CAPTURE_MODE_PROBE ||
+            status->mode_mask == CERBERUS_WIFI_CAPTURE_MODE_DEAUTH ||
             cerberus_wifi_capture_plan_mode_valid(status->mode_mask,
                 CERBERUS_WIFI_CAPTURE_PLAN_EAPOL_DWELL_MS);
     if (status->mode_mask == CERBERUS_WIFI_CAPTURE_MODE_BEACON)
@@ -1103,6 +1106,7 @@ esp_err_t c5_spi_link_wifi_capture_start(
     bool hopping=(request->flags&CERBERUS_WIFI_CAPTURE_FLAG_HOP)!=0U;
     bool planned=(request->flags&CERBERUS_WIFI_CAPTURE_FLAG_PLAN)!=0U;
     bool plan_mode=cerberus_wifi_capture_plan_mode_valid(request->mode_mask,
+        CERBERUS_WIFI_CAPTURE_PLAN_RAW_DWELL_MS)||cerberus_wifi_capture_plan_mode_valid(request->mode_mask,
         CERBERUS_WIFI_CAPTURE_PLAN_DWELL_MS)||cerberus_wifi_capture_plan_mode_valid(
         request->mode_mask,CERBERUS_WIFI_CAPTURE_PLAN_EAPOL_DWELL_MS);
     if(planned&&(!hopping||request->flags!=(CERBERUS_WIFI_CAPTURE_FLAG_HOP|CERBERUS_WIFI_CAPTURE_FLAG_PLAN)||
@@ -1116,6 +1120,11 @@ esp_err_t c5_spi_link_wifi_capture_start(
     if(device.firmware_version<CERBERUS_WIFI_CAPTURE_MIN_FIRMWARE)
         return ESP_ERR_NOT_SUPPORTED;
     if(planned&&device.firmware_version<CERBERUS_WIFI_CAPTURE_PLAN_MIN_FIRMWARE)
+        return ESP_ERR_NOT_SUPPORTED;
+    if(planned&&(request->mode_mask==CERBERUS_WIFI_CAPTURE_MODE_RAW||
+       request->mode_mask==CERBERUS_WIFI_CAPTURE_MODE_PROBE||
+       request->mode_mask==CERBERUS_WIFI_CAPTURE_MODE_DEAUTH)&&
+       device.firmware_version<CERBERUS_WIFI_FRAME_SCOPE_MIN_FIRMWARE)
         return ESP_ERR_NOT_SUPPORTED;
     if(planned&&(request->mode_mask&CERBERUS_WIFI_CAPTURE_MODE_EAPOL)&&
        device.firmware_version<CERBERUS_WIFI_EAPOL_PLAN_MIN_FIRMWARE)

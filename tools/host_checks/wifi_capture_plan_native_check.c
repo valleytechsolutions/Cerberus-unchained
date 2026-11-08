@@ -316,10 +316,89 @@ static void fixed_eapol_context_priority(void)
     assert(status().accepted==2&&status().pending==2&&!status().dropped_other);
     assert(cerberus_wifi_capture_stop(r.generation)==ESP_OK);drain(r.generation);
 }
+static void planned_frame_scopes(void)
+{
+    const uint8_t modes[]={CERBERUS_WIFI_CAPTURE_MODE_RAW,CERBERUS_WIFI_CAPTURE_MODE_PROBE,
+        CERBERUS_WIFI_CAPTURE_MODE_DEAUTH};
+    for(unsigned m=0;m<sizeof(modes);++m)for(unsigned band=0;band<3;++band){
+        reset_driver();
+        cerberus_wifi_capture_plan_request_t p={.generation=++generation,
+            .dwell_ms=modes[m]==CERBERUS_WIFI_CAPTURE_MODE_RAW?100:250,
+            .channel_mask=cerberus_wifi_capture_plan_band_mask((uint8_t)band)};
+        assert(!stage(&p).error_code);
+        cerberus_wifi_capture_start_request_t r=planned_request(p.generation);
+        r.mode_mask=modes[m];r.lease_ms=300000;
+        cerberus_wifi_capture_start_request_t bad=r;
+        bad.mode_mask=m?CERBERUS_WIFI_CAPTURE_MODE_RAW:CERBERUS_WIFI_CAPTURE_MODE_PROBE;
+        assert(cerberus_wifi_capture_start(&bad)==ESP_ERR_INVALID_ARG);
+        unsigned previous=radio_ctrl_filter;
+        if(band==CERBERUS_WIFI_CAPTURE_PLAN_5G)reject_channel[36]=true;
+        assert(cerberus_wifi_capture_start(&r)==ESP_OK);
+        assert(radio_ctrl_filter==(m?previous:WIFI_PROMIS_CTRL_FILTER_MASK_ALL));
+        uint8_t frame[48]={0};
+        frame[0]=modes[m]==CERBERUS_WIFI_CAPTURE_MODE_RAW?0xd4:
+            modes[m]==CERBERUS_WIFI_CAPTURE_MODE_PROBE?0x40:0xc0;
+        size_t length=m?26U:10U;
+        observe_frame(frame,length,radio_channel);
+        assert(status().accepted==1&&status().pending==1);
+        if(!m){
+            frame[0]=0x08;frame[1]=3; /* WDS has no resolvable BSSID. */
+            observe_frame(frame,sizeof(frame),radio_channel);
+            assert(status().accepted==2&&status().pending==2);
+        }
+        cerberus_wifi_capture_peek_payload_t frozen,retained;
+        assert(cerberus_wifi_capture_service_peek(p.generation,&frozen)==ESP_OK&&frozen.sequence==1U);
+        uint32_t old_token=cerberus_wifi_capture_service_admission_token();
+        uint8_t first=radio_channel;
+        for(unsigned i=0;i<CERBERUS_WIFI_CAPTURE_PLAN_CHANNELS;++i){
+            if(!(p.channel_mask&(UINT64_C(1)<<i)))continue;
+            uint8_t channel=cerberus_wifi_capture_plan_channel(i);
+            if(reject_channel[channel])continue;
+            assert(radio_channel==channel);
+            advance(p.dwell_ms-1U);assert(radio_channel==channel&&!hop(p.generation).completed_sweeps);
+            advance(1);
+        }
+        assert(hop(p.generation).completed_sweeps==1&&radio_channel==first);
+        assert(cerberus_wifi_capture_service_peek(p.generation,&retained)==ESP_OK&&!memcmp(&frozen,&retained,sizeof(frozen)));
+        unsigned accepted=status().accepted;
+        cerberus_wifi_capture_service_receive(frame,length,radio_channel,-40,fake_us,old_token);
+        assert(status().accepted==accepted);
+        if(!m){ /* Restore failure keeps both the radio lease and immutable stage. */
+            fail_count[SET_CTRL]=1;
+            assert(cerberus_wifi_capture_stop(p.generation)==ESP_FAIL&&atomic_load(&capture_radio_reserved));
+            cerberus_wifi_capture_plan_request_t newer=p;++newer.generation;
+            assert(stage(&newer).error_code==ESP_ERR_INVALID_STATE);
+        }
+        assert(cerberus_wifi_capture_stop(p.generation)==ESP_OK&&radio_ctrl_filter==previous);
+        assert(!atomic_load(&capture_radio_reserved));drain(p.generation);
+    }
+    /* A selected RAW plan accepts only a real header BSSID. */
+    reset_driver();const uint8_t ap[6]={2,3,4,5,6,7},other[6]={4,3,4,5,6,8};
+    cerberus_wifi_capture_plan_request_t p={.generation=++generation,.dwell_ms=100,
+        .channel_mask=cerberus_wifi_capture_plan_channel_bit(6),.target_count=1};
+    assert(!stage(&p).error_code);
+    cerberus_wifi_capture_target_request_t t={.generation=p.generation};memcpy(t.bssid,ap,6);
+    assert(!target(&t).error_code);
+    cerberus_wifi_capture_start_request_t r=planned_request(p.generation);r.mode_mask=CERBERUS_WIFI_CAPTURE_MODE_RAW;
+    assert(cerberus_wifi_capture_start(&r)==ESP_OK);
+    uint8_t frame[48]={0xd4};memcpy(frame+4,ap,6);memcpy(frame+16,ap,6);
+    observe_frame(frame,10,6);assert(!status().accepted); /* Receiver address is not a BSSID. */
+    frame[0]=0x08;frame[1]=3;observe_frame(frame,sizeof(frame),6);assert(!status().accepted);
+    frame[1]=1;memcpy(frame+4,other,6);observe_frame(frame,sizeof(frame),6);assert(!status().accepted);
+    memcpy(frame+4,ap,6);observe_frame(frame,sizeof(frame),6);assert(status().accepted==1);drain(p.generation);
+    frame[1]=2;memcpy(frame+10,ap,6);observe_frame(frame,sizeof(frame),6);assert(status().accepted==2);drain(p.generation);
+    unsigned tuned=calls[SET_CHANNEL],enabled=calls[ENABLE];
+    advance(99);assert(!hop(p.generation).completed_sweeps);advance(1);
+    assert(hop(p.generation).completed_sweeps==1);
+    advance(1000);assert(hop(p.generation).completed_sweeps==2); /* Measured dwell, no catch-up. */
+    assert(calls[SET_CHANNEL]==tuned&&calls[ENABLE]==enabled);
+    assert(cerberus_wifi_capture_stop(p.generation)==ESP_OK);
+}
+
 int main(void)
 {
     assert(capture_legacy_main()==0);plans_and_lifecycle();planned_eapol();eapol_band_scopes();
-    fixed_eapol_context_priority();complete_sweeps_and_errors();
-    puts("C5 planned SAE/EAPOL: actual dispatcher/service/worker, 250/2000 ms family timing, DS-aware scope, reserved EAPOL slot, immutable pins, stale arms, cleanup, lease,32 targets and generation exhaustion passed.");
+    fixed_eapol_context_priority();planned_frame_scopes();complete_sweeps_and_errors();
+    puts("C5 planned capture: actual dispatcher/service/worker, RAW100/Probe-Deauth-SAE250/EAPOL2000 ms timing, targetless CTRL/WDS, DS-aware targets, control restore, reserved EAPOL slot, immutable pins, stale arms, cleanup, lease and generation exhaustion passed.");
     return 0;
 }

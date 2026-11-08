@@ -16,10 +16,12 @@ static void rejected_unchanged(cerberus_wifi_capture_plan_t *plan,
 int main(void)
 {
     for(unsigned dwell=0;dwell<=UINT16_MAX;++dwell)
-        assert(cerberus_wifi_capture_plan_dwell_valid((uint16_t)dwell)==(dwell==250U||dwell==2000U));
-    const uint16_t dwells[]={0,249,250,251,1999,2000,2001,UINT16_MAX};
+        assert(cerberus_wifi_capture_plan_dwell_valid((uint16_t)dwell)==(dwell==100U||dwell==250U||dwell==2000U));
+    const uint16_t dwells[]={0,99,100,101,249,250,251,1999,2000,2001,UINT16_MAX};
     for(unsigned mode=0;mode<=UINT8_MAX;++mode)for(unsigned d=0;d<sizeof(dwells)/sizeof(*dwells);++d){
-        bool expected=(mode==CERBERUS_WIFI_CAPTURE_MODE_SAE_COMMIT&&dwells[d]==250U)||
+        bool expected=(mode==CERBERUS_WIFI_CAPTURE_MODE_RAW&&dwells[d]==100U)||
+            ((mode==CERBERUS_WIFI_CAPTURE_MODE_SAE_COMMIT||mode==CERBERUS_WIFI_CAPTURE_MODE_PROBE||
+              mode==CERBERUS_WIFI_CAPTURE_MODE_DEAUTH)&&dwells[d]==250U)||
             ((mode==CERBERUS_WIFI_CAPTURE_MODE_EAPOL||mode==(CERBERUS_WIFI_CAPTURE_MODE_EAPOL|
                 CERBERUS_WIFI_CAPTURE_MODE_BEACON))&&dwells[d]==2000U);
         assert(cerberus_wifi_capture_plan_mode_valid((uint8_t)mode,dwells[d])==expected);
@@ -114,6 +116,9 @@ int main(void)
     cerberus_wifi_capture_plan_clear(&plan);
     plan.channel_mask = all;
     assert(cerberus_wifi_capture_plan_valid(&plan));
+    assert(cerberus_wifi_capture_plan_matches(&plan,NULL,1U));
+    assert(cerberus_wifi_capture_plan_matches(&plan,NULL,177U));
+    assert(!cerberus_wifi_capture_plan_matches(&plan,NULL,32U));
     for (unsigned i = 0U; i < sizeof(channels); ++i)
         assert(cerberus_wifi_capture_plan_matches(&plan, address, channels[i]));
     assert(!cerberus_wifi_capture_plan_matches(&plan, address, 32U));

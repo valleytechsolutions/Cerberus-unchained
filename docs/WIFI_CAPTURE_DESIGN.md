@@ -1,26 +1,98 @@
-# 802.11 capture and export contract
+# Passive frame capture and export
 
-`shared/wifi_pcap.h` and `.c` provide a standalone, allocation-free PCAPNG
-serializer. They do not enable radio capture, SPI transfer or SD writing.
-`tools/check_wifi_pcap.py` checks exact bytes and malformed inputs on the host.
+Rev168 adds a scoped FRAME CAPTURE workspace at **Scan -> Wi-Fi -> TOOLS ->
+RX TOOLS -> FRAME CAPTURE**. The same flat RX TOOLS chooser contains EAPOL
+and SAE monitors. The selected-AP **CAPTURE THIS AP** shortcut opens the same
+frame workspace with its AP and return destination copied. Opening a page
+starts no receiver.
 
-## Pinned source and Cerberus gap
+The candidate implementation and focused checks are described here. The
+installed baseline is rev167 until a later checkpoint section records the
+matched build and installation. Physical reception, recording readback and
+loaded throughput remain separate acceptance checks.
 
-The pinned Marauder checkout is `511bb3694d0c4dc064888e762bde44fcc9b7f48a`.
-`esp32_marauder/WiFiScan.cpp` has separate probe, deauthentication, EAPOL and raw
-capture modes. `Buffer.cpp` writes raw 802.11 PCAP records using boot-relative
-`micros()`. `PcapHeader.cpp` sets linktype 105 (raw IEEE 802.11). Those files do
-not preserve the receive channel and RSSI in their PCAP records. Cerberus's
-coverage ledger still marks these receive-capture modes pending. The existing
-AP-job reception counters and directed probe transmitter are narrower tools.
+## Controls and scopes
 
-The current SPI frame carries 22 payload bytes (`shared/cerberus_protocol.h`),
-and its generic fragment service transfers an object of at most 256 bytes in
-16-byte data pieces. That service handles a diagnostic snapshot, not sustained
-raw frames. The existing S3 Wi-Fi report limit is 256 KiB and uses whole-report
-storage (`s3_main/main/storage_report_limits.h`, `storage.c`); a capture session
-needs a separate append-only writer and size/rotation policy. S3 SD access has
-storage ownership and mutex rules, including USB mass-storage ownership.
+The receive filter is **RAW**, **PROBES**, or **DEAUTH / DISASSOC**. Scope is
+**ALL**, **2.4 GHZ**, **5 GHZ**, **FIXED CHANNEL**, **SELECTED APS**, or the
+AP-origin **THIS AP**. Selected identities and channel hints are copied at
+Start. Later inventory changes cannot alter that run. The AP picker opens
+paused with the held inventory; SCAN explicitly requests another sweep.
+
+PROBES is deliberately channel-wide: its corresponding scopes say
+**SELECTED CHANNELS** and **AP CHANNEL**, with no BSSID filter. Wildcard probe
+requests cannot be attributed to a selected AP. RAW/disconnect target lists
+use exact BSSIDs; control and WDS traffic with no resolvable BSSID is excluded
+from those filtered scopes. Targetless RAW retains these classes when the
+controller delivers them, without inventing an association.
+
+SAVE PCAP defaults to **ON**, preserving the existing recording behavior.
+Turn it OFF for analysis without an SD lease. Stop retains the report; Restart
+replaces it only after successful ownership reservation. Back, hidden pages
+and sleep cancel pending Starts and keep cleanup active until the exact
+receiver generation, frame drain and file close have released. Changing
+monitor family also waits for release.
+
+## Division of work and data quality
+
+C5 owns passive reception, filtering, channel scheduling and its existing
+**two-slot, 4,096-byte frame ring**. S3 owns verified frame assembly, the
+bounded report, controls and optional SD writing. No extra RF worker, queue
+or SD worker is added. The new frame session and UI allocate their evidence
+in PSRAM only when needed.
+
+Planned RAW uses **100 ms after successful receiver arming**; PROBES and
+DEAUTH/DISASSOC use **250 ms**. Single-channel plans receive continuously.
+The canonical 42-channel plan exposes driver tune outcomes rather than
+claiming all 51 upstream candidates are supported. A selected AP's channel
+is a historical hint. SAE keeps 250 ms and EAPOL keeps 2,000 ms; family/dwell
+mismatches fail before Start. Scoped FRAME CAPTURE requires capability **88**.
+
+RAW explicitly snapshots the separate SDK control-subtype filter, enables
+control reception and restores the original filter during cleanup. A failed
+restore retains radio ownership for retry. Upstream RAW requests management
+and data frames only; control reception is a Cerberus extension, subject to
+actual controller delivery and independent physical acceptance.
+
+The report keeps **C5 ADMITTED**, **S3 DELIVERED**, **SD WRITTEN**, queue-full
+drops and other drops separate. C5 admission is not a count of everything
+heard on the channel. Summary classes and RSSI extrema describe verified
+records delivered to S3. Complete MAC header lengths, direction, QoS/WDS/HT
+extensions and LLC/EAPOL bounds are checked before inferring a subtype or
+EAPOL header. Protected, fragmented and A-MSDU data cannot supply a plaintext
+EAPOL claim. Retry bits count observations; they do not deduplicate captures.
+
+A bounded view retains **16 recent disconnect-evidence tuples** with BSSID,
+transmitter, receiver, subtype, channel, RSSI and source/delivery ages. Matching
+tuples accumulate observations; new tuples replace the least recently seen
+slot and increment an explicit replacement count. Admission sequence changes
+reset row age when a slot is reused. Plaintext reason codes require a clear,
+complete, unfragmented body; otherwise the reason is unknown. Public frame
+addresses and reason fields do not identify a physical device or establish
+attack attribution.
+
+Frame sequences never wrap back to an earlier ID. Exhaustion closes producer
+admission and reports an error through the existing capture status; the final
+pinned record can still drain. A later generation can start fresh after
+release. Per-arm callback tokens, source-time fencing, CRC checks and once-only
+observer delivery continue to protect the shared stream.
+
+## Storage ownership
+
+The production path uses `wifi_capture_service.c`, the capture SPI commands,
+`wifi_capture_session.c` and the leased append writer in `storage.c`. The
+serializer below is connected to that path. The worker assembles one frame
+in PSRAM, verifies it, analyzes it, optionally appends the PCAPNG block, then
+acknowledges its pinned C5 sequence. Duplicate transport delivery cannot append
+or analyze the same record twice. A failed record still releases its pin;
+its error remains visible and stops the session.
+
+Recording has a **64 MiB file limit** and explicit manual Stop. SD access
+honors filesystem and USB mass-storage ownership. A failed or interrupted
+write is not silently claimed as saved. The optional file retains complete
+received frames up to the frame cap, while the report retains only bounded
+header evidence. This is not a lossless full-channel recorder: dense RAW
+traffic can overflow the ring or outpace SPI/SD processing.
 
 ## File format and time
 
@@ -65,40 +137,24 @@ accepted there only when the 4096-byte frame cap is reached, so a reader can
 recover the captured length from snaplen. Otherwise the caller must drop the
 record and count it. Enhanced Packet Blocks encode both lengths explicitly.
 
-## Live integration sequence
+## Source comparison and validation boundary
 
-1. Reserve the C5 Wi-Fi owner and select a capture mode. Apply AP/BSSID and
-   optional client filters from the same immutable target snapshot used by
-   the menu. Probe, deauth, EAPOL and raw capture need separate receive
-   classifiers and status, with a common bounded frame path. Verify the C5
-   SDK's frame-length and FCS semantics before setting codec metadata.
-2. On capture start, allocate a small fixed C5 frame queue under a measured
-   internal-heap floor; two 4096-byte slots are an initial upper bound, not a
-   measured safe allocation. Copy metadata and bytes in the promiscuous
-   callback, then return. Never call SPI, the codec, filesystem or UI there.
-   Increment separate oversize, queue-full, invalid-metadata and filter-drop
-   counters. Expose high-water mark and C5 heap/stack minima.
-3. Add a dedicated S3-polled capture transfer protocol. The existing 256-byte
-   fragment object is insufficient. A record descriptor should include job
-   generation, radio, sequence, captured/original lengths, channel, RSSI
-   validity/value, FCS validity, time kind/value and CRC. Chunk reads should
-   carry explicit offsets and a bounded data length within the 22-byte SPI
-   payload. S3 acknowledges only after complete CRC-checked assembly; a
-   repeated descriptor/chunk must be safe after a link retry. A cancelled job
-   or lease loss must invalidate old generations. Report transport gaps.
-4. On S3, validate a complete record, call `cerberus_wifi_pcapng_record`, and
-   append its returned bytes to the appropriate receiver's PCAPNG file. An S3
-   local 2.4 GHz receiver can feed the same writer directly under S3 Wi-Fi
-   ownership. S3 remains the control, interpretation and storage partner for
-   5 GHz C5 capture; its own RF cannot observe 5 GHz. Do not promise concurrent
-   S3 web AP and receiver on different channels.
-5. Add an S3 append writer with the existing SD mutex/USB ownership rules.
-   Write the 68-byte file header once, serialize complete records, rotate by
-   explicit size limit, flush on stop/error and report media/write failures.
-   Keep callback queues distinct from SD buffers. A monotonic sidecar should
-   be written with matching sequence/drop counters. Exercise link loss, slow
-   SD, stop during transfer and USB ownership changes on the attached unit.
+The 2026-11-08 develop comparison still resolves to
+`79cc6bcba1db6679baee1dab2b0c1ad5010e6363`:
 
-This codec has host-byte tests only. No production caller, SPI command, SD
-writer or live packet-capture path is connected yet; receive-mode parity and
-dual-radio throughput remain to be verified on hardware.
+- [Raw Capture menu](https://github.com/justcallmekoko/ESP32Marauder/blob/79cc6bcba1db6679baee1dab2b0c1ad5010e6363/esp32_marauder/MenuFunctions.cpp#L5218) and [initialization](https://github.com/justcallmekoko/ESP32Marauder/blob/79cc6bcba1db6679baee1dab2b0c1ad5010e6363/esp32_marauder/WiFiScan.cpp#L6917).
+- [Raw callback](https://github.com/justcallmekoko/ESP32Marauder/blob/79cc6bcba1db6679baee1dab2b0c1ad5010e6363/esp32_marauder/WiFiScan.cpp#L9149), [report](https://github.com/justcallmekoko/ESP32Marauder/blob/79cc6bcba1db6679baee1dab2b0c1ad5010e6363/esp32_marauder/WiFiScan.cpp#L11363) and [100 ms scheduling](https://github.com/justcallmekoko/ESP32Marauder/blob/79cc6bcba1db6679baee1dab2b0c1ad5010e6363/esp32_marauder/WiFiScan.cpp#L12896).
+- [Deauth Sniff menu](https://github.com/justcallmekoko/ESP32Marauder/blob/79cc6bcba1db6679baee1dab2b0c1ad5010e6363/esp32_marauder/MenuFunctions.cpp#L5152) and [passive callback](https://github.com/justcallmekoko/ESP32Marauder/blob/79cc6bcba1db6679baee1dab2b0c1ad5010e6363/esp32_marauder/WiFiScan.cpp#L9407).
+
+Cerberus does not copy upstream's unsafe fixed-offset EAPOL check or classify
+all non-management frames as data. Class totals are bounded observations, and
+unknown/malformed input stays explicit. The two-second EAPOL and quarter-second
+SAE workflows remain separate monitors. Selected scope, reason visibility and
+control reception are explicit Cerberus behaviors, not claims of exact CLI or
+all-option parity.
+
+Required acceptance includes controlled raw/probe/disconnect reception on
+both bands, comparison against an independent receiver, control-subtype
+coverage and restoration, PCAPNG readback, slow/full/removed SD behavior,
+repeated Stop/Back/next-scan and sleep/wake, and loaded heap/stack/throughput/drop
+measurements. Host fixtures and an idle boot cannot establish those outcomes.
