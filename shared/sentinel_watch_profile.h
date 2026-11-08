@@ -81,7 +81,8 @@ static inline bool sentinel_watch_profile_text_valid(const uint8_t *p,size_t n)
 static inline const uint8_t *sentinel_watch_profile_group(const sentinel_watch_profile_t *p,
     unsigned group,size_t *length)
 {
-    if(length)*length=0U;if(!p||!length)return NULL;
+    if (length) *length = 0U;
+    if (!p || !length) return NULL;
     switch(group){
     case SENTINEL_WATCH_PROFILE_BASIC:*length=sizeof(p->basic);return p->basic;
     case SENTINEL_WATCH_PROFILE_LOCATION:*length=sizeof(p->location);return p->location;
@@ -138,14 +139,16 @@ static inline bool sentinel_watch_profile_has(const sentinel_watch_profile_t *p,
 
 static inline bool sentinel_watch_profile_basic(const sentinel_watch_profile_t *p,sentinel_watch_profile_basic_t *out)
 {
-    if(out)memset(out,0,sizeof(*out));if(!out||!sentinel_watch_profile_has(p,SENTINEL_WATCH_PROFILE_BASIC))return false;
+    if (out) memset(out, 0, sizeof(*out));
+    if (!out || !sentinel_watch_profile_has(p, SENTINEL_WATCH_PROFILE_BASIC)) return false;
     out->id_type=p->basic[0]>>4U;out->ua_type=p->basic[0]&15U;
     memcpy(out->id,p->basic+1U,20U);out->text=out->id_type<=2U;
     out->length=out->text?sentinel_watch_profile_text_length(out->id,20U):20U;return true;
 }
 static inline bool sentinel_watch_profile_location(const sentinel_watch_profile_t *p,sentinel_watch_profile_location_t *out)
 {
-    if(out)memset(out,0,sizeof(*out));if(!out||!sentinel_watch_profile_has(p,SENTINEL_WATCH_PROFILE_LOCATION))return false;
+    if (out) memset(out, 0, sizeof(*out));
+    if (!out || !sentinel_watch_profile_has(p, SENTINEL_WATCH_PROFILE_LOCATION)) return false;
     const uint8_t *b=p->location;
     out->status=b[0]>>4U;out->latitude_e7=sentinel_watch_profile_sle32(b+4U);out->longitude_e7=sentinel_watch_profile_sle32(b+8U);
     out->position_valid=out->latitude_e7||out->longitude_e7;
@@ -163,23 +166,27 @@ static inline bool sentinel_watch_profile_location(const sentinel_watch_profile_
 }
 static inline bool sentinel_watch_profile_auth(const sentinel_watch_profile_t *p,sentinel_watch_profile_auth_t *out)
 {
-    if(out)memset(out,0,sizeof(*out));if(!out||!sentinel_watch_profile_has(p,SENTINEL_WATCH_PROFILE_AUTH))return false;
+    if (out) memset(out, 0, sizeof(*out));
+    if (!out || !sentinel_watch_profile_has(p, SENTINEL_WATCH_PROFILE_AUTH)) return false;
     out->type=p->auth[0]>>4U;out->page=p->auth[0]&15U;out->page_zero=out->page==0U;
     if(out->page_zero){out->last_page=p->auth[1];out->length=p->auth[2];out->timestamp_2019_s=sentinel_watch_profile_le32(p->auth+3U);}return true;
 }
 static inline bool sentinel_watch_profile_self(const sentinel_watch_profile_t *p,sentinel_watch_profile_self_t *out)
 {
-    if(out)memset(out,0,sizeof(*out));if(!out||!sentinel_watch_profile_has(p,SENTINEL_WATCH_PROFILE_SELF))return false;
+    if (out) memset(out, 0, sizeof(*out));
+    if (!out || !sentinel_watch_profile_has(p, SENTINEL_WATCH_PROFILE_SELF)) return false;
     out->type=p->self[0];memcpy(out->text,p->self+1U,23U);out->length=sentinel_watch_profile_text_length(out->text,23U);return true;
 }
 static inline bool sentinel_watch_profile_operator(const sentinel_watch_profile_t *p,sentinel_watch_profile_operator_t *out)
 {
-    if(out)memset(out,0,sizeof(*out));if(!out||!sentinel_watch_profile_has(p,SENTINEL_WATCH_PROFILE_OPERATOR))return false;
+    if (out) memset(out, 0, sizeof(*out));
+    if (!out || !sentinel_watch_profile_has(p, SENTINEL_WATCH_PROFILE_OPERATOR)) return false;
     out->type=p->operator_id[0];memcpy(out->text,p->operator_id+1U,20U);out->length=sentinel_watch_profile_text_length(out->text,20U);return true;
 }
 static inline bool sentinel_watch_profile_system(const sentinel_watch_profile_t *p,sentinel_watch_profile_system_t *out)
 {
-    if(out)memset(out,0,sizeof(*out));if(!out||!sentinel_watch_profile_has(p,SENTINEL_WATCH_PROFILE_SYSTEM))return false;
+    if (out) memset(out, 0, sizeof(*out));
+    if (!out || !sentinel_watch_profile_has(p, SENTINEL_WATCH_PROFILE_SYSTEM)) return false;
     const uint8_t *b=p->system;
     out->location_type=b[0]&3U;out->classification_type=(b[0]>>2U)&7U;
     out->latitude_e7=sentinel_watch_profile_sle32(b+1U);out->longitude_e7=sentinel_watch_profile_sle32(b+5U);out->position_valid=out->latitude_e7||out->longitude_e7;

@@ -115,7 +115,8 @@ static bool watch_profile_decode(cerberus_c5_watch_profile_reader_t *r)
 esp_err_t c5_spi_link_watch_profile_step(cerberus_c5_watch_profile_reader_t *r,
     cerberus_c5_watch_profile_result_t *out,bool *complete)
 {
-    if(out)memset(out,0,sizeof(*out));if(complete)*complete=false;
+    if(out)memset(out,0,sizeof(*out));
+    if(complete)*complete=false;
     if(!r||!out||!complete)return ESP_ERR_INVALID_ARG;
     if(r->phase==WATCH_PROFILE_FAILED)return r->error;
     if(r->phase==WATCH_PROFILE_DONE){*out=r->pending;*complete=true;return ESP_OK;}
