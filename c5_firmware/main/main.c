@@ -3,6 +3,7 @@
 #include "ble_scanner.h"
 #include "event_queue.h"
 #include "fragment_transfer.h"
+#include "device_identity.h"
 #include "ieee802154_scanner.h"
 #include "mdns_scanner.h"
 #include "network_diagnostics.h"
@@ -1579,6 +1580,16 @@ static void prepare_v2_response(const cerberus_spi_frame_t *request)
         }
         cerberus_fragment_open_request_t query;
         memcpy(&query, request->payload, sizeof(query));
+        if (query.object_type == CERBERUS_FRAGMENT_OBJECT_DEVICE_IDENTITY) {
+            cerberus_device_identity_t identity;
+            cerberus_fragment_info_payload_t info;
+            cerberus_device_identity_collect(&identity, CERBERUS_C5_FIRMWARE_VERSION);
+            if (cerberus_device_identity_valid(&identity) &&
+                cerberus_c5_fragment_open(query.object_type, &identity, sizeof(identity), &info) == ESP_OK)
+                prepare_frame_response(CERBERUS_SPI_COMMAND_FRAGMENT_OPEN,
+                    request->sequence, &info, sizeof(info));
+            break;
+        }
         if (query.object_type != CERBERUS_FRAGMENT_OBJECT_C5_DIAGNOSTIC_SNAPSHOT) {
             return;
         }

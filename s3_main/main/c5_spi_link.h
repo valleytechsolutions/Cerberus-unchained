@@ -1,6 +1,7 @@
 #pragma once
 #include "wifi_packet_monitor_session.h"
 #include "esp_err.h"
+#include "device_identity.h"
 #include "wardrive_stream.h"
 esp_err_t c5_spi_link_wardrive(uint8_t command,const cerberus_wd_request_t *query,void *reply);
 
@@ -46,6 +47,26 @@ typedef struct {
     uint16_t minimum_free_heap_kib;
     uint8_t radio_state;
 } cerberus_c5_status_t;
+
+typedef struct {
+    cerberus_device_identity_t pending;
+    cerberus_fragment_info_payload_t info;
+    cerberus_c5_status_t peer;
+    uint64_t last_us;
+    uint32_t deadline_ms;
+    uint16_t offset;
+    uint8_t phase;
+    esp_err_t error;
+} cerberus_device_identity_reader_t;
+
+/* Caller-owned reader, no allocation or RF mutation. Each step performs at
+ * most one exchange with a 20ms mutex wait and a shared 5ms READY budget.
+ * A hardware transaction already in flight is not preemptible. Partial or
+ * invalid metadata is never published. Cancel by discarding the reader after
+ * the current step; the peer's existing fragment buffer owns no radio lease. */
+void c5_spi_link_device_identity_begin(cerberus_device_identity_reader_t *, uint32_t deadline_ms);
+esp_err_t c5_spi_link_device_identity_step(cerberus_device_identity_reader_t *,
+    cerberus_device_identity_t *output, bool *complete);
 
 /* Passive ordinary-scan relationships. No station-target bank is read or
  * changed. Proof has full source-bank epoch plus peer identity and a local

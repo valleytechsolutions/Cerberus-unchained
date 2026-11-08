@@ -75,6 +75,7 @@ static atomic_bool console_task_stopped = true;
  * largest inlined snapshot and can exhaust the 4096-byte task stack. */
 static __attribute__((noinline)) void print_help(void);
 static __attribute__((noinline)) void print_info(void);
+static __attribute__((noinline)) void print_builds(void);
 static __attribute__((noinline)) void print_health(void);
 static __attribute__((noinline)) void print_memory(void);
 static __attribute__((noinline)) void print_c5(void);
@@ -153,6 +154,7 @@ static void print_help(void)
     console_write(
         "help     Show this command list\r\n"
         "info     Show firmware and protocol information\r\n"
+        "builds   Read S3/C5 app, SDK, partition and ELF build fingerprints\r\n"
         "health   Show reset, memory, stack, and crash status\r\n"
         "memory   Show S3 internal/PSRAM capacity and C5 heap headroom\r\n"
         "c5       Show onboard C5 link health and capabilities\r\n"
@@ -211,6 +213,50 @@ static void print_info(void)
         CERBERUS_PROTOCOL_VERSION,
         cerberus_recovery_download_mode_available() ? "available" : "blocked-by-efuse",
         cerberus_display_buffering_enabled() ? "yes" : "no");
+}
+
+static void print_build_identity(const char *chip, const cerberus_device_identity_t *id, esp_err_t error)
+{
+    console_printf("%s_build_error=%ld\r\n", chip, (long)error);
+    if (error != ESP_OK) return;
+    console_printf("%s_build_project=%s\r\n%s_build_version=%s\r\n%s_build_idf=%s\r\n"
+        "%s_build_date=%s %s\r\n%s_build_chip_model=%u\r\n%s_build_cores=%u\r\n"
+        "%s_build_partition=%s\r\n%s_build_partition_address=%lu\r\n%s_build_partition_bytes=%lu\r\n"
+        "%s_build_flash_bytes=%lu\r\n%s_build_c5_api=%lu\r\n%s_build_fields=0x%02x\r\n",
+        chip, id->project, chip, id->version, chip, id->idf, chip, id->date, id->time,
+        chip, id->chip_model, chip, id->cores, chip, id->partition_label,
+        chip, (unsigned long)id->partition_address, chip, (unsigned long)id->partition_bytes,
+        chip, (unsigned long)id->flash_bytes, chip, (unsigned long)id->capability_version, chip, id->flags);
+    char hash[65];
+    for (unsigned i = 0; i < 32U; ++i) snprintf(hash + i * 2U, sizeof(hash) - i * 2U, "%02x", id->elf_sha256[i]);
+    console_printf("%s_build_elf_sha256=%s\r\n", chip, hash);
+}
+
+static void print_builds(void)
+{
+    cerberus_device_identity_t *id = heap_caps_calloc(1, sizeof(*id), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    cerberus_device_identity_reader_t *reader = heap_caps_calloc(1, sizeof(*reader), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!id || !reader) {
+        console_printf("builds_error=%ld\r\n", (long)ESP_ERR_NO_MEM);
+        heap_caps_free(id); heap_caps_free(reader);
+        return;
+    }
+    cerberus_device_identity_collect(id, CERBERUS_C5_FIRMWARE_VERSION);
+    print_build_identity("s3", id, cerberus_device_identity_valid(id) ? ESP_OK : ESP_ERR_INVALID_RESPONSE);
+    int64_t now = esp_timer_get_time();
+    esp_err_t error = ESP_ERR_INVALID_STATE;
+    bool complete = false;
+    if (now >= 0) {
+        c5_spi_link_device_identity_begin(reader, (uint32_t)((uint64_t)now / 1000U) + 5000U);
+        do {
+            if (atomic_load(&console_stop_requested)) { error = ESP_ERR_NOT_FINISHED; break; }
+            error = c5_spi_link_device_identity_step(reader, id, &complete);
+            if (error != ESP_OK || complete) break;
+            vTaskDelay(pdMS_TO_TICKS(1));
+        } while (true);
+    }
+    print_build_identity("c5", id, error);
+    heap_caps_free(reader); heap_caps_free(id);
 }
 
 static void print_memory(void)
@@ -1719,6 +1765,8 @@ static void execute_command(char *line)
         print_help();
     } else if (strcmp(start, "info") == 0) {
         print_info();
+    } else if (strcmp(start, "builds") == 0) {
+        print_builds();
     } else if (strcmp(start, "health") == 0) {
         print_health();
     } else if (strcmp(start, "memory") == 0) {

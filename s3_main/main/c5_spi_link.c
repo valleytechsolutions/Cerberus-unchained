@@ -2609,6 +2609,7 @@ esp_err_t c5_spi_link_get_ieee802154_activity_scan_result(
 #include "c5_csi_link_impl.h"
 #include "c5_mac_monitor_link_impl.h"
 #include "c5_wifi_relation_link_impl.h"
+#include "c5_device_identity_link_impl.h"
 #include "c5_wifi_scan_link_impl.h"
 
 #include "c5_dual_ble_link_impl.h"

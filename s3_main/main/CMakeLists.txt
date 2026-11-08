@@ -1,6 +1,9 @@
 idf_component_register(
     SRCS
         "main.c"
+        "device_info.c"
+        "../../shared/device_identity.c"
+        "../../shared/device_identity_esp.c"
         "../../shared/wardrive_radio.c"
         "battery.c"
         "bmp_viewer.c"
@@ -147,6 +150,9 @@ idf_component_register(
         "."
         "../../shared"
     PRIV_REQUIRES
+        app_update
+        esp_app_format
+        spi_flash
         bt
         bootloader_support
         efuse

@@ -57,10 +57,19 @@ or authentication request was made during this checkpoint. The read-only log
 catalog lists three completed CSVs, including `CERBWardrive005.CSV`, with no
 catalog or lease-release error. Existing temporary recovery files were retained.
 
+The owner then confirmed that a short rev156 recording started and saved
+normally. The stopped-session capture on November 8 reported 11,967 ms of
+recording, three C5 Wi-Fi sweeps and three S3 BLE sweeps. The optional RSSI
+filter avoided 478 redundant journal appends. Finalization reduced 248
+journal rows to 151 CSV rows across 84 address/type identities, publishing
+one file in 474 ms. Radio, GPS and SD error fields were zero, compaction was
+finished and the recent-observations worker was released. This small recording
+needed no external merge pass; it does not measure large-session save time.
+
 ## Remaining checks
 
-Physical journal rollover, final CSV readback, Stop/save latency, runtime
-heap/stack headroom, moving GPS capture and sustained RF performance remain
+Physical journal rollover, final CSV readback, long-session Stop/save latency,
+runtime heap/stack headroom, moving GPS capture and sustained RF performance remain
 open. The new counters make save time and index traffic measurable on the
 device; host results do not establish field performance. Optional GPX,
 geofence boundaries, expansion hardware and ATGM336H also need acceptance.

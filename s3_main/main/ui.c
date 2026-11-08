@@ -70,6 +70,7 @@
 #include "settings.h"
 #include "storage.h"
 #include "system_health.h"
+#include "device_info.h"
 #include "touch.h"
 #include "usb_mass_storage.h"
 #include "web_ui.h"
@@ -290,6 +291,7 @@ typedef enum {
     UI_DASHBOARD_MODE_SUMMARY,
     UI_DASHBOARD_MODE_CRASH_RECORD,
     UI_DASHBOARD_MODE_CRASH_CLEAR_CONFIRM,
+    UI_DASHBOARD_MODE_DEVICE_INFO,
 } ui_dashboard_mode_t;
 
 typedef enum {
@@ -1096,8 +1098,7 @@ static esp_err_t draw_dashboard_summary(void)
     cerberus_system_health_t s3_health;
     cerberus_system_health_snapshot(&s3_health);
 
-    snprintf(line, sizeof(line), "UNCHAINED %s", esp_app_get_description()->version);
-    ESP_RETURN_ON_ERROR(draw_centered(68, line, UI_MUTED, 1), TAG, "dashboard subtitle failed");
+    ESP_RETURN_ON_ERROR(draw_button(20, 56, 280, 42, "DEVICE INFO"), TAG, "dashboard device info failed");
     ESP_RETURN_ON_ERROR(cerberus_display_draw_text(22, 108, "S3 DISPLAY", UI_TEXT, UI_BACKGROUND, 2), TAG, "dashboard S3 failed");
     ESP_RETURN_ON_ERROR(cerberus_display_draw_text(218, 108, "READY", UI_GOOD, UI_BACKGROUND, 2), TAG, "dashboard S3 state failed");
     ESP_RETURN_ON_ERROR(cerberus_display_draw_text(22, 146, "TOUCH", UI_TEXT, UI_BACKGROUND, 2), TAG, "dashboard touch failed");
@@ -1314,8 +1315,11 @@ static esp_err_t draw_dashboard_crash_clear_confirmation(void)
     return draw_button(168, 330, 132, 58, "CLEAR");
 }
 
+#include "device_info_ui.h"
+
 static esp_err_t draw_dashboard(void)
 {
+    if (dashboard_mode == UI_DASHBOARD_MODE_DEVICE_INFO) return device_info_draw();
     if (dashboard_mode == UI_DASHBOARD_MODE_CRASH_RECORD) {
         return draw_dashboard_crash_record();
     }
@@ -8271,6 +8275,9 @@ static esp_err_t draw_detail_page(void)
 
     const char *back_label = live_is_view() ? (tool_parent_page == UI_PAGE_MAIN ? "HOME" : "BACK") : "BACK";
     if (current_page == UI_PAGE_DASHBOARD &&
+        dashboard_mode == UI_DASHBOARD_MODE_DEVICE_INFO) {
+        back_label = "SYSTEM HEALTH";
+    } else if (current_page == UI_PAGE_DASHBOARD &&
         dashboard_mode == UI_DASHBOARD_MODE_CRASH_RECORD) {
         back_label = "SYSTEM HEALTH";
     } else if (current_page == UI_PAGE_DASHBOARD &&
@@ -8618,7 +8625,18 @@ static void refresh_dashboard_crash_record(void)
 
 static void handle_dashboard_tap(uint16_t x, uint16_t y)
 {
+    if (dashboard_mode == UI_DASHBOARD_MODE_DEVICE_INFO) {
+        device_info_tap(x, y);
+        ESP_ERROR_CHECK(draw_detail_page());
+        return;
+    }
     if (dashboard_mode == UI_DASHBOARD_MODE_SUMMARY) {
+        if (x >= 20U && x < 300U && y >= 56U && y < 98U) {
+            device_info_open();
+            dashboard_mode = UI_DASHBOARD_MODE_DEVICE_INFO;
+            ESP_ERROR_CHECK(draw_detail_page());
+            return;
+        }
         if (y < 220U || y >= 256U) {
             return;
         }
@@ -12233,6 +12251,11 @@ static void handle_tap(uint16_t x, uint16_t y)
                     return_to_launcher();
                 }
             } else if (current_page == UI_PAGE_DASHBOARD &&
+                dashboard_mode == UI_DASHBOARD_MODE_DEVICE_INFO) {
+                device_info_close();
+                dashboard_mode = UI_DASHBOARD_MODE_SUMMARY;
+                ESP_ERROR_CHECK(draw_detail_page());
+            } else if (current_page == UI_PAGE_DASHBOARD &&
                 dashboard_mode == UI_DASHBOARD_MODE_CRASH_CLEAR_CONFIRM) {
                 dashboard_mode = UI_DASHBOARD_MODE_CRASH_RECORD;
                 ESP_ERROR_CHECK(draw_detail_page());
@@ -12555,6 +12578,9 @@ void cerberus_ui_run(const cerberus_ui_config_t *config)
                  attack_runtime.state == CERBERUS_S3_BLE_ATTACK_RUNNING ||
                  attack_runtime.state == CERBERUS_S3_BLE_ATTACK_STOPPING);
         }
+        if (device_info_tick((uint64_t)now_ms, current_page == UI_PAGE_DASHBOARD &&
+                dashboard_mode == UI_DASHBOARD_MODE_DEVICE_INFO && !screen_asleep))
+            ESP_ERROR_CHECK(draw_detail_page());
         bool network_visible = current_page == UI_PAGE_WIFI && wifi_mode == UI_WIFI_MODE_NETWORK_SCAN && !screen_asleep;
         bool station_visible=current_page==UI_PAGE_WIFI&&wifi_mode==UI_WIFI_MODE_STATIONS&&!screen_asleep;
         bool ap_visible=current_page==UI_PAGE_WIFI&&wifi_mode==UI_WIFI_MODE_AP_JOB&&!screen_asleep;

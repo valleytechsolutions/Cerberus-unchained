@@ -1,6 +1,8 @@
 idf_component_register(
     SRCS
         "main.c"
+        "../../shared/device_identity.c"
+        "../../shared/device_identity_esp.c"
         "../../shared/wardrive_radio.c"
         "mdns_scanner.c"
         "network_diagnostics.c"
@@ -34,6 +36,9 @@ idf_component_register(
         "."
         "../../shared"
     PRIV_REQUIRES
+        app_update
+        esp_app_format
+        spi_flash
         bt
         esp_event
         esp_http_client
