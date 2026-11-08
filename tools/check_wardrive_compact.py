@@ -1,5 +1,6 @@
 """Compare production SD compaction against an independent CSV/RSSI oracle."""
 from collections import defaultdict
+import argparse
 import csv
 import hashlib
 import io
@@ -15,14 +16,27 @@ import time
 root = Path(__file__).resolve().parents[1]
 out = root / "artifacts/wardrive-compact-checks"
 out.mkdir(parents=True, exist_ok=True)
+arguments = argparse.ArgumentParser(description=__doc__)
+arguments.add_argument("--baseline-source", type=Path, help="Optional earlier compactor source for measured comparison")
+arguments.add_argument("--extended", action="store_true", help="Also test a 500,000-row recording")
+args = arguments.parse_args()
 exe = out / "wardrive-compact-check.exe"
-subprocess.run([sys.executable, "-m", "ziglang", "cc", "-std=c11", "-O2",
+
+def build(executable, baseline=None):
+    defines = [] if baseline is None else ["-DCERBERUS_COMPACT_BASELINE=1",
+        f'-DCERBERUS_COMPACT_IMPLEMENTATION="{baseline.resolve(strict=True).as_posix()}"']
+    subprocess.run([sys.executable, "-m", "ziglang", "cc", "-std=c11", "-O2", *defines,
     "-Wall", "-Wextra", "-Werror", "-UNDEBUG",
     "-I", str(root / "tools/host_checks/stubs"), "-I", str(root / "s3_main/main"),
     "-I", str(root / "shared"),
     *[str(root / "s3_main/main" / name) for name in
-      ("wardrive_compact.c", "wardrive_log.c", "wardrive_core.c", "wardrive_rssi_filter.c")],
-    str(root / "tools/host_checks/wardrive_compact_check.c"), "-o", str(exe)], check=True)
+      ("wardrive_log.c", "wardrive_core.c", "wardrive_rssi_filter.c")],
+    str(root / "tools/host_checks/wardrive_compact_check.c"), "-o", str(executable)], check=True)
+
+build(exe)
+baseline_exe = out / "wardrive-compact-baseline.exe" if args.baseline_source else None
+if baseline_exe:
+    build(baseline_exe, args.baseline_source)
 
 header = ("WigleWifi-1.6,appRelease=Cerberus,model=Cerberus,release=test,device=S3-C5,"
           "display=LCD,board=Cerberus,brand=Cerberus,star=Sol,body=3,subBody=0\n"
@@ -45,6 +59,7 @@ def verify(directory, rows, invalid=False):
     digest = hashlib.sha256(source.read_bytes()).digest()
     started = time.perf_counter()
     subprocess.run([str(exe), *map(str, (source, a, b, final, report))], check=True)
+    compact_seconds = round(time.perf_counter() - started, 3)
     stats = json.loads(report.read_text())
     assert hashlib.sha256(source.read_bytes()).digest() == digest, "recovery source was modified"
     if invalid:
@@ -56,20 +71,30 @@ def verify(directory, rows, invalid=False):
         fields = next(csv.reader([line]))
         groups[(fields[0].lower(), fields[-1])].append((int(fields[6]), index, line))
     expected = []
-    for values in groups.values():
+    for key in sorted(groups, key=lambda value: (bytes.fromhex(value[0].replace(":", "")), 1 if value[1] == "WIFI" else 2)):
+        values = groups[key]
         low = min(values, key=lambda value: (value[0], value[1]))
         high = min(values, key=lambda value: (-value[0], value[1]))
-        expected.extend([low[2]] if low[1] == high[1] else [low[2], high[2]])
+        expected.extend([low[2]] if low[1] == high[1] else [value[2] for value in sorted((low, high), key=lambda value: value[1])])
     actual = final.read_bytes().decode().splitlines(keepends=True)
     assert "".join(actual[:2]) == header
-    assert sorted(actual[2:]) == sorted(expected), "wrong extrema or changed row/location/time"
+    assert actual[2:] == expected, "wrong extrema, ordering or changed row/location/time"
     assert stats["input_rows"] == len(rows) and stats["output_rows"] == len(expected)
     assert stats["devices"] == len(groups)
     assert stats["input_bytes"] == source.stat().st_size and stats["output_bytes"] == final.stat().st_size
     if len(rows) > 512:
         assert stats["yields"] > 1
     original = final.read_bytes()
-    baseline_seconds = round(time.perf_counter() - started, 3)
+    assert stats["final_refs"] == stats["output_rows"] <= stats["initial_refs"] <= stats["input_rows"]
+    assert stats["workspace_bytes"] == 10352, "compaction must retain its existing workspace size"
+    baseline_stats = None
+    if baseline_exe:
+        baseline_started = time.perf_counter()
+        subprocess.run([str(baseline_exe), *map(str, (source, a, b, final, report))], check=True)
+        baseline_stats = json.loads(report.read_text())
+        baseline_stats["host_seconds"] = round(time.perf_counter() - baseline_started, 3)
+        assert baseline_stats["error"] == 0 and final.read_bytes() == original, "changed CSV relative to the earlier compactor"
+        assert hashlib.sha256(source.read_bytes()).digest() == digest
     variants = {}
     for mode in ("filter", "no-cache"):
         subprocess.run([str(exe), *map(str, (source, a, b, final, report)), mode], check=True)
@@ -83,7 +108,7 @@ def verify(directory, rows, invalid=False):
             assert filtered["filtered"] == 0 and filtered["input_bytes"] == stats["input_bytes"]
         assert hashlib.sha256(source.read_bytes()).digest() == digest
         variants[mode] = filtered
-    return {**stats, "host_seconds": baseline_seconds, "capture_filter": variants["filter"]}
+    return {**stats, "host_seconds": compact_seconds, "capture_filter": variants["filter"], "baseline": baseline_stats}
 
 rng = random.Random(147)
 with tempfile.TemporaryDirectory(dir=out) as temporary:
@@ -106,15 +131,23 @@ with tempfile.TemporaryDirectory(dir=out) as temporary:
     resident = verify(directory, [row(resident_rng.randrange(64), -resident_rng.randrange(20, 100), i)
                                   for i in range(100000)])
     assert resident["capture_filter"]["filtered"] > 90000
+    assert resident["index_read_bytes"] + resident["index_write_bytes"] < 1_800_000
     for count in (511, 512, 513, 1024, 1025, 8193):
         verify(directory, [row(rng.randrange(400), -rng.randrange(20, 100), i, i % 3 == 0) for i in range(count)])
     # Bounded workspace with more identities than can fit in an in-memory map.
     benchmark = verify(directory, [row(rng.randrange(10000), -rng.randrange(20, 100), i, i % 4 == 0) for i in range(100000)])
+    unique = verify(directory, [row(i, -50, i) for i in range(100000)])
+    assert unique["input_rows"] == unique["output_rows"] == 100000
+    assert unique["index_read_bytes"] + unique["index_write_bytes"] < 28_840_000
+    extended = None
+    if args.extended:
+        extended = verify(directory, [row((i * 31337) % 128, -20 - ((i * 37) % 80), i) for i in range(500000)])
     verify(directory, [row(1, -50, 1).rstrip("\n")], invalid=True)
     verify(directory, [row(1, -128, 1)], invalid=True)
     verify(directory, [], invalid=True)
-(out / "summary.json").write_text(json.dumps({"many_identities": benchmark, "resident_identities": resident}, indent=2) + "\n")
-print(f"Wardrive extrema: 19 real-file cases passed; filtered/fallback CSVs match the original byte for byte; "
+(out / "summary.json").write_text(json.dumps({"many_identities": benchmark, "resident_identities": resident,
+    "all_unique": unique, "extended": extended}, indent=2) + "\n")
+print(f"Wardrive extrema: {21 if args.extended else 20} real-file cases passed; filtered/fallback CSVs match the independent oracle byte for byte; "
       f"100000 rows, {benchmark['devices']} identities, "
       f"{benchmark['output_rows']} retained; {benchmark['workspace_bytes']} bytes workspace. "
       "Host timing is not SD/hardware acceptance.")

@@ -25,10 +25,12 @@ static bool partial_next_write, fail_next_sync;
 static unsigned write_calls, sync_calls, seek_calls, read_calls, flush_calls, close_calls;
 static unsigned fail_write_at, fail_sync_at, fail_seek_at, fail_read_at, fail_flush_at, fail_close_at;
 static bool fail_allocation, fail_rename;
+static bool short_fault_write;
 static size_t injected_fwrite(const void *data, size_t size, size_t count, FILE *file)
 {
     ++write_calls;
-    if (fail_write_at && write_calls == fail_write_at) return 0;
+    if (fail_write_at && write_calls == fail_write_at)
+        return short_fault_write && count > 1U ? fwrite(data, size, count / 2U, file) : 0;
     if (partial_next_write) {
         partial_next_write = false;
         assert(size == 1U && count > 2U);
@@ -125,6 +127,71 @@ static int64_t esp_timer_get_time(void) { return test_now_us; }
 _Static_assert(sizeof(sd_wardrive_stream) + sizeof(sd_wigle_stream) <
     2U * (CERBERUS_STORAGE_PATH_MAX + CERBERUS_STORAGE_NAME_MAX) +
     CERBERUS_STORAGE_NAME_MAX, "two compact streams cost less than old path buffers");
+
+static void fault_row(char *out, size_t size, const char *sample, unsigned index)
+{
+    assert(snprintf(out, size, "%s", sample) > 0);
+    char address[18];
+    assert(snprintf(address, sizeof(address), "02:01:02:03:04:%02X", index % 70U) == 17);
+    memcpy(out, address, 17);
+    char *signal = strstr(out, ",-50,"); assert(signal);
+    signal[2] = (index / 70U) % 2U ? '9' : '3';
+}
+
+static void compact_fault_run(const char *header, const char *sample, unsigned family,
+    unsigned operation, unsigned spans[3])
+{
+    char row[256], name[24];
+    uint64_t bytes = 0;
+    assert(cerberus_storage_wardrive_session_begin() == ESP_OK);
+    assert(cerberus_storage_wardrive_wigle_begin(header, strlen(header)) == ESP_OK);
+    for (unsigned i = 0; i < 1025; ++i) {
+        fault_row(row, sizeof(row), sample, i);
+        assert(cerberus_storage_wardrive_wigle_append(row, strlen(row)) == ESP_OK);
+    }
+    unsigned before[] = {write_calls, read_calls, seek_calls};
+    if (operation) {
+        short_fault_write = family == 0U && operation % 2U != 0U;
+        if (family == 0) fail_write_at = before[0] + operation;
+        if (family == 1) fail_read_at = before[1] + operation;
+        if (family == 2) fail_seek_at = before[2] + operation;
+    }
+    cerberus_wardrive_compact_stats_t stats;
+    esp_err_t error = cerberus_storage_wardrive_wigle_finish(true, name, sizeof(name), &bytes, &stats);
+    assert(!sd_wigle_stream.file && !locked);
+    struct stat item;
+    if (!operation) {
+        assert(error == ESP_OK && stats.input_rows == 1025 && stats.devices == 70 && stats.output_rows == 140);
+        spans[0] = write_calls - before[0]; spans[1] = read_calls - before[1]; spans[2] = seek_calls - before[2];
+        assert(stats.merge_passes == 2 && stats.final_refs == 140);
+        assert(stat(sd_wigle_stream.temp_path, &item) != 0 && stat(sd_wigle_stream.final_path, &item) == 0);
+        assert(!remove(sd_wigle_stream.final_path));
+    } else {
+        assert(error != ESP_OK && !name[0] && !stats.output_rows);
+        assert(stat(sd_wigle_stream.final_path, &item) != 0 && stat(sd_wigle_stream.temp_path, &item) == 0);
+        assert((uint64_t)item.st_size == strlen(header) + 1025U * strlen(sample));
+        /* Recovery bytes must be intact even after a partial final output or
+         * a failed run-header backpatch. No private scratch survives. */
+        FILE *source = fopen(sd_wigle_stream.temp_path, "rb"); assert(source);
+        char line[1024]; size_t header_length = strlen(header);
+        assert(header_length < sizeof(line) && fread(line, 1, header_length, source) == header_length);
+        assert(!memcmp(line, header, header_length));
+        for (unsigned i = 0; i < 1025; ++i) {
+            fault_row(row, sizeof(row), sample, i);
+            assert(fgets(line, sizeof(line), source) && !strcmp(row, line));
+        }
+        assert(fgetc(source) == EOF && !ferror(source) && !fclose(source));
+        assert(!remove(sd_wigle_stream.temp_path));
+    }
+    for (unsigned i = 0; i < 3; ++i) {
+        char path[256]; const char *suffix[] = {".D0", ".D1", ".NEW"};
+        assert(snprintf(path, sizeof(path), "%s%s", sd_wigle_stream.temp_path, suffix[i]) > 0);
+        assert(stat(path, &item) != 0);
+    }
+    fail_write_at = fail_read_at = fail_seek_at = 0;
+    short_fault_write = false;
+    assert(cerberus_storage_wardrive_session_finish() == ESP_OK);
+}
 
 int main(int argc, char **argv)
 {
@@ -307,6 +374,13 @@ int main(int argc, char **argv)
         fail_write_at=fail_sync_at=fail_seek_at=fail_read_at=fail_flush_at=fail_close_at=0;
         assert(cerberus_storage_wardrive_session_finish()==ESP_OK);
     }
+    unsigned spans[3];
+    compact_fault_run(wigle_header, wigle_row, 0, 0, spans);
+    for (unsigned family = 0; family < 3; ++family)
+        for (unsigned operation = 1; operation <= spans[family]; ++operation)
+            compact_fault_run(wigle_header, wigle_row, family, operation, spans);
+    printf("Compaction recovery: every explicit write (%u), read (%u) and seek (%u) failure preserves the journal and removes scratch files.\n",
+        spans[0], spans[1], spans[2]);
     gps_storage_checks();
     puts("wardrive and GPX SD streams, USB leases, partial-write/sync failure retention: pass");
     return 0;

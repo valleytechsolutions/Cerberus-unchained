@@ -414,6 +414,7 @@ static esp_err_t save_log_stream(bool located, bool keep)
     char name[24] = {0};
     uint64_t bytes = 0U;
     cerberus_wardrive_compact_stats_t compact = {0};
+    uint64_t save_started_ms = now_ms64();
     portENTER_CRITICAL(&wardrive_lock);
     wardrive_status.compacting = located && keep;
     portEXIT_CRITICAL(&wardrive_lock);
@@ -424,8 +425,15 @@ static esp_err_t save_log_stream(bool located, bool keep)
         /* A mutex timeout leaves the FILE open. Keep ownership until close. */
         if (error == ESP_ERR_TIMEOUT) vTaskDelay(pdMS_TO_TICKS(100));
     } while (error == ESP_ERR_TIMEOUT);
+    uint64_t elapsed = now_ms64() - save_started_ms;
     portENTER_CRITICAL(&wardrive_lock);
     wardrive_status.compacting = false;
+    if (located && keep) {
+        wardrive_status.compact_ms = elapsed > UINT32_MAX ? UINT32_MAX : (uint32_t)elapsed;
+        wardrive_status.compact_passes = compact.merge_passes;
+        wardrive_status.compact_index_read_bytes = compact.index_read_bytes;
+        wardrive_status.compact_index_write_bytes = compact.index_write_bytes;
+    }
     if (error == ESP_OK && compact.input_rows) {
         wardrive_status.csv_rows += compact.output_rows;
         wardrive_status.csv_devices += compact.devices;

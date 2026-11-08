@@ -1549,6 +1549,11 @@ static void print_radio(void)
         (unsigned long)wardrive.compacted_rows, wardrive.compacting ? 1U : 0U);
     console_printf("rssi_filtered=%lu\r\nrssi_filter_enabled=%u\r\n",
         (unsigned long)wardrive.rssi_filtered, wardrive.rssi_filter_enabled ? 1U : 0U);
+    console_printf("compact_save_ms=%lu\r\ncompact_passes=%lu\r\n"
+        "compact_index_read_bytes=%llu\r\ncompact_index_write_bytes=%llu\r\n",
+        (unsigned long)wardrive.compact_ms, (unsigned long)wardrive.compact_passes,
+        (unsigned long long)wardrive.compact_index_read_bytes,
+        (unsigned long long)wardrive.compact_index_write_bytes);
     console_printf("geofences_enabled=%u\r\ngeofence_state=%u\r\ngeofence_phase=%u\r\n"
         "geofence_slot=%u\r\ngeofence_pauses=%lu\r\ngeofence_skipped=%lu\r\n",
         wardrive.geofences_enabled ? 1U : 0U, (unsigned)wardrive.geofence.state,

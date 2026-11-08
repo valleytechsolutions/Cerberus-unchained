@@ -1,8 +1,9 @@
 # Wardriving GPS admission and RSSI extrema
 
 RSSI extrema filtering was introduced in rev148. Rev149 simplifies the GPS
-start control. Rev151 reduces capture-time SD writes while preserving the
-same final rows. These changes affect new recordings; existing CSVs and
+start control. Rev151 reduces capture-time SD writes; rev155 reduces the
+scratch-index work needed to save the final RSSI extremes after Stop. Both
+preserve the same final rows. These changes affect new recordings; existing CSVs and
 upload receipts are left intact.
 
 ## Starting a recording
@@ -27,9 +28,11 @@ running with a valid monotonic clock, fresh coordinates and fresh RMC UTC;
 neither sample may be older than five seconds. The upload clock's time holdover
 does not qualify as a position fix.
 
-If the fix disappears during capture, the receivers continue scanning. Rows
+With geofences disabled, if the fix disappears during capture, the receivers continue scanning. Rows
 without qualifying position/time are excluded from the CSV and counted on the
-screen. Logging resumes when the fix is usable again. A fix does not establish
+screen. Logging resumes when the fix is usable again. The optional
+[geofence workflow](WARDRIVE_GEOFENCES.md) pauses both receivers when a qualifying
+position is unavailable. A fix does not establish
 survey-grade position accuracy; unknown accuracy remains blank in the file.
 
 ## One CSV, up to two observations per identity
@@ -70,10 +73,16 @@ Evictions cause additional writes, never loss of a new extreme. If allocation
 fails, capture uses the original append-every-valid-row path without taking
 memory from the internal radio heap.
 
-Final compaction still runs after RF stops, using a fixed 10,352-byte workspace
-and an external merge of 16-byte row references. It handles evicted identities
-and changing extrema over the entire recording, preserving the same earliest
-ties and complete original rows. No sorting or file I/O runs in RF callbacks.
+Final compaction runs after RF stops, using a fixed 10,352-byte workspace
+and an external merge of 16-byte row references. Rev155 reduces each sorted
+512-row block to its RSSI extremes, then reduces again while merging blocks.
+Discarding an intermediate reference at either stage cannot discard a global
+extreme: each block retains its earliest strongest and weakest observation.
+Counted runs allow unequal block lengths without keeping duplicate references
+through every merge pass. A 64-reference output buffer fits within the existing
+sort workspace. It handles evicted identities and changing extrema over the
+entire recording, preserving the same earliest ties and complete original rows.
+No sorting or file I/O runs in RF callbacks.
 Cache memory is released with the recording workspace after finalization.
 
 The screen distinguishes valid observations written to the journal from rows
@@ -84,6 +93,13 @@ The console reports `csv_rows`, `csv_devices`, `compacted_rows` and `compacting`
 whether that session obtained the cache. These are separate from GPS/format
 exclusions and RF queue drops. `sd_rows` and the per-radio logged counters
 count actual appends, not all valid observations.
+
+Rev155 adds `compact_save_ms`, `compact_passes`, `compact_index_read_bytes` and
+`compact_index_write_bytes` to the console. The duration includes stream close,
+storage-lock retries, compaction and publication for the last located log save.
+Index counters measure successful transfers through C stdio, including run
+headers; they are not physical SD block counts or total recording I/O. They
+exclude source CSV reads and output CSV writes. The next session resets them.
 
 The `.TMP` journal is synced before compaction. A fresh `.NEW` file is synced
 and closed before publication; only then is the journal removed. Read, write,
@@ -111,8 +127,36 @@ than fit in its working memory. Filtered and allocation-fallback pipelines
 must produce byte-for-byte identical final CSVs to the original pipeline.
 Cases cover monotonic RSSI, ties, mixed Wi-Fi/BLE addresses, changed names and
 channels, cache evictions, invalid GPS/time/format and failed append decisions.
-Real-file tests inject allocation, read,
-write, seek, flush, sync, close and publication failures.
+Real-file tests inject allocation, read, write, seek, flush, sync, close and
+publication failures. A 1,025-row case exercises every explicit write (161),
+read (160) and seek (168) failure position during finalization, including short
+writes and run-header backpatches. All 489 failures must preserve the original
+journal bytes, remove incomplete scratch files and publish no CSV.
+
+An optional comparison builds the rev154 compactor beside the current one:
+
+```text
+python tools/check_wardrive_compact.py --baseline-source /path/to/rev154_compact.c --extended
+```
+
+The baseline source comes from `f288fc3f96d70925c4c84f6dd7a725d71bf402a6`.
+Both versions produced byte-identical complete CSVs in all valid cases, and the
+independent Python oracle also checked identity ordering, ties and every retained
+row. The following synthetic workloads measure summed scratch-index reads and
+writes; the existing 10,352-byte workspace is unchanged.
+
+| Input rows / identity distribution | rev154 index bytes | rev155 index bytes | Retained CSV rows |
+| --- | ---: | ---: | ---: |
+| 100,000 / 64 repeated identities | 28,800,000 | 1,619,956 | 128 |
+| 100,000 / 19,189 mixed identities | 28,800,000 | 23,980,052 | 36,248 |
+| 100,000 / all unique | 28,800,000 | 28,803,956 | 100,000 |
+| 500,000 / 128 repeated identities | 176,000,000 | 16,059,524 | 256 |
+
+With no repeats, run headers add 3,956 bytes in this sample (about 0.014%).
+Savings depend on the observations remaining after the capture-time cache;
+these synthetic percentages must not be added to the cache's savings or read
+as SD throughput measurements. Rev155 still needs physical Stop timing and
+final-CSV readback on the device.
 
 The 100,000-row host sample retained 36,248 rows from 19,189 identities. Host
 timing is not a measurement of Cerberus SD performance. On rev149 the user

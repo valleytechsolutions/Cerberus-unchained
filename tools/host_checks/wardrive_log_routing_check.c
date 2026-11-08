@@ -8,6 +8,7 @@ static unsigned long long stream_observed_ms;
 #include "wardrive_wigle.h"
 #include "wardrive_compact.h"
 #include "wardrive_rssi_filter.h"
+#include "wardrive_service.h"
 #include "esp_err.h"
 #include <assert.h>
 #include <stdio.h>
@@ -33,16 +34,7 @@ static bool wardrive_file_open, wigle_file_open, storage_open[2];
 static uint32_t open_file_rows, wigle_file_rows;
 static unsigned appends[2], begins[2], closes[2], errors, invalid, duplicates;
 static esp_err_t fail_append;
-static struct {
-    bool gps_requested;
-    bool compacting;
-    uint32_t csv_rows, csv_devices, compacted_rows;
-    uint32_t rssi_filtered;
-    uint32_t files_saved, geotagged_rows, unlocated_rows, gps_fallback_rows;
-    uint32_t skipped_no_fix, skipped_time, skipped_format;
-    uint64_t sd_bytes;
-    char last_file_name[24];
-} wardrive_status;
+static cerberus_wardrive_status_t wardrive_status;
 static void publish_error(esp_err_t error, char source)
 { assert(error != ESP_OK && source == 'S'); ++errors; }
 static void publish_invalid(void) { ++invalid; }

@@ -76,6 +76,8 @@ typedef struct {
     uint32_t duplicate_sightings, invalid_sightings, dedupe_evicted;
     uint32_t sd_rows, files_saved;
     uint32_t csv_rows, csv_devices, compacted_rows;
+    uint32_t compact_ms, compact_passes;
+    uint64_t compact_index_read_bytes, compact_index_write_bytes;
     uint32_t rssi_filtered; /* Valid rows already inside accepted RSSI extrema. */
     bool rssi_filter_enabled; /* This session obtained the optional PSRAM cache. */
     bool compacting;
