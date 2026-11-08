@@ -245,6 +245,7 @@ typedef enum {
     UI_WIFI_MODE_PACKET_COUNT,
     UI_WIFI_MODE_CHANNEL_ANALYZER,
     UI_WIFI_MODE_FOX_HUNT,
+    UI_WIFI_MODE_AP_SURVEY,
 } ui_wifi_mode_t;
 
 typedef cerberus_s3_wifi_ssid_analysis_t ui_wifi_ssid_analysis_t;
@@ -569,6 +570,12 @@ static void remote_id_open(void);
 static void remote_id_handle_tap(uint16_t x, uint16_t y);
 static void remote_id_tick(uint32_t now, bool asleep);
 static bool remote_id_keeps_awake(void);
+static void ap_survey_open(void);
+static bool ap_survey_busy(void);
+static esp_err_t ap_survey_draw(bool force);
+static void ap_survey_tap(uint16_t x, uint16_t y);
+static void ap_survey_close(void);
+static void ap_survey_tick(uint32_t now, bool asleep);
 static esp_err_t mac_monitor_draw(bool full);
 static void mac_monitor_open(void);
 static void mac_monitor_handle_tap(uint16_t x, uint16_t y);
@@ -8307,6 +8314,7 @@ static esp_err_t draw_wardrive(void)
 
 static esp_err_t draw_detail_page(void)
 {
+    if (current_page == UI_PAGE_WIFI && wifi_mode == UI_WIFI_MODE_AP_SURVEY) return ap_survey_draw(true);
     if (current_page == UI_PAGE_WIFI && wifi_mode == UI_WIFI_MODE_FOX_HUNT) return wifi_fox_hunt_draw();
     if (current_page == UI_PAGE_MESH_ARCHIVE) return mesh_archive_draw();
     if (current_page == UI_PAGE_IEEE802154 && ieee802154_mode == UI_IEEE802154_MODE_MESH) return mesh_ui_draw();
@@ -8747,6 +8755,9 @@ static void open_main_menu(void)
 
 static void return_to_launcher(void)
 {
+    if (current_page == UI_PAGE_WIFI && wifi_mode == UI_WIFI_MODE_AP_SURVEY) {
+        ap_survey_close(); return;
+    }
     if (current_page == UI_PAGE_WIFI && wifi_mode == UI_WIFI_MODE_CAPTURE && frame_ui_is_open()) {
         frame_ui_close(true); ESP_ERROR_CHECK(draw_detail_page()); return;
     }
@@ -11683,6 +11694,7 @@ static void handle_scripts_tap(uint16_t x, uint16_t y)
 #include "sentinel_watch_ui.h"
 #include "remote_id_live_ui.h"
 #include "mac_monitor_live_ui.h"
+#include "wifi_ap_survey_live_ui.h"
 
 static esp_err_t draw_battery_indicator(void)
 {
@@ -12215,6 +12227,7 @@ static void handle_tap(uint16_t x, uint16_t y)
             open_tool_page(UI_PAGE_BLE_ATTACK);
             return;
         }
+        if (action == CERBERUS_FIELD_AP_SURVEY) { ap_survey_open(); return; }
         if (action == CERBERUS_FIELD_BLE) open_tool_page(UI_PAGE_BLE);
         else if (action == CERBERUS_FIELD_WARDRIVE) open_tool_page(UI_PAGE_WARDRIVE);
         else if (action == CERBERUS_FIELD_RADIO) open_tool_page(UI_PAGE_IEEE802154);
@@ -12324,6 +12337,9 @@ static void handle_tap(uint16_t x, uint16_t y)
         return;
     }
 
+    if (current_page == UI_PAGE_WIFI && wifi_mode == UI_WIFI_MODE_AP_SURVEY) {
+        ap_survey_tap(x, y); return;
+    }
     if (current_page == UI_PAGE_WIFI && wifi_mode == UI_WIFI_MODE_FOX_HUNT) {
         wifi_fox_hunt_tap(x, y); ESP_ERROR_CHECK(draw_detail_page()); return;
     }
@@ -12768,6 +12784,7 @@ void cerberus_ui_run(const cerberus_ui_config_t *config)
             wifi_mode == UI_WIFI_MODE_TARGET || wifi_mode == UI_WIFI_MODE_OBSERVED_CLIENTS),
             !screen_asleep && current_page == UI_PAGE_WIFI && wifi_mode == UI_WIFI_MODE_OBSERVED_CLIENTS);
         remote_id_tick((uint32_t)now_ms, screen_asleep);
+        ap_survey_tick((uint32_t)now_ms, screen_asleep);
         mac_monitor_tick((uint32_t)now_ms, screen_asleep);
         ble_attack_tick((uint32_t)now_ms, screen_asleep);
         wardrive_tick((uint32_t)now_ms, screen_asleep);
@@ -12904,6 +12921,7 @@ void cerberus_ui_run(const cerberus_ui_config_t *config)
             !wardrive_logs_is_open() &&
             !cerberus_gps_recorder_busy() &&
             !remote_id_keeps_awake() &&
+            !ap_survey_busy() &&
             !mac_monitor_keeps_awake() &&
             !ble_discovery_keeps_awake() &&
             !ble_findmy_monitor_requested() &&

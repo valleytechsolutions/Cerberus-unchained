@@ -9,6 +9,7 @@ typedef enum {
     CERBERUS_S3_WIFI_COUNT,
     CERBERUS_S3_WIFI_WARDRIVE,
     CERBERUS_S3_WIFI_UPLOAD,
+    CERBERUS_S3_WIFI_SURVEY,
 } cerberus_s3_wifi_owner_t;
 /* Claim before touching the driver or hardware entropy source. Release only
  * after successful cleanup. Failed cleanup retains ownership for retry/reset. */

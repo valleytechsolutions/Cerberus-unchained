@@ -16,6 +16,7 @@ esp_err_t c5_spi_link_wardrive(uint8_t command,const cerberus_wd_request_t *quer
 #include "mesh_observation_protocol.h"
 #include "mesh_locate_protocol.h"
 #include "wifi_packet_count_protocol.h"
+#include "wifi_ap_survey_protocol.h"
 #include "s3_wifi_relation.h"
 #include "esp_err.h"
 #include <stdbool.h>
@@ -50,6 +51,30 @@ typedef struct {
     uint16_t minimum_free_heap_kib;
     uint8_t radio_state;
 } cerberus_c5_status_t;
+
+/* One command, bounded by 20 ms including mutex acquisition. INFO and START
+ * first read a fresh peer capability within the same budget; no mutation is
+ * automatically retried. READ clocks64 bytes; other commands clock32. */
+esp_err_t c5_spi_link_wifi_ap_survey_exchange(uint8_t command,const void *request,
+    size_t request_size,void *reply,size_t reply_size);
+typedef struct {
+    cerberus_ap_survey_snapshot_t *staging;
+    cerberus_c5_status_t peer;
+    uint64_t session_id,request_started_us,receipt_us,last_us;
+    uint32_t projection,deadline_ms;
+    uint16_t offset;
+    uint8_t phase,ap_count,relation_count,snapshot_flags;
+    esp_err_t error;
+} cerberus_c5_ap_survey_reader_t;
+/* Caller owns staging until cancellation or completion. No RF mutation.
+ * begin/cancel perform no I/O. Each step does at most one bounded exchange:
+ * peer, BEGIN,96 READs,final peer. Live collector revision may advance freely.
+ * Exact BEGIN request anchor and final receipt remain available in the reader.
+ * Failure/cancel clear the entire staging image; no partial publication. */
+esp_err_t c5_spi_link_wifi_ap_survey_reader_begin(cerberus_c5_ap_survey_reader_t *,
+    uint64_t session_id,cerberus_ap_survey_snapshot_t *staging,uint32_t deadline_ms);
+esp_err_t c5_spi_link_wifi_ap_survey_reader_step(cerberus_c5_ap_survey_reader_t *,bool *complete);
+void c5_spi_link_wifi_ap_survey_reader_cancel(cerberus_c5_ap_survey_reader_t *);
 
 typedef struct {
     cerberus_device_identity_t pending;

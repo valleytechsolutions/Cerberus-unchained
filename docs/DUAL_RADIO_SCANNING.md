@@ -1,5 +1,16 @@
 # Adaptive two-radio scanning
 
+## Rev170 source: continuous AP/client survey
+
+[AP/CLIENT SURVEY](WIFI_AP_CLIENT_SURVEY.md) assigns passive 2.4 GHz reception
+to S3 and passive 5 GHz reception to C5. Both receivers continue collecting
+while S3 incrementally copies immutable results, maintains stable selections
+and presents independent direction counts and ages. Stop and Back release
+exact owned sessions; neither opening the workspace nor waking starts RF.
+Source validation is in progress. Rev169 remains the installed baseline;
+physical reception, navigation, saved-report readback and loaded performance
+remain open.
+
 ## Current installed checkpoint: rev169
 
 [Remote ID MESSAGES](REMOTE_ID_MESSAGES.md) uses C5 Wi-Fi and independent S3

@@ -1,3 +1,4 @@
+#include "ap_survey_foreign_boundary.h"
 #ifdef NDEBUG
 #undef NDEBUG
 #endif

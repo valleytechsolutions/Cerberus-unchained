@@ -1,5 +1,7 @@
 #pragma once
 #include "wifi_packet_monitor_session.h"
+#include "wifi_ap_survey_protocol.h"
+
 #include "wifi_channel_analyzer.h"
 #include "wifi_fox_hunt.h"
 
@@ -15,6 +17,8 @@ extern "C" {
 #endif
 
 esp_err_t cerberus_wifi_scanner_init(void);
+esp_err_t cerberus_wifi_ap_survey_exchange(uint8_t command,const void *request,size_t request_size,
+    void *reply,size_t reply_size);
 void cerberus_wifi_fox_hunt_info(cerberus_wifi_fox_hunt_status_t *out);
 esp_err_t cerberus_wifi_fox_hunt_start(const cerberus_wifi_fox_hunt_start_t *request,
     cerberus_wifi_fox_hunt_status_t *out);

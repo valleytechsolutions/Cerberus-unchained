@@ -92,7 +92,7 @@ esp_err_t sentinel_hub_draw(sentinel_hub_t hub, const cerberus_ui_widget_theme_t
         ESP_RETURN_ON_ERROR(cerberus_ui_widget_draw_button((cerberus_ui_rect_t){132, 364, 56, 42},
             "MULTI", 1, true, theme), "hub", "multissid");
         ESP_RETURN_ON_ERROR(cerberus_ui_widget_draw_button((cerberus_ui_rect_t){192, 364, 56, 42},
-            "SURVEY", 1, true, theme), "hub", "survey");
+            "R1-R6", 1, true, theme), "hub", "survey");
         ESP_RETURN_ON_ERROR(cerberus_ui_widget_draw_button((cerberus_ui_rect_t){252, 364, 56, 42},
             "RX TOOLS", 1, true, theme), "hub", "receive tools");
         return cerberus_ui_widget_draw_button((cerberus_ui_rect_t){12, 364, 56, 42}, "LEARN", 1, true, theme);

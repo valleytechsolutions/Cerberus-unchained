@@ -59,6 +59,7 @@ typedef enum {
     CERBERUS_FIELD_BLE_FIND_MY_SOUND,
     CERBERUS_FIELD_REMOTE_ID,
     CERBERUS_FIELD_MAC_MONITOR,
+    CERBERUS_FIELD_AP_SURVEY,
 } cerberus_field_action_t;
 
 /* UI-only navigation: no radio operations or automatic job starts. */

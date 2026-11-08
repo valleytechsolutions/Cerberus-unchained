@@ -1,3 +1,4 @@
+#include "ap_survey_foreign_boundary.h"
 #undef NDEBUG
 #include "wifi_packet_monitor_core.h"
 #include "wifi_channel_analyzer.h"

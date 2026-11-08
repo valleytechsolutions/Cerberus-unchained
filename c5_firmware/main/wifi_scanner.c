@@ -135,6 +135,13 @@ static atomic_bool remote_id_radio_reserved;
 static atomic_bool csi_radio_reserved;
 static atomic_bool mac_radio_reserved;
 static atomic_bool packet_count_radio_reserved;
+static atomic_bool ap_survey_radio_reserved;
+static atomic_uint ap_survey_admission;
+static portMUX_TYPE ap_survey_mux=portMUX_INITIALIZER_UNLOCKED;
+static void ap_survey_boot_init(void);
+static void ap_survey_worker_tick(void);
+static bool ap_survey_retained(void);
+static void ap_survey_receive(const wifi_promiscuous_pkt_t *,wifi_promiscuous_pkt_type_t,int64_t,uint32_t);
 static portMUX_TYPE packet_count_mux=portMUX_INITIALIZER_UNLOCKED;
 static void packet_count_boot_init(void);
 static void packet_count_worker_tick(void);
@@ -214,11 +221,13 @@ static void scan_observation_receive(const wifi_promiscuous_pkt_t *packet,
 
 static void wifi_promiscuous_callback(void *buffer, wifi_promiscuous_pkt_type_t type)
 {
+    const uint32_t survey_token=atomic_load_explicit(&ap_survey_admission,memory_order_acquire);
     const uint32_t capture_token=cerberus_wifi_capture_service_admission_token();
     const uint32_t fox_token=atomic_load_explicit(&wifi_fox_hunt_admission_token,memory_order_acquire);
     const uint32_t mac_token=atomic_load_explicit(&mac_admission_token,memory_order_acquire);
     const int64_t callback_us = esp_timer_get_time();
     if (buffer == NULL) return;
+    ap_survey_receive(buffer,type,callback_us,survey_token);
     cerberus_wardrive_radio_wifi_rx(buffer,(int)type);
     packet_count_receive(buffer,type,callback_us);
     if (type == WIFI_PKT_MISC) return;
@@ -652,7 +661,14 @@ static void wifi_scan_task(void *arg)
 {
     (void)arg;
     while (true) {
-        ulTaskNotifyTake(pdTRUE, (probe_sniff_retained()||packet_count_retained()||packet_monitor_record_retained())?pdMS_TO_TICKS(250):portMAX_DELAY);
+        ulTaskNotifyTake(pdTRUE, (ap_survey_retained()||probe_sniff_retained()||packet_count_retained()||packet_monitor_record_retained())?pdMS_TO_TICKS(250):portMAX_DELAY);
+        ap_survey_worker_tick();
+        if(atomic_load_explicit(&ap_survey_radio_reserved,memory_order_acquire)) {
+            while(atomic_load_explicit(&ap_survey_radio_reserved,memory_order_acquire)) {
+                ap_survey_worker_tick();vTaskDelay(pdMS_TO_TICKS(20));
+            }
+            continue;
+        }
         packet_monitor_record_worker_tick();
         packet_count_worker_tick();
         if(atomic_load_explicit(&packet_count_radio_reserved,memory_order_acquire)){
@@ -1089,6 +1105,7 @@ esp_err_t cerberus_wifi_scanner_init(void)
     scan_session_id = 0U;
     channel_survey_session_init_locked();
     packet_count_boot_init();
+    ap_survey_boot_init();
     probe_sniff_boot_init();
     scan_status.state = scanner_ready ? CERBERUS_WIFI_SCAN_IDLE : CERBERUS_WIFI_SCAN_ERROR;
     scan_status.error_code = err;
@@ -1115,6 +1132,7 @@ esp_err_t cerberus_wifi_scanner_init(void)
 
 static bool another_radio_operation_is_active(void)
 {
+    if(atomic_load_explicit(&ap_survey_radio_reserved,memory_order_acquire))return true;
     cerberus_ble_scan_status_payload_t ble_status;
     cerberus_ble_connection_status_payload_t ble_connection;
     cerberus_ble_scanner_get_status(&ble_status);
@@ -1140,6 +1158,7 @@ static bool wifi_connection_is_active_locked(void)
 }
 
 #include "wifi_packet_count_service.h"
+#include "wifi_ap_survey_service.h"
 #include "wifi_probe_sniff_service.h"
 #include "wifi_channel_survey_service.h"
 #include "wifi_packet_monitor_service.h"
@@ -1159,7 +1178,7 @@ esp_err_t cerberus_wifi_connection_begin(const cerberus_wifi_connect_begin_reque
     if(preempt_error!=ESP_OK)return preempt_error;
     if (another_radio_operation_is_active()) return ESP_ERR_INVALID_STATE;
     xSemaphoreTake(scanner_mutex, portMAX_DELAY);
-    if (!scanner_ready || (atomic_load_explicit(&probe_sniff_radio_reserved,memory_order_acquire)||(atomic_load_explicit(&packet_count_radio_reserved,memory_order_acquire)||cerberus_wardrive_radio_held())) || station_reserved || atomic_load_explicit(&mac_radio_reserved,memory_order_acquire) || atomic_load_explicit(&csi_radio_reserved,memory_order_acquire) ||
+    if (!scanner_ready || atomic_load_explicit(&ap_survey_radio_reserved,memory_order_acquire) || (atomic_load_explicit(&probe_sniff_radio_reserved,memory_order_acquire)||(atomic_load_explicit(&packet_count_radio_reserved,memory_order_acquire)||cerberus_wardrive_radio_held())) || station_reserved || atomic_load_explicit(&mac_radio_reserved,memory_order_acquire) || atomic_load_explicit(&csi_radio_reserved,memory_order_acquire) ||
         scan_status.state != CERBERUS_WIFI_SCAN_COMPLETE ||
         defense_status.state == CERBERUS_WIFI_DEFENSE_RUNNING || wifi_connection_is_active_locked() ||
         request->generation != scan_status.generation || request->index >= scan_status.stored_count ||
@@ -1204,7 +1223,7 @@ esp_err_t cerberus_wifi_connection_commit(void)
     if (another_radio_operation_is_active()) return ESP_ERR_INVALID_STATE;
     wifi_config_t config = {0};
     xSemaphoreTake(scanner_mutex, portMAX_DELAY);
-    if (!scanner_ready || (atomic_load_explicit(&probe_sniff_radio_reserved,memory_order_acquire)||(atomic_load_explicit(&packet_count_radio_reserved,memory_order_acquire)||cerberus_wardrive_radio_held())) || station_reserved || atomic_load_explicit(&mac_radio_reserved,memory_order_acquire) || atomic_load_explicit(&csi_radio_reserved,memory_order_acquire) ||
+    if (!scanner_ready || atomic_load_explicit(&ap_survey_radio_reserved,memory_order_acquire) || (atomic_load_explicit(&probe_sniff_radio_reserved,memory_order_acquire)||(atomic_load_explicit(&packet_count_radio_reserved,memory_order_acquire)||cerberus_wardrive_radio_held())) || station_reserved || atomic_load_explicit(&mac_radio_reserved,memory_order_acquire) || atomic_load_explicit(&csi_radio_reserved,memory_order_acquire) ||
         connection_status.state != CERBERUS_WIFI_CONNECTION_STAGING ||
         scan_status.state != CERBERUS_WIFI_SCAN_COMPLETE ||
         defense_status.state == CERBERUS_WIFI_DEFENSE_RUNNING ||
@@ -1371,6 +1390,7 @@ void cerberus_wifi_connection_get_dns_status(cerberus_wifi_dns_status_payload_t 
 
 static esp_err_t wifi_scanner_start_band_internal(uint8_t band, uint64_t session_id)
 {
+    if(atomic_load_explicit(&ap_survey_radio_reserved,memory_order_acquire))return ESP_ERR_INVALID_STATE;
     if(cerberus_c5_test_running())return ESP_ERR_INVALID_STATE;
     if (atomic_load_explicit(&mac_radio_reserved,memory_order_acquire)) return ESP_ERR_INVALID_STATE;
     /* An owned split scan may only claim idle radios. Preserve the legacy
@@ -1392,7 +1412,7 @@ static esp_err_t wifi_scanner_start_band_internal(uint8_t band, uint64_t session
         xSemaphoreGive(scanner_mutex);
         return err;
     }
-    if ((session_id && (channel_survey_status.state == CERBERUS_WIFI_CHANNEL_SURVEY_RUNNING ||
+    if (atomic_load_explicit(&ap_survey_radio_reserved,memory_order_acquire) || (session_id && (channel_survey_status.state == CERBERUS_WIFI_CHANNEL_SURVEY_RUNNING ||
             atomic_load_explicit(&channel_survey_radio_reserved, memory_order_acquire))) ||
         (atomic_load_explicit(&probe_sniff_radio_reserved,memory_order_acquire)||(atomic_load_explicit(&packet_count_radio_reserved,memory_order_acquire)||cerberus_wardrive_radio_held())) || station_reserved || atomic_load_explicit(&mac_radio_reserved,memory_order_acquire) || atomic_load_explicit(&csi_radio_reserved,memory_order_acquire) ||
         scan_status.state == CERBERUS_WIFI_SCAN_RUNNING ||
@@ -1574,6 +1594,8 @@ void cerberus_wifi_scanner_get_status(cerberus_wifi_scan_status_payload_t *statu
 
     xSemaphoreTake(scanner_mutex, portMAX_DELAY);
     *status = scan_status;
+    if(atomic_load_explicit(&ap_survey_radio_reserved,memory_order_acquire))
+        status->state=CERBERUS_WIFI_SCAN_RUNNING;
     /* Existing BLE/802.15.4 guards use scanner status to arbitrate Wi-Fi.
      * A queued survey and a failed survey disable both retain this exclusion.
      * Do not add the survey to its own worker's competing-radio predicate:
@@ -1600,6 +1622,7 @@ void cerberus_wifi_scanner_get_radio_stats(cerberus_wifi_radio_stats_payload_t *
 
 esp_err_t cerberus_wifi_defense_survey_start(void)
 {
+    if(atomic_load_explicit(&ap_survey_radio_reserved,memory_order_acquire))return ESP_ERR_INVALID_STATE;
     if(cerberus_c5_test_running())return ESP_ERR_INVALID_STATE;
     if(atomic_load_explicit(&mac_radio_reserved,memory_order_acquire) || atomic_load_explicit(&csi_radio_reserved,memory_order_acquire) ||
        atomic_load_explicit(&remote_id_radio_reserved,memory_order_acquire))
@@ -1628,7 +1651,7 @@ esp_err_t cerberus_wifi_defense_survey_start(void)
         connection_status.state == CERBERUS_WIFI_CONNECTION_CONNECTING ||
         connection_status.state == CERBERUS_WIFI_CONNECTION_CONNECTED ||
         connection_status.state == CERBERUS_WIFI_CONNECTION_DISCONNECTING;
-    if (!scanner_ready || (atomic_load_explicit(&probe_sniff_radio_reserved,memory_order_acquire)||(atomic_load_explicit(&packet_count_radio_reserved,memory_order_acquire)||cerberus_wardrive_radio_held())) || station_reserved || scan_status.state != CERBERUS_WIFI_SCAN_COMPLETE ||
+    if (!scanner_ready || atomic_load_explicit(&ap_survey_radio_reserved,memory_order_acquire) || (atomic_load_explicit(&probe_sniff_radio_reserved,memory_order_acquire)||(atomic_load_explicit(&packet_count_radio_reserved,memory_order_acquire)||cerberus_wardrive_radio_held())) || station_reserved || scan_status.state != CERBERUS_WIFI_SCAN_COMPLETE ||
         atomic_load_explicit(&mac_radio_reserved,memory_order_acquire) || atomic_load_explicit(&csi_radio_reserved,memory_order_acquire) ||
         atomic_load_explicit(&remote_id_radio_reserved,memory_order_acquire) ||
         defense_status.state == CERBERUS_WIFI_DEFENSE_RUNNING || wifi_connection_active) {

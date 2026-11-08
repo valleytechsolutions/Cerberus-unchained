@@ -125,7 +125,7 @@ esp_err_t cerberus_wifi_probe_sniff_start(const cerberus_probe_sniff_start_t *q,
     xSemaphoreTake(scanner_mutex,portMAX_DELAY);
     uint64_t now=0U;bool valid_clock=probe_sniff_clock(&now);
     if(error==ESP_OK&&(!valid_clock||now>INT64_MAX-(uint64_t)CERBERUS_PROBE_SNIFF_LEASE_MS*1000U||
-        probe_sniff_context||probe_sniff_epoch==UINT64_MAX||q->session_id!=probe_sniff_epoch+1U||!scanner_ready||
+        atomic_load_explicit(&ap_survey_radio_reserved,memory_order_acquire)||probe_sniff_context||probe_sniff_epoch==UINT64_MAX||q->session_id!=probe_sniff_epoch+1U||!scanner_ready||
         station_reserved||wifi_connection_is_active_locked()||scan_status.state==CERBERUS_WIFI_SCAN_RUNNING||
         defense_status.state==CERBERUS_WIFI_DEFENSE_RUNNING||channel_survey_status.state==CERBERUS_WIFI_CHANNEL_SURVEY_RUNNING||
         atomic_load_explicit(&channel_survey_radio_reserved,memory_order_acquire)||

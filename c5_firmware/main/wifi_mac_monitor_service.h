@@ -243,7 +243,7 @@ esp_err_t cerberus_wifi_mac_start(const cerberus_mac_start_request_t *r,cerberus
         return error;
     }
     int64_t now=esp_timer_get_time();
-    if(!scanner_ready||(atomic_load_explicit(&probe_sniff_radio_reserved,memory_order_acquire)||atomic_load_explicit(&packet_count_radio_reserved,memory_order_acquire))||!scanner_task_handle||r->job_id<mac_request.job_id||now<0||mac_epoch_counter==UINT64_MAX||
+    if(!scanner_ready||(atomic_load_explicit(&probe_sniff_radio_reserved,memory_order_acquire)||(atomic_load_explicit(&ap_survey_radio_reserved,memory_order_acquire)||atomic_load_explicit(&packet_count_radio_reserved,memory_order_acquire)))||!scanner_task_handle||r->job_id<mac_request.job_id||now<0||mac_epoch_counter==UINT64_MAX||
        atomic_load_explicit(&mac_admission_token,memory_order_relaxed)==UINT32_MAX||
        another_radio_operation_is_active()||cerberus_c5_test_running()||station_reserved||
        atomic_load_explicit(&channel_survey_radio_reserved,memory_order_acquire)||

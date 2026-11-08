@@ -1,3 +1,4 @@
+#include "ap_survey_foreign_boundary.h"
 #include "wardrive_foreign_boundary.h"
 /* Actual C5 lifecycle/companion commands; SDK boundary follows installed NimBLE semantics. */
 #undef NDEBUG

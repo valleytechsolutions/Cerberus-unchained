@@ -120,6 +120,16 @@ static void ownership_tests(void)
     wifi_owner = CERBERUS_S3_WIFI_SCAN;
     assert(claim(CERBERUS_S3_BLE_OWNER_SCANNER) == ESP_ERR_INVALID_STATE);
     assert(!sdk_calls && !memory_sequence);
+    /* A passive survey owns the S3 radio until exact cleanup, including the
+     * wardrive claimant that may otherwise share its own Wi-Fi owner. */
+    for (unsigned claimant=CERBERUS_S3_BLE_OWNER_SCANNER;
+         claimant<=CERBERUS_S3_BLE_OWNER_WARDRIVE; ++claimant) {
+        reset_test();
+        wifi_owner=CERBERUS_S3_WIFI_SURVEY;
+        assert(claim((cerberus_s3_ble_owner_t)claimant)==ESP_ERR_INVALID_STATE);
+        assert(!sdk_calls && !task_calls && !memory_sequence);
+        assert(cerberus_s3_ble_host_owner()==CERBERUS_S3_BLE_OWNER_NONE);
+    }
     reset_test(); race_at_read = 2;
     assert(claim(CERBERUS_S3_BLE_OWNER_CENTRAL) == ESP_ERR_INVALID_STATE);
     assert(cerberus_s3_ble_host_owner() == CERBERUS_S3_BLE_OWNER_NONE && !sdk_calls);

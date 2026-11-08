@@ -427,6 +427,36 @@ static void prepare_v2_response(const cerberus_spi_frame_t *request)
             request->sequence,&error,sizeof(error));
         break;
     }
+    /* BEGIN AP SURVEY DISPATCH */
+    case CERBERUS_SPI_COMMAND_WIFI_AP_SURVEY_INFO:
+    case CERBERUS_SPI_COMMAND_WIFI_AP_SURVEY_START:
+    case CERBERUS_SPI_COMMAND_WIFI_AP_SURVEY_STATUS:
+    case CERBERUS_SPI_COMMAND_WIFI_AP_SURVEY_RENEW:
+    case CERBERUS_SPI_COMMAND_WIFI_AP_SURVEY_STOP:
+    case CERBERUS_SPI_COMMAND_WIFI_AP_SURVEY_RELEASE:
+    case CERBERUS_SPI_COMMAND_WIFI_AP_SURVEY_SNAPSHOT_BEGIN: {
+        size_t bytes=cerberus_ap_survey_request_bytes(request->command);
+        if(request->payload_length!=bytes)return;
+        uint8_t payload[22]={0};
+        (void)cerberus_wifi_ap_survey_exchange(request->command,bytes?request->payload:NULL,
+            bytes,payload,sizeof(payload));
+        prepare_frame_response((cerberus_spi_command_t)request->command,
+            request->sequence,payload,sizeof(payload));
+        break;
+    }
+    case CERBERUS_SPI_COMMAND_WIFI_AP_SURVEY_SNAPSHOT_READ: {
+        if(received_transfer_bytes!=CERBERUS_AP_SURVEY_TRANSFER_BYTES||
+            request->payload_length!=sizeof(cerberus_ap_survey_read_t))return;
+        cerberus_ap_survey_frame_t frame={0};
+        (void)cerberus_wifi_ap_survey_exchange(request->command,request->payload,
+            request->payload_length,&frame.payload,sizeof(frame.payload));
+        frame.magic=CERBERUS_SPI_MAGIC;frame.protocol_version=CERBERUS_PROTOCOL_VERSION;
+        frame.command=request->command;frame.sequence=request->sequence;frame.payload_length=sizeof(frame.payload);
+        frame.crc16=cerberus_protocol_crc16(&frame,offsetof(cerberus_ap_survey_frame_t,crc16));
+        memcpy(tx_buffer,&frame,sizeof(frame));
+        break;
+    }
+    /* END AP SURVEY DISPATCH */
     /* BEGIN PACKET COUNT DISPATCH */
     case CERBERUS_SPI_COMMAND_WIFI_PACKET_COUNT_INFO:
     case CERBERUS_SPI_COMMAND_WIFI_PACKET_COUNT_BEGIN:

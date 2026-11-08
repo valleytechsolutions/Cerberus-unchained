@@ -1,3 +1,4 @@
+#include "ap_survey_foreign_boundary.h"
 #include "wardrive_foreign_boundary.h"
 /* Reuse independent wire vectors and the checked SPI facade; its exchanges
  * now invoke the actual C5 Watch producer getters instead of synthetic rows. */

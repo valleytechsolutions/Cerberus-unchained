@@ -8,13 +8,13 @@ static bool netif_ready,event_ready;
 cerberus_s3_wifi_owner_t cerberus_s3_wifi_owner(void){return atomic_load(&owner);}
 esp_err_t cerberus_s3_wifi_claim(cerberus_s3_wifi_owner_t value)
 {
-    if(value!=CERBERUS_S3_WIFI_WEB&&value!=CERBERUS_S3_WIFI_RECEIVER&&value!=CERBERUS_S3_WIFI_PORTAL&&value!=CERBERUS_S3_WIFI_SCAN&&value!=CERBERUS_S3_WIFI_COUNT&&value!=CERBERUS_S3_WIFI_WARDRIVE&&value!=CERBERUS_S3_WIFI_UPLOAD)return ESP_ERR_INVALID_ARG;
+    if(value!=CERBERUS_S3_WIFI_WEB&&value!=CERBERUS_S3_WIFI_RECEIVER&&value!=CERBERUS_S3_WIFI_PORTAL&&value!=CERBERUS_S3_WIFI_SCAN&&value!=CERBERUS_S3_WIFI_COUNT&&value!=CERBERUS_S3_WIFI_WARDRIVE&&value!=CERBERUS_S3_WIFI_UPLOAD&&value!=CERBERUS_S3_WIFI_SURVEY)return ESP_ERR_INVALID_ARG;
     int expected=CERBERUS_S3_WIFI_NONE;
     return atomic_compare_exchange_strong(&owner,&expected,value)?ESP_OK:ESP_ERR_INVALID_STATE;
 }
 esp_err_t cerberus_s3_wifi_release(cerberus_s3_wifi_owner_t value)
 {
-    if(value!=CERBERUS_S3_WIFI_WEB&&value!=CERBERUS_S3_WIFI_RECEIVER&&value!=CERBERUS_S3_WIFI_PORTAL&&value!=CERBERUS_S3_WIFI_SCAN&&value!=CERBERUS_S3_WIFI_COUNT&&value!=CERBERUS_S3_WIFI_WARDRIVE&&value!=CERBERUS_S3_WIFI_UPLOAD)return ESP_ERR_INVALID_ARG;
+    if(value!=CERBERUS_S3_WIFI_WEB&&value!=CERBERUS_S3_WIFI_RECEIVER&&value!=CERBERUS_S3_WIFI_PORTAL&&value!=CERBERUS_S3_WIFI_SCAN&&value!=CERBERUS_S3_WIFI_COUNT&&value!=CERBERUS_S3_WIFI_WARDRIVE&&value!=CERBERUS_S3_WIFI_UPLOAD&&value!=CERBERUS_S3_WIFI_SURVEY)return ESP_ERR_INVALID_ARG;
     int expected=value;
     return atomic_compare_exchange_strong(&owner,&expected,CERBERUS_S3_WIFI_NONE)?ESP_OK:ESP_ERR_INVALID_STATE;
 }

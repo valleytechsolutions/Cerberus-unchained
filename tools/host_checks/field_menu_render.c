@@ -39,7 +39,7 @@ int main(int argc,char **argv)
     assert(sentinel_dashboard_animate(&status,1)==ESP_OK);
     assert(!memcmp(bottom,screen+320*350,sizeof(bottom)));
     cerberus_field_menu_t menu={0};draw(&menu);save(argv[1],"scan");
-    const cerberus_field_action_t routes[]={CERBERUS_FIELD_WIFI,CERBERUS_FIELD_BLE,CERBERUS_FIELD_WARDRIVE,CERBERUS_FIELD_RADIO,CERBERUS_FIELD_SURVEY,CERBERUS_FIELD_NETWORK,CERBERUS_FIELD_REMOTE_ID,CERBERUS_FIELD_MAC_MONITOR};
+    const cerberus_field_action_t routes[]={CERBERUS_FIELD_WIFI,CERBERUS_FIELD_BLE,CERBERUS_FIELD_WARDRIVE,CERBERUS_FIELD_RADIO,CERBERUS_FIELD_AP_SURVEY,CERBERUS_FIELD_NETWORK,CERBERUS_FIELD_REMOTE_ID,CERBERUS_FIELD_MAC_MONITOR};
     for(unsigned i=0;i<8;++i){assert(cerberus_field_menu_tap(&menu,20,116+i*37)==routes[i]);assert(cerberus_field_menu_tap(&menu,20,150+i*37)==CERBERUS_FIELD_NONE);}
     assert(cerberus_field_menu_tap(&menu,307,408)==CERBERUS_FIELD_MAC_MONITOR);
     assert(cerberus_field_menu_tap(&menu,100,419)==CERBERUS_FIELD_NONE);

@@ -1,3 +1,4 @@
+#include "ap_survey_foreign_boundary.h"
 #include "wardrive_foreign_boundary.h"
 #undef NDEBUG
 #include "cerberus_watch_capture.h"

@@ -367,7 +367,7 @@ static esp_err_t packet_monitor_start_internal(uint8_t channel, uint64_t session
     if (error == ESP_OK && (now < 0 || (session &&
         now > INT64_MAX - (int64_t)CERBERUS_WIFI_PACKET_MONITOR_LEASE_MS * 1000)))
         error = ESP_ERR_INVALID_STATE;
-    if (error == ESP_OK && (!scanner_ready || (atomic_load_explicit(&probe_sniff_radio_reserved,memory_order_acquire)||atomic_load_explicit(&packet_count_radio_reserved,memory_order_acquire)) || station_reserved || atomic_load_explicit(&mac_radio_reserved,memory_order_acquire) || atomic_load_explicit(&csi_radio_reserved,memory_order_acquire) ||
+    if (error == ESP_OK && (!scanner_ready || (atomic_load_explicit(&probe_sniff_radio_reserved,memory_order_acquire)||(atomic_load_explicit(&ap_survey_radio_reserved,memory_order_acquire)||atomic_load_explicit(&packet_count_radio_reserved,memory_order_acquire))) || station_reserved || atomic_load_explicit(&mac_radio_reserved,memory_order_acquire) || atomic_load_explicit(&csi_radio_reserved,memory_order_acquire) ||
         scan_status.state == CERBERUS_WIFI_SCAN_RUNNING ||
         defense_status.state == CERBERUS_WIFI_DEFENSE_RUNNING ||
         wifi_connection_is_active_locked() ||

@@ -156,6 +156,7 @@ static void frame_ui_close(bool back) { (void)back; CHECK(false); }
 static void sae_ui_close(bool back) { (void)back; CHECK(false); }
 static void eapol_ui_close(bool back) { (void)back; CHECK(false); }
 static void wifi_fox_hunt_back(void) { CHECK(false); }
+static void ap_survey_close(void) { CHECK(false); }
 enum { CHANNEL_ANALYZER_BACK };
 static void channel_analyzer_request(unsigned action) { (void)action; CHECK(false); }
 static void dual_wifi_ui_leave(void) { CHECK(false); }

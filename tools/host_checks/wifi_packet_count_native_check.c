@@ -1,3 +1,4 @@
+#include "ap_survey_foreign_boundary.h"
 #include "wardrive_foreign_boundary.h"
 #ifndef _DEFAULT_SOURCE
 #define _DEFAULT_SOURCE 1

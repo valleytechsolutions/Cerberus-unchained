@@ -17,7 +17,7 @@ static esp_err_t ap_target_snapshot(const cerberus_wifi_ap_job_t *r,uint8_t *ssi
     if(!cerberus_wifi_ap_job_valid(r))return ESP_ERR_INVALID_ARG;
     if(!scanner_mutex)return ESP_ERR_INVALID_STATE;
     xSemaphoreTake(scanner_mutex,portMAX_DELAY);
-    bool valid=scanner_ready&&!(atomic_load_explicit(&probe_sniff_radio_reserved,memory_order_acquire)||atomic_load_explicit(&packet_count_radio_reserved,memory_order_acquire))&&!station_reserved&&!atomic_load_explicit(&mac_radio_reserved,memory_order_acquire)&&
+    bool valid=scanner_ready&&!(atomic_load_explicit(&probe_sniff_radio_reserved,memory_order_acquire)||(atomic_load_explicit(&ap_survey_radio_reserved,memory_order_acquire)||atomic_load_explicit(&packet_count_radio_reserved,memory_order_acquire)))&&!station_reserved&&!atomic_load_explicit(&mac_radio_reserved,memory_order_acquire)&&
         !atomic_load_explicit(&csi_radio_reserved,memory_order_acquire)&&
         !wifi_connection_is_active_locked()&&
         defense_status.state!=CERBERUS_WIFI_DEFENSE_RUNNING&&scan_status.state==CERBERUS_WIFI_SCAN_COMPLETE&&
@@ -66,7 +66,7 @@ esp_err_t cerberus_wifi_station_start(const cerberus_wifi_station_request_t *r)
     if(same)station_contact=station_now();
     portEXIT_CRITICAL(&defense_capture_mux);
     if(duplicate){xSemaphoreGive(scanner_mutex);return same?ESP_OK:ESP_ERR_INVALID_ARG;}
-    if(!scanner_ready||(atomic_load_explicit(&probe_sniff_radio_reserved,memory_order_acquire)||atomic_load_explicit(&packet_count_radio_reserved,memory_order_acquire))||!scanner_task_handle||station_reserved||atomic_load_explicit(&mac_radio_reserved,memory_order_acquire) || atomic_load_explicit(&csi_radio_reserved,memory_order_acquire)||
+    if(!scanner_ready||(atomic_load_explicit(&probe_sniff_radio_reserved,memory_order_acquire)||(atomic_load_explicit(&ap_survey_radio_reserved,memory_order_acquire)||atomic_load_explicit(&packet_count_radio_reserved,memory_order_acquire)))||!scanner_task_handle||station_reserved||atomic_load_explicit(&mac_radio_reserved,memory_order_acquire) || atomic_load_explicit(&csi_radio_reserved,memory_order_acquire)||
         wifi_connection_is_active_locked()||
         scan_status.state!=CERBERUS_WIFI_SCAN_COMPLETE||defense_status.state==CERBERUS_WIFI_DEFENSE_RUNNING||
         r->generation!=scan_status.generation||r->index>=scan_status.stored_count||

@@ -310,7 +310,7 @@ static esp_err_t channel_survey_start_internal(uint8_t band, uint64_t session)
         xSemaphoreGive(scanner_mutex);
         return ESP_ERR_INVALID_STATE;
     }
-    if (!scanner_ready || (atomic_load_explicit(&probe_sniff_radio_reserved,memory_order_acquire)||atomic_load_explicit(&packet_count_radio_reserved,memory_order_acquire)) || station_reserved || atomic_load_explicit(&mac_radio_reserved,memory_order_acquire) || atomic_load_explicit(&csi_radio_reserved,memory_order_acquire) ||
+    if (!scanner_ready || (atomic_load_explicit(&probe_sniff_radio_reserved,memory_order_acquire)||(atomic_load_explicit(&ap_survey_radio_reserved,memory_order_acquire)||atomic_load_explicit(&packet_count_radio_reserved,memory_order_acquire))) || station_reserved || atomic_load_explicit(&mac_radio_reserved,memory_order_acquire) || atomic_load_explicit(&csi_radio_reserved,memory_order_acquire) ||
         scan_status.state == CERBERUS_WIFI_SCAN_RUNNING ||
         defense_status.state == CERBERUS_WIFI_DEFENSE_RUNNING ||
         wifi_connection_is_active_locked() ||

@@ -26,6 +26,7 @@ idf_component_register(
         "wifi_scanner.c"
         "../../shared/wifi_packet_count.c"
         "../../shared/wifi_capture_plan.c"
+        "../../shared/wifi_ap_survey.c"
         "wifi_capture_service.c"
         "../../shared/cerberus_watch_capture.c"
         "../../shared/remote_id_channel_plan.c"

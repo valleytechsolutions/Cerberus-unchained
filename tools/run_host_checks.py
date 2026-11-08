@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the 200 registered host suites through integrated Wardriving uploads.
+"""Run the 207 registered host suites through integrated Wardriving uploads.
 
 The checked-in synthetic fixtures need no board, radio, or private captures.
 Generated fixtures, native executables, previews, logs, and the result receipt
@@ -178,6 +178,13 @@ CHECKS = (
     'check_remote_id_diagnostics.py',
     'render_field_menu.py',
     'check_wifi_scan_observation.py',
+    'check_wifi_ap_survey.py',
+    'check_s3_wifi_ap_survey.py',
+    'check_wifi_ap_survey_c5.py',
+    'check_wifi_ap_survey_model.py',
+    'check_wifi_ap_survey_ui.py',
+    'check_wifi_ap_survey_session.py',
+    'check_wifi_ap_survey_live_ui.py',
     'check_s3_wifi_observation.py',
     'check_wifi_seen_console.py',
     'check_wifi_packet_monitor_worker.py',
@@ -232,8 +239,8 @@ SERIAL_CHECKS = (
 
 def registered_checks() -> tuple[str, ...]:
     names = (*CHECKS, *SERIAL_CHECKS)
-    if len(names) != 200 or len(set(names)) != 200:
-        raise ValueError("Expected 200 unique suites; do not silently skip a suite")
+    if len(names) != 207 or len(set(names)) != 207:
+        raise ValueError("Expected 207 unique suites; do not silently skip a suite")
     return names
 
 
@@ -252,7 +259,7 @@ def selected_checks(shard_index: int | None = None,
         return names
     if (type(shard_index) is not int or type(shard_count) is not int or
             not 1 <= shard_count <= len(names) or not 0 <= shard_index < shard_count):
-        raise ValueError("Supply both --shard-index and --shard-count; index is zero-based and count is 1..200")
+        raise ValueError("Supply both --shard-index and --shard-count; index is zero-based and count is 1..207")
     return names[shard_index::shard_count]
 
 

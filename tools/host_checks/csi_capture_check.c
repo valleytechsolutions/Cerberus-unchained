@@ -1,3 +1,4 @@
+#include "ap_survey_foreign_boundary.h"
 #undef NDEBUG
 #include "cerberus_protocol.h"
 #include "csi_protocol.h"
