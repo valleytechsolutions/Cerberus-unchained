@@ -13,6 +13,12 @@ start = source.index("static void wifi_scan_task(void *arg)")
 (out / "wifi_scan_worker_impl.h").write_text(source[start:source.index(
     "esp_err_t cerberus_wifi_watch_get_status(", start)])
 source = (root / "c5_firmware/main/main.c").read_text()
+prefix = source[source.index("static void prepare_v2_response("):source.index(
+    "    switch ((cerberus_spi_command_t)request->command) {")]
+(out / "monitor_dispatch_prefix.h").write_text(prefix + "\n" +
+    "    switch ((cerberus_spi_command_t)request->command) {\n" +
+    '#include "monitor_dispatch.h"\n' +
+    "    default: assert(false);\n    }\n}\n")
 start = source.index("    case CERBERUS_SPI_COMMAND_WIFI_PACKET_MONITOR_SESSION_INFO:")
 (out / "monitor_dispatch.h").write_text(source[start:source.index(
     "    case CERBERUS_SPI_COMMAND_WIFI_PACKET_MONITOR_START:", start)])

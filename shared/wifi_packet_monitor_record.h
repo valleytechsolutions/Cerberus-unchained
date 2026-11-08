@@ -7,7 +7,7 @@
  * table. Only the owning scanner may allocate/free this optional store. One
  * RX callback produces; scanner_mutex serializes all pin/read/ack operations.
  * Stop closes admission. Detach callbacks and wait for them before freeing. */
-#define CERBERUS_MONITOR_RECORD_MIN_FIRMWARE 77U
+#define CERBERUS_MONITOR_RECORD_MIN_FIRMWARE 78U
 #define CERBERUS_MONITOR_RECORD_RETENTION_MS 30000U
 #define CERBERUS_MONITOR_RECORD_STATS_BYTES 64U
 #define CERBERUS_MONITOR_RECORD_START 177U

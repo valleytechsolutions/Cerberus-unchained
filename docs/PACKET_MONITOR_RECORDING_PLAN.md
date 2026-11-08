@@ -1,5 +1,10 @@
 # Packet Monitor recording and radio release
 
+Rev152 corrects a shared-command collision that blocked this newer monitor
+path at the C5 dispatcher. See [SPI command routing](SPI_COMMAND_ROUTING.md)
+for the reproduced failure, paired capability-78 requirement and expanded
+regression coverage. Physical acceptance of this recording path remains open.
+
 Marauder `develop` was checked on November 7, 2026 and still resolves to
 `79cc6bcba1db6679baee1dab2b0c1ad5010e6363`. Its
 [RunPacketMonitor](https://github.com/justcallmekoko/ESP32Marauder/blob/79cc6bcba1db6679baee1dab2b0c1ad5010e6363/esp32_marauder/WiFiScan.cpp#L5062)

@@ -10,28 +10,36 @@
 static cerberus_spi_frame_t response_frame;
 static uint8_t tx_buffer[64];
 static size_t received_transfer_bytes;
-static bool response_ready;
+static bool response_ready, event_batch_cache_valid;
+static unsigned wardrive_calls;
+esp_err_t cerberus_wardrive_radio_exchange(uint8_t command, const cerberus_wd_request_t *query, void *reply)
+{
+    assert(command >= CERBERUS_WD_START && command <= CERBERUS_WD_RELEASE);
+    assert(query && query->session && received_transfer_bytes == 64U);
+    ++wardrive_calls;
+    memset(reply, 0, sizeof(cerberus_wd_status_t));
+    if (command != CERBERUS_WD_READ) ((cerberus_wd_status_t *)reply)->session = query->session;
+    return ESP_OK;
+}
 static void prepare_frame_response(cerberus_spi_command_t command, uint8_t token,
     const void *payload, size_t size)
 {
     assert(cerberus_protocol_prepare_frame(&response_frame, command, token, payload, size));
     response_ready = true;
 }
+#include "monitor_dispatch_prefix.h"
 static void wire_dispatch(const cerberus_spi_frame_t *request)
 {
     response_ready = false;
     memset(tx_buffer, 0, sizeof(tx_buffer));
-    switch (request->command) {
-#include "monitor_dispatch.h"
-    default: assert(false);
-    }
+    prepare_v2_response(request);
 }
 
 static int link_sentinel;
 static void *link_mutex = &link_sentinel;
 static bool link_locked, lock_failed, lose_start, gate_failed, lose_record_ack;
 static uint8_t sequence;
-static uint32_t peer_firmware_version, firmware = 76U;
+static uint32_t peer_firmware_version, firmware = 78U;
 static unsigned exchanges, starts, stops, reads, faults, wire_delay_ms;
 static int take_link_mutex(unsigned timeout)
 {
@@ -57,8 +65,9 @@ static esp_err_t spi_request_response_passive(const void *data, void *discarded,
     (void)discarded;
     const cerberus_spi_frame_t *q = data;
     cerberus_spi_frame_t *r = output;
+    bool wardrive = q->command >= CERBERUS_WD_START && q->command <= CERBERUS_WD_RELEASE;
     assert(link_locked && (size == sizeof(*q) || size == 64U) && cerberus_protocol_frame_is_valid(q));
-    assert((uint32_t)(deadline - clock_ms) <= 20U);
+    assert((uint32_t)(deadline - clock_ms) <= (wardrive ? 30U : 20U));
     ++exchanges;
     starts += q->command == CERBERUS_SPI_COMMAND_WIFI_PACKET_MONITOR_SESSION_START ||
         q->command == CERBERUS_MONITOR_RECORD_START;
@@ -66,6 +75,13 @@ static esp_err_t spi_request_response_passive(const void *data, void *discarded,
     reads += q->command == CERBERUS_SPI_COMMAND_WIFI_PACKET_MONITOR_SESSION_SAMPLE;
     received_transfer_bytes = size;
     wire_dispatch(q);
+    if (wardrive) {
+        assert(size == 64U);
+        memcpy(output, tx_buffer, size);
+        if (faults) { ((cerberus_wd_frame_t *)output)->crc ^= 1U; faults = 0U; }
+        clock_ms += wire_delay_ms;
+        return ESP_OK;
+    }
     if (size == 64U) {
         cerberus_packet_count_raw_frame_t raw;
         memcpy(&raw, tx_buffer, sizeof(raw));
@@ -119,6 +135,7 @@ static esp_err_t spi_request_response_passive(const void *data, void *discarded,
 }
 #include "monitor_frame.h"
 #include "wifi_packet_monitor_link.h"
+#include "c5_wardrive_link_impl.h"
 #include "c5_wifi_packet_count_link_impl.h"
 
 enum { UI_WIFI_MODE_PACKET_MONITOR, UI_WIFI_MODE_CHANNELS_24, UI_WIFI_MODE_CHANNELS_5,
@@ -179,7 +196,7 @@ static void bridge_reset(void)
     link_mutex = &link_sentinel;
     link_locked = lock_failed = lose_start = gate_failed = false;
     peer_firmware_version = 0U;
-    firmware = 76U;
+    firmware = 78U;
     exchanges = starts = stops = reads = faults = wire_delay_ms = 0U;
     survey_opens = list_opens = 0U;
     wifi_mode = UI_WIFI_MODE_PACKET_MONITOR;
@@ -433,13 +450,17 @@ static void repeated_sessions(void)
 }
 static void record_protocol(void)
 {
-    reset(); firmware = 76U; wire_delay_ms = 0U;
+    reset(); wire_delay_ms = 0U;
     cerberus_wifi_packet_monitor_session_status_t status;
+    for (firmware = 75U; firmware < 78U; ++firmware) {
+        peer_firmware_version = 0U;
+        assert(c5_spi_link_wifi_packet_monitor_session_info(&status) == ESP_ERR_NOT_SUPPORTED);
+        assert(c5_spi_link_wifi_packet_monitor_record_start(1U, 36U, &status) == ESP_ERR_NOT_SUPPORTED);
+        assert(!record_heap_bytes && !cerberus_wifi_packet_monitor_active());
+    }
     assert(c5_spi_link_wifi_packet_monitor_session_info(&status) == ESP_OK);
     uint64_t session = status.session_id + 1U;
-    assert(c5_spi_link_wifi_packet_monitor_record_start(session, 36U, &status) == ESP_ERR_NOT_SUPPORTED);
-    assert(!record_heap_bytes && !cerberus_wifi_packet_monitor_active());
-    firmware = 77U; record_heap_free = 1024U;
+    record_heap_free = 1024U;
     assert(c5_spi_link_wifi_packet_monitor_record_start(session, 36U, &status) == ESP_OK);
     assert(status.error_code == ESP_ERR_NO_MEM && !status.flags && !record_heap_bytes);
     record_heap_free = 65536U;
@@ -548,7 +569,7 @@ static void record_protocol(void)
 
 static void record_navigation(void)
 {
-    bridge_reset();firmware=77;packet_monitor_record_enabled=true;
+    bridge_reset();firmware=78;packet_monitor_record_enabled=true;
     packet_monitor_start_ui();assert(!starts&&packet_monitor_record_preparing);
     step(0,true);step(20,true);
     assert(packet_monitor.phase==WIFI_MONITOR_WATCH&&packet_monitor.record_bound);
@@ -567,16 +588,16 @@ static void record_navigation(void)
     record_allow_finish=true;step(20,true);step(20,true);
     assert(!packet_monitor_record_job&&wifi_mode==UI_WIFI_MODE_MENU);
     run_ap_and_capture();
-    bridge_reset();firmware=77;packet_monitor_record_enabled=record_sd_fail=true;
+    bridge_reset();firmware=78;packet_monitor_record_enabled=record_sd_fail=true;
     packet_monitor_start_ui();step(0,true);
     assert(!starts&&!packet_monitor_record_job&&packet_monitor_record_status.error==ESP_FAIL);
     actual_back();step(0,true);assert(wifi_mode==UI_WIFI_MODE_MENU);
-    bridge_reset();firmware=77;packet_monitor_record_enabled=true;
+    bridge_reset();firmware=78;packet_monitor_record_enabled=true;
     packet_monitor_start_ui();actual_back();record_allow_finish=true;
     step(0,true);step(20,true);
     assert(!starts&&!packet_monitor_record_job&&wifi_mode==UI_WIFI_MODE_MENU);
     for(unsigned cycle=0;cycle<20;++cycle){
-        bridge_reset();firmware=77;packet_monitor_record_enabled=true;lose_start=true;
+        bridge_reset();firmware=78;packet_monitor_record_enabled=true;lose_start=true;
         packet_monitor_start_ui();step(0,true);step(20,true);
         uint64_t claimed=packet_monitor.session;
         assert(packet_monitor.error==ESP_ERR_TIMEOUT&&!packet_monitor.record_bound);
@@ -590,8 +611,67 @@ static void record_navigation(void)
     }
 }
 
+static void dispatch_families(void)
+{
+    bridge_reset();
+    cerberus_wd_request_t query = {.session = UINT64_C(0x123456789abcdef0)};
+    cerberus_spi_frame_t request;
+    for (unsigned command = CERBERUS_WD_START; command <= CERBERUS_WD_RELEASE; ++command) {
+        assert(cerberus_protocol_prepare_frame(&request, (cerberus_spi_command_t)command,
+            9U, &query, sizeof(query)));
+        received_transfer_bytes = 64U;
+        unsigned before = wardrive_calls;
+        wire_dispatch(&request);
+        assert(wardrive_calls == before + 1U && !response_ready);
+        cerberus_wd_frame_t response;
+        memcpy(&response, tx_buffer, sizeof(response));
+        assert(response.magic == CERBERUS_SPI_MAGIC && response.command == command &&
+            response.sequence == 9U && response.length == 54U &&
+            response.crc == cerberus_protocol_crc16(&response, 62U));
+        assert(!cerberus_wifi_packet_monitor_active());
+        received_transfer_bytes = 32U;
+        wire_dispatch(&request);
+        assert(wardrive_calls == before + 1U && !response_ready);
+        received_transfer_bytes = 64U;
+        request.payload[0] ^= 1U; /* Bad checksum must not reach either service. */
+        wire_dispatch(&request);
+        assert(wardrive_calls == before + 1U && !response_ready);
+        assert(cerberus_protocol_prepare_frame(&request, (cerberus_spi_command_t)command,
+            10U, NULL, 0U));
+        wire_dispatch(&request);
+        assert(wardrive_calls == before + 1U && !response_ready);
+    }
+    unsigned before = wardrive_calls;
+    /* A stale S3's old wide requests must not turn into monitor operations. */
+    for (unsigned old_command = 172U; old_command <= 176U; ++old_command) {
+        assert(cerberus_protocol_prepare_frame(&request, (cerberus_spi_command_t)old_command,
+            11U, &query, sizeof(query)));
+        wire_dispatch(&request);
+        assert(!response_ready && wardrive_calls == before && !cerberus_wifi_packet_monitor_active());
+    }
+    received_transfer_bytes = 32U;
+    assert(cerberus_protocol_prepare_frame(&request, CERBERUS_SPI_COMMAND_WIFI_PACKET_MONITOR_SESSION_INFO,
+        12U, NULL, 0U));
+    wire_dispatch(&request);
+    assert(response_ready && wardrive_calls == before && !cerberus_wifi_packet_monitor_active());
+
+    /* The real S3 adapter must reject old firmware before issuing new IDs. */
+    cerberus_wd_status_t status;
+    for (firmware = 75U; firmware < 78U; ++firmware) {
+        peer_firmware_version = 0U;
+        assert(c5_spi_link_wardrive(CERBERUS_WD_START, &query, &status) == ESP_ERR_NOT_SUPPORTED);
+        assert(wardrive_calls == before && !status.session);
+    }
+    assert(c5_spi_link_wardrive(CERBERUS_WD_START, &query, &status) == ESP_OK);
+    assert(status.session == query.session && wardrive_calls == before + 1U);
+    faults = 1U;
+    assert(c5_spi_link_wardrive(CERBERUS_WD_STATUS, &query, &status) == ESP_ERR_INVALID_RESPONSE);
+    assert(!status.session);
+}
+
 int main(void)
 {
+    dispatch_families();
     malformed_frames();
     navigation_and_cleanup();
     ownership_and_loss();
@@ -599,6 +679,6 @@ int main(void)
     repeated_sessions();
     record_protocol();
     record_navigation();
-    puts("Packet Monitor bridge: exact ownership, lost replies, bounded ticks, cleanup/navigation and samples passed.");
+    puts("Packet Monitor bridge: production dispatcher preamble, disjoint Wardriving commands, exact ownership, lost replies, cleanup/navigation and recording passed.");
     return 0;
 }

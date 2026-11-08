@@ -285,7 +285,8 @@ def package(output: Path | None = None, *, release: bool = False, accepted_on: s
     shutil.copy2(ROOT / "docs" / "UNCHAINED_BUILD.md", destination / "BUILD_AND_RECOVERY.md")
     # Keep protocol provenance and redistribution notices with binary builds.
     for name in ("WATCH_SIGNATURES.md", "WATCH_THIRD_PARTY_NOTICES.md",
-                 "MARAUDER_ATTRIBUTION.md", "GPS_RECORDING.md", "WARDRIVE_DATA_QUALITY.md"):
+                 "MARAUDER_ATTRIBUTION.md", "GPS_RECORDING.md", "WARDRIVE_DATA_QUALITY.md",
+                 "SPI_COMMAND_ROUTING.md"):
         shutil.copy2(ROOT / "docs" / name, destination / name)
     shutil.copytree(ROOT / "LICENSES", destination / "LICENSES")
     (destination / "README.txt").write_text(
