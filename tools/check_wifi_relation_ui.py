@@ -72,7 +72,7 @@ known = {'if','while','for','sizeof','strcmp','memset','assert','ESP_RETURN_ON_E
     'find_item','draw_centered','draw_wifi_target','wifi_relation_draw','wifi_relation_back','wifi_relation_tap',
     'wifi_target_handle_tap','live_is_view','live_page_tool','live_toggle_pause','live_scan_action_label',
     'draw_live_scan','draw_current_page','return_to_launcher','handle_live_scan_tap','tools_group_title',
-    'wardrive_recent_is_open','wardrive_gps_view_is_open','wardrive_logs_is_open','dual_wifi_live_open','dual_wifi_ui_draw'}
+    'wardrive_recent_is_open','wardrive_gps_view_is_open','wardrive_logs_is_open','wardrive_areas_is_open','dual_wifi_live_open','dual_wifi_ui_draw'}
 stubs = sorted(set(re.findall(r'\b([A-Za-z_]\w*)\s*\(', helpers + draw + parent + wifi + tap)) - known)
 (out / 'relation_unused_routes.h').write_text('\n'.join('#define '+name+'(...) unexpected_call()' for name in stubs) + '\n')
 (out / 'relation_live_helpers.h').write_text(function(live, 'static sentinel_scan_tool_t live_page_tool(void)') + '\n' +

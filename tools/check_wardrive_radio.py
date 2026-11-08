@@ -20,5 +20,6 @@ for tick_ms in (1,10):
     subprocess.run([sys.executable,'-m','ziglang','cc','-std=c11','-O1','-Wall','-Wextra','-Werror',
         '-DFIXTURE_TICK_MS='+str(tick_ms),'-I',str(stubs),'-I',str(root/'shared'),'-I',str(root/'s3_main/main'),
         str(root/'tools/host_checks/wardrive_stream_worker_check.c'),str(root/'s3_main/main/wardrive_core.c'),
+        str(root/'s3_main/main/wardrive_geofence.c'),'-lm',
         '-o',str(exe)],check=True,env=env)
     subprocess.run([str(exe)],check=True)

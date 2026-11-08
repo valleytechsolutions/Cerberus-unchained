@@ -11,6 +11,7 @@
 #include "wardrive_wigle.h"
 #include "wardrive_rssi_filter.h"
 #include "wardrive_gps_uart.h"
+#include "settings.h"
 #include "wifi_capture_session.h"
 #include "esp_heap_caps.h"
 #include "esp_timer.h"
@@ -88,6 +89,7 @@ typedef struct {
     expansion_record_t expansion_event;
     uint32_t expansion_dropped_at_start_by_slot[6];
     char row_buffer[384];
+    cerberus_geofence_config_t geofences;
 } wardrive_workspace_t;
 static wardrive_workspace_t *workspace;
 #define dedupe (workspace->dedupe)
@@ -121,6 +123,7 @@ static wardrive_workspace_t *workspace;
 #define expansion_event (workspace->expansion_event)
 #define expansion_dropped_at_start_by_slot (workspace->expansion_dropped_at_start_by_slot)
 #define row_buffer (workspace->row_buffer)
+#define wardrive_geofences (workspace->geofences)
 static uint32_t open_file_rows;
 static bool wardrive_file_open;
 static uint32_t wigle_file_rows;
@@ -1460,11 +1463,23 @@ esp_err_t cerberus_wardrive_start_check(bool enable_gps)
 static esp_err_t wardrive_start_with_idle_probes_paused(bool include_expansions,
     bool enable_gps)
 {
+    bool geofences_enabled = false;
+#if defined(ESP_PLATFORM) || defined(CERBERUS_WARDRIVE_STREAM_HOST)
+    cerberus_geofence_config_t geofences;
+    esp_err_t settings_error = cerberus_settings_geofences_get(&geofences);
+    if (settings_error != ESP_OK) return settings_error;
+    if (!cerberus_geofence_config_valid(&geofences)) return ESP_ERR_INVALID_STATE;
+    for (unsigned i = 0; i < CERBERUS_GEOFENCE_SLOTS; ++i)
+        geofences_enabled |= geofences.areas[i].enabled != 0;
+    /* R1-R6 currently acknowledge the requested setting, not RF quiescence. */
+    if (geofences_enabled && include_expansions) return ESP_ERR_NOT_SUPPORTED;
+#endif
     cerberus_c5_status_t c5 = {0};
     esp_err_t error = c5_spi_link_get_status(&c5);
     if (error != ESP_OK) return error;
     #if defined(ESP_PLATFORM) || defined(CERBERUS_WARDRIVE_STREAM_HOST)
     if(c5.firmware_version<CERBERUS_WD_MIN_FIRMWARE)return ESP_ERR_NOT_SUPPORTED;
+    if(geofences_enabled&&c5.firmware_version<CERBERUS_WD_PAUSE_MIN_FIRMWARE)return ESP_ERR_NOT_SUPPORTED;
     #endif
     if ((c5.capabilities & (CERBERUS_C5_CAP_WIFI_2_4_GHZ |
          CERBERUS_C5_CAP_WIFI_5_GHZ)) == 0U || c5.radio_state != 0U)
@@ -1529,6 +1544,9 @@ static esp_err_t wardrive_start_with_idle_probes_paused(bool include_expansions,
         return ESP_ERR_NO_MEM;
     error = allocate_workspace();
     if (error != ESP_OK) return error;
+#if defined(ESP_PLATFORM) || defined(CERBERUS_WARDRIVE_STREAM_HOST)
+    wardrive_geofences = geofences;
+#endif
     field_survey_snapshot(&expansion_stage);
     if (expansion_stage.requested ||
         (include_expansions && (expansion_stage.scanning_mask != 0U ||
@@ -1595,6 +1613,8 @@ static esp_err_t wardrive_start_with_idle_probes_paused(bool include_expansions,
     wardrive_status.gps_requested = enable_gps;
     wardrive_status.mode = wardrive_selected_mode;
     wardrive_status.expansions_requested = include_expansions;
+    wardrive_status.geofences_enabled = geofences_enabled;
+    wardrive_status.geofence.slot = CERBERUS_GEOFENCE_SLOTS;
     wardrive_status.sd_bytes = 0U;
     stop_requested = false;
     /* Failed task creation discards the optional expansion FIFO. Only an

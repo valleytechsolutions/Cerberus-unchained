@@ -42,6 +42,7 @@ program = r'''
 #include <stdint.h>
 #include <stdlib.h>
 #include "wardrive_rssi_filter.h"
+#include "wardrive_geofence.h"
 #define CERBERUS_WIFI_SCAN_MAX_RESULTS 32U
 #define CERBERUS_BLE_SCAN_MAX_RESULTS 32U
 #define CERBERUS_WIFI_PROBE_LIMIT 16U

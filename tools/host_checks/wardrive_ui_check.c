@@ -66,6 +66,18 @@ static bool wardrive_logs_is_open(void){return false;}
 static void wardrive_logs_tick(bool asleep){(void)asleep;}
 static void wardrive_gps_view_open(void){}
 static bool wardrive_gps_view_is_open(void){return false;}
+#ifdef CERBERUS_AREA_UI_FIXTURE
+static void wardrive_areas_open(void);
+static bool wardrive_areas_is_open(void);
+static void wardrive_areas_release_if_hidden(bool asleep);
+static esp_err_t wardrive_areas_start_check(void);
+static esp_err_t wardrive_areas_draw(void);
+#else
+static void wardrive_areas_open(void){}
+static bool wardrive_areas_is_open(void){return false;}
+static void wardrive_areas_release_if_hidden(bool asleep){(void)asleep;}
+static esp_err_t wardrive_areas_start_check(void){return ESP_OK;}
+#endif
 static void wardrive_gps_view_release_if_hidden(uint32_t now_ms,bool asleep){(void)now_ms;(void)asleep;}
 static unsigned cerberus_storage_get_owner(void){return storage_owner;}
 cerberus_s3_ble_owner_t cerberus_s3_ble_host_owner(void){return host_owner;}
@@ -107,6 +119,9 @@ esp_err_t cerberus_display_draw_text(uint16_t x,uint16_t y,const char *text,uint
 static esp_err_t draw_detail_page(void)
 {
     ++page_draws;drawn[0]='\0';memset(lines,0,sizeof(lines));
+#ifdef CERBERUS_AREA_UI_FIXTURE
+    if (wardrive_areas_is_open()) return wardrive_areas_draw();
+#endif
     ESP_RETURN_ON_ERROR(cerberus_display_fill_rect(0,0,320,480,UI_BACKGROUND),TAG,"clear");
     ESP_RETURN_ON_ERROR(draw_header("WARDRIVING"),TAG,"header");
     return draw_wardrive();
@@ -194,7 +209,7 @@ static void check_views(const char *prefix)
         .gps={.state=CERBERUS_WARDRIVE_GPS_FRESH,.utc_valid=true},.expansion_present_mask=0x3f};
     wardrive_include_expansions=true;draw();
     CHECK(!strcmp(lines[80],"GPS DATA > FIX + UTC / WIGLE CSV"));
-    CHECK(strstr(drawn,"R1-R6: ON / 6 ONLINE"));save(prefix,"gps-format-preview");
+    CHECK(strstr(drawn,"R1-R6 ON / 6")&&strstr(drawn,"GEOFENCES"));save(prefix,"gps-format-preview");
     runtime.gps.utc_valid=false;draw();CHECK(!strcmp(lines[80],"GPS DATA > FIX / UTC UNVERIFIED"));
     strcpy(runtime.last_file_name,"CERBWardrive001.CSV");runtime.files_saved=1;draw();
     CHECK(!strcmp(lines[280],"LAST FILE: CERBWardrive001.CSV"));
@@ -212,8 +227,8 @@ static void check_routes(void)
     wardrive_handle_tap(24,346);CHECK(!wardrive_waiting_for_gps&&!wardrive_include_expansions);
     wardrive_handle_tap(80,130);CHECK(wardrive_mode==CERBERUS_WD_COMBINED);
     wardrive_handle_tap(24,346);CHECK(wardrive_include_expansions&&!wardrive_waiting_for_gps);
-    wardrive_handle_tap(164,346);CHECK(!wardrive_include_expansions);
-    wardrive_handle_tap(164,346);CHECK(wardrive_include_expansions);
+    wardrive_handle_tap(155,346);CHECK(!wardrive_include_expansions);
+    wardrive_handle_tap(155,346);CHECK(wardrive_include_expansions);
     unsigned old=status_reads;wardrive_handle_tap(7,390);wardrive_handle_tap(312,390);CHECK(status_reads==old);
     unsigned draws=page_draws;wardrive_handle_tap(200,178);CHECK(page_draws==draws&&!stop_requests);
     ready_gps();wardrive_start_error=ESP_FAIL;strcpy(wardrive_blocked_reason,"old failure");
@@ -224,7 +239,7 @@ static void check_routes(void)
     for(unsigned state=CERBERUS_WARDRIVE_STARTING;state<=CERBERUS_WARDRIVE_STOPPING;++state){
         runtime.state=(cerberus_wardrive_state_t)state;unsigned stops=stop_requests;
         wardrive_handle_tap(80,380);CHECK(stop_requests==stops+1&&!wardrive_start_pending);
-        wardrive_handle_tap(164,346);CHECK(wardrive_include_expansions);
+        wardrive_handle_tap(155,346);CHECK(wardrive_include_expansions);
     }
     old=status_reads;draws=page_draws;
     wardrive_handle_tap(104,390);wardrive_handle_tap(211,390);
@@ -325,4 +340,5 @@ int main(int argc,char **argv)
     wardrive_handle_tap(80,380);CHECK(!wardrive_start_pending&&!wardrive_waiting_for_gps&&!wardrive_start_error);
     check_views(argv[1]);check_routes();check_lifecycle(argv[1]);
     printf("Wardriving production UI: %u checks; GPS wait/autostart/cancel, preview ownership, large radio counts, Stop/config routes and bounded rendering pass.\n",checks);
+    return 0;
 }

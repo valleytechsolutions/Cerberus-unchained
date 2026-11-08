@@ -12,6 +12,11 @@ static unsigned checks,clock_value=1000,depth,writes,stop_after,sd_fail_at,lost_
 static bool stop_requested,worker_active,recent_worker_session,stream_recording,storage_closed;
 static uint64_t stream_observed_ms,started_ms;
 static cerberus_wardrive_status_t wardrive_status;
+static cerberus_geofence_config_t wardrive_geofences;
+static cerberus_wardrive_gps_snapshot_t gps_fixture;
+static void (*tick_hook)(void);
+static esp_err_t (*exchange_hook)(unsigned,uint8_t,const cerberus_wd_request_t *,void *);
+static void (*append_hook)(void);
 static cerberus_wardrive_recent_t model,*wardrive_recent=&model;
 static unsigned wardrive_lock,open_file_rows,wigle_file_rows;
 static bool wardrive_file_open,wigle_file_open;
@@ -27,7 +32,7 @@ static bool wardrive_file_open,wigle_file_open;
 static uint32_t now_ms(void){return clock_value;}
 static uint64_t now_ms64(void){return clock_value;}
 static uint32_t esp_random(void){static uint32_t n=100;return ++n;}
-static void vTaskDelay(unsigned ticks){CHECK(!depth&&ticks);clock_value+=ticks*FIXTURE_TICK_MS;CHECK(clock_value<100000);}
+static void vTaskDelay(unsigned ticks){CHECK(!depth&&ticks);clock_value+=ticks*FIXTURE_TICK_MS;CHECK(clock_value<100000);if(tick_hook)tick_hook();}
 static void vTaskDelete(void *p){CHECK(!depth&&!p&&!worker_active&&storage_closed);}
 static bool wants_stop(void){return stop_requested;}
 static void recent_begin_session(void){memset(&model,0,sizeof(model));recent_worker_session=true;}
@@ -36,6 +41,9 @@ typedef struct {cerberus_wardrive_recent_ticket_t ticket;} wardrive_recent_attem
 static void recent_preview(const cerberus_wardrive_observation_t *o,wardrive_recent_attempt_t *a){(void)o;(void)a;}
 static void recent_outcome(cerberus_wardrive_recent_ticket_t t,cerberus_wardrive_recent_outcome_t o){(void)t;(void)o;}
 static esp_err_t start_optional_gps(bool enable){CHECK(enable);return ESP_OK;}
+static uint32_t plus_one(uint32_t n){return n==UINT32_MAX?n:n+1U;}
+static void snapshot_optional_gps(bool enabled,cerberus_wardrive_gps_snapshot_t *out,esp_err_t *error)
+{CHECK(enabled);*out=gps_fixture;*error=ESP_OK;}
 static unsigned gps_checks, lose_fix_at;
 esp_err_t cerberus_wardrive_start_check(bool enable)
 {CHECK(enable);return lose_fix_at&&++gps_checks>=lose_fix_at?ESP_ERR_NOT_FINISHED:ESP_OK;}
@@ -44,6 +52,7 @@ static void publish_error(esp_err_t error,char source){(void)source;if(!wardrive
 static esp_err_t append_observation_impl(const cerberus_wardrive_observation_t *o,cerberus_wardrive_recent_outcome_t *out)
 {
     CHECK(!depth&&cerberus_wardrive_observation_valid(o)&&stream_recording&&stream_observed_ms>0);
+    if(append_hook)append_hook();
     if(sd_fail_at&&writes+1==sd_fail_at)return ESP_FAIL;
     ++writes;++open_file_rows;wardrive_file_open=true;*out=CERBERUS_WARDRIVE_RECENT_APPENDED_UNLOCATED;
     if(writes==stop_after)stop_requested=true;return ESP_OK;
@@ -62,6 +71,7 @@ static radio_t radios_fixture[2];
 static unsigned delivered[2][5];
 static esp_err_t exchange(unsigned chip,uint8_t command,const cerberus_wd_request_t *q,void *out)
 {
+    if(exchange_hook)return exchange_hook(chip,command,q,out);
     CHECK(!depth);radio_t *r=&radios_fixture[chip];memset(out,0,54);
     cerberus_wd_status_t *status=out;status->session=q->session;
     if(command==CERBERUS_WD_START){

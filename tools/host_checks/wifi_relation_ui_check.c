@@ -102,6 +102,7 @@ static bool wardrive_recent_is_open(void){assert(current_page!=UI_PAGE_WARDRIVE)
  * here. Keep the real parent guard; entering its body still fails fast. */
 static bool wardrive_gps_view_is_open(void){assert(current_page!=UI_PAGE_WARDRIVE);return false;}
 static bool wardrive_logs_is_open(void){assert(current_page!=UI_PAGE_WARDRIVE);return false;}
+static bool wardrive_areas_is_open(void){assert(current_page!=UI_PAGE_WARDRIVE);return false;}
 static bool live_supported(sentinel_scan_tool_t tool){return tool==SENTINEL_SCAN_WIFI;}
 static sentinel_scan_tool_t watch_requested_tool(void){assert(false);return SENTINEL_SCAN_NONE;}
 static bool ble_discovery_page(void){return false;}

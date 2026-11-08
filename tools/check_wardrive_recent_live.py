@@ -43,7 +43,7 @@ subprocess.run([str(exe)], check=True, env=env)
 for route in ('#include "wardrive_recent_live_ui.h"',
               'if (wardrive_recent_is_open()) return wardrive_recent_draw();',
               'wardrive_recent_release_if_left();',
-              '(wardrive_recent_is_open() || wardrive_gps_view_is_open() || wardrive_logs_is_open() ? 500U : 1000U)',
+              '(wardrive_recent_is_open() || wardrive_gps_view_is_open() || wardrive_logs_is_open() || wardrive_areas_is_open() ? 500U : 1000U)',
               'wardrive_recent_close();'):
     assert route in ui, route
 tap = ui[ui.index('static void handle_tap(uint16_t x, uint16_t y)\n{'):]

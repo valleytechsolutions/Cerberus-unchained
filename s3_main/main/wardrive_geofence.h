@@ -10,7 +10,7 @@
 #define CERBERUS_GEOFENCE_MIN_MILES 0.1
 #define CERBERUS_GEOFENCE_MAX_MILES 1.0
 
-/* Fixed layout for the eventual versioned settings record. Coordinates are
+/* Fixed layout for the versioned settings record. Coordinates are
  * local configuration; they must not be printed by the diagnostic console. */
 typedef struct {
     double latitude, longitude, radius_miles;

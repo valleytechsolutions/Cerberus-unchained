@@ -50,6 +50,11 @@ static bool wardrive_recent_is_open(void){return recent_opened;}
 static bool wardrive_logs_is_open(void){return false;}
 static void wardrive_logs_tick(bool asleep){(void)asleep;}
 static void wardrive_logs_open(void){CHECK(false);}
+static void wardrive_areas_open(void){}
+static void wardrive_areas_close(void){}
+static bool wardrive_areas_is_open(void){return false;}
+static void wardrive_areas_release_if_hidden(bool asleep){(void)asleep;}
+static esp_err_t wardrive_areas_start_check(void){return ESP_OK;}
 static bool wardrive_recent_active(cerberus_wardrive_state_t state)
 {return state==CERBERUS_WARDRIVE_STARTING||state==CERBERUS_WARDRIVE_RUNNING||state==CERBERUS_WARDRIVE_STOPPING;}
 static bool recon_sessions_idle_for_takeover(void){return !held_recon;}

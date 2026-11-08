@@ -4,6 +4,7 @@
 #include "wardrive_gps_core.h"
 #include "wardrive_recent.h"
 #include "wardrive_stream.h"
+#include "wardrive_geofence.h"
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -40,6 +41,11 @@ typedef struct {
     cerberus_wardrive_gps_snapshot_t gps;
     esp_err_t gps_error; /* Optional UART failure does not stop radio logging. */
     bool expansions_requested;
+    bool geofences_enabled;
+    cerberus_geofence_result_t geofence;
+    uint8_t geofence_phase; /* OPEN, PAUSING, PAUSED or RESUMING below. */
+    char geofence_name[CERBERUS_GEOFENCE_NAME_BYTES + 1U];
+    uint32_t geofence_skipped, geofence_pauses;
     uint32_t elapsed_ms;
     uint32_t c5_wifi_sweeps, c5_wifi_observations, c5_wifi_logged;
     uint32_t c5_wifi_scan_dropped;
@@ -80,6 +86,9 @@ typedef struct {
     esp_err_t error_code;
     char last_file_name[24];
 } cerberus_wardrive_status_t;
+
+enum { CERBERUS_WARDRIVE_AREA_OPEN=0, CERBERUS_WARDRIVE_AREA_PAUSING,
+       CERBERUS_WARDRIVE_AREA_PAUSED, CERBERUS_WARDRIVE_AREA_RESUMING };
 
 /* A bounded, value-only view of processed AP/BLE results. Receipt is processing
  * uptime, not RF time. APPENDED outcomes do not establish SD durability. The

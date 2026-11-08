@@ -112,6 +112,47 @@ static nvs_handle_t settings_handle;
 static bool settings_ready;
 static cerberus_gps_config_t gps_settings;
 static bool gps_settings_loaded;
+static cerberus_geofence_config_t geofence_settings;
+static esp_err_t geofence_settings_error = ESP_ERR_INVALID_STATE;
+
+esp_err_t cerberus_settings_geofences_get(cerberus_geofence_config_t *out)
+{
+    if (!out) return ESP_ERR_INVALID_ARG;
+    *out = geofence_settings;
+    return settings_ready ? geofence_settings_error : ESP_ERR_INVALID_STATE;
+}
+
+esp_err_t cerberus_settings_geofences_set(const cerberus_geofence_config_t *config)
+{
+    if (!settings_ready) return ESP_ERR_INVALID_STATE;
+    if (!cerberus_geofence_config_valid(config)) return ESP_ERR_INVALID_ARG;
+    esp_err_t error = nvs_set_blob(settings_handle, "geofence_v1", config, sizeof(*config));
+    if (error == ESP_OK) error = nvs_commit(settings_handle);
+    if (error == ESP_OK) {
+        cerberus_geofence_config_t saved;
+        size_t size = sizeof(saved);
+        error = nvs_get_blob(settings_handle, "geofence_v1", &saved, &size);
+        if (error == ESP_OK && (size != sizeof(saved) ||
+                memcmp(&saved, config, sizeof(saved)) != 0)) error = ESP_ERR_INVALID_STATE;
+    }
+    geofence_settings_error = error;
+    if (error == ESP_OK) geofence_settings = *config;
+    return error;
+}
+
+static void load_geofence_settings(void)
+{
+    geofence_settings = cerberus_geofence_defaults();
+    cerberus_geofence_config_t saved;
+    size_t size = sizeof(saved);
+    esp_err_t error = nvs_get_blob(settings_handle, "geofence_v1", &saved, &size);
+    if (error == ESP_ERR_NVS_NOT_FOUND) error = ESP_OK;
+    else if (error == ESP_OK) {
+        if (size == sizeof(saved) && cerberus_geofence_config_valid(&saved)) geofence_settings = saved;
+        else error = ESP_ERR_INVALID_STATE;
+    }
+    geofence_settings_error = error;
+}
 
 cerberus_gps_config_t cerberus_settings_gps_get(void)
 { return gps_settings_loaded?gps_settings:cerberus_gps_config_default(); }
@@ -506,6 +547,7 @@ esp_err_t cerberus_settings_init(void)
 
     err = load_favorites();
     load_gps_settings();
+    load_geofence_settings();
     if (err == ESP_OK) {
         err = load_wifi_trusted();
     }
@@ -736,6 +778,7 @@ esp_err_t cerberus_settings_factory_reset(void)
     memset(&touch_calibration, 0, sizeof(touch_calibration));
     ESP_LOGW(TAG, "Cerberus settings namespace erased; defaults restored in memory");
     gps_settings=cerberus_gps_config_default();gps_settings_loaded=true;
+    geofence_settings=cerberus_geofence_defaults();geofence_settings_error=ESP_OK;
     return ESP_OK;
 }
 

@@ -428,6 +428,13 @@ static void wardrive_gps_view_open(void);
 static void wardrive_gps_view_close(void);
 static void wardrive_gps_view_handle_tap(uint16_t x, uint16_t y);
 static void wardrive_gps_view_release_if_hidden(uint32_t now_ms, bool asleep);
+static bool wardrive_areas_is_open(void);
+static esp_err_t wardrive_areas_draw(void);
+static void wardrive_areas_open(void);
+static void wardrive_areas_close(void);
+static void wardrive_areas_handle_tap(uint16_t x, uint16_t y);
+static void wardrive_areas_release_if_hidden(bool asleep);
+static esp_err_t wardrive_areas_start_check(void);
 static esp_err_t draw_live_scan(void);
 static bool live_is_view(void);
 static void live_scan_tick(uint32_t now, bool asleep);
@@ -8053,6 +8060,12 @@ static esp_err_t draw_wardrive(void)
     else if (status.state == CERBERUS_WARDRIVE_RUNNING &&
         (!status.gps_requested || status.gps.state != CERBERUS_WARDRIVE_GPS_FRESH || !status.gps.utc_valid))
         state_label = "SCANNING / WAITING FOR GPS";
+    if (active && status.state != CERBERUS_WARDRIVE_STOPPING && status.geofences_enabled) {
+        if (status.geofence_phase == CERBERUS_WARDRIVE_AREA_PAUSING) state_label = "PAUSING BOTH RADIOS";
+        else if (status.geofence_phase == CERBERUS_WARDRIVE_AREA_PAUSED)
+            state_label = status.geofence.state == CERBERUS_GEOFENCE_INSIDE ? "PAUSED / INSIDE AREA" : "PAUSED / WAITING FOR GPS";
+        else if (status.geofence_phase == CERBERUS_WARDRIVE_AREA_RESUMING) state_label = "RESUMING BOTH RADIOS";
+    }
     snprintf(line, sizeof(line), "STATE: %s", wardrive_start_pending ?
         (gps_ready ? "WAITING FOR RADIOS" : "WAITING FOR GPS") :
         status.compacting ? "SAVING RSSI EXTREMES" : state_label);
@@ -8096,9 +8109,9 @@ static esp_err_t draw_wardrive(void)
     snprintf(line, sizeof(line), "LAST FILE: %s", status.last_file_name[0] ?
         status.last_file_name : unsaved ? "NO CSV CREATED" : "NONE YET");
     ESP_RETURN_ON_ERROR(draw_centered(280, line, UI_MUTED, 1), TAG, "wardrive file");
-    snprintf(line, sizeof(line), "NOT SAVED: %llu / NO FIX %lu",
-        (unsigned long long)((uint64_t)status.skipped_no_fix+status.skipped_time+status.skipped_format),
-        (unsigned long)status.skipped_no_fix);
+    snprintf(line, sizeof(line), status.geofences_enabled ? "NOT SAVED: %llu / AREA %lu" : "NOT SAVED: %llu / NO FIX %lu",
+        (unsigned long long)((uint64_t)status.skipped_no_fix+status.skipped_time+status.skipped_format+status.geofence_skipped),
+        (unsigned long)(status.geofences_enabled ? status.geofence_skipped : status.skipped_no_fix));
     ESP_RETURN_ON_ERROR(draw_centered(300, line, UI_MUTED, 1), TAG, "wardrive format");
     esp_err_t error = wardrive_start_error != ESP_OK ? wardrive_start_error : status.error_code;
     if (error != ESP_OK) {
@@ -8125,6 +8138,10 @@ static esp_err_t draw_wardrive(void)
         ESP_RETURN_ON_ERROR(draw_centered(324, "WAITING FOR RADIOS AND FILES", UI_GOOD, 1), TAG, "wardrive exit");
     } else if (wardrive_start_pending && !gps_ready) {
         ESP_RETURN_ON_ERROR(draw_centered(324, "WAITING FOR GPS / STOP TO CANCEL", UI_MUTED, 1), TAG, "wardrive armed");
+    } else if (active && status.geofences_enabled && status.geofence_phase != CERBERUS_WARDRIVE_AREA_OPEN) {
+        snprintf(line, sizeof(line), "%s", status.geofence.state == CERBERUS_GEOFENCE_INSIDE ?
+            status.geofence_name : "NEEDS FRESH OUTSIDE POSITION + UTC");
+        ESP_RETURN_ON_ERROR(draw_centered(324, line, UI_MUTED, 1), TAG, "wardrive area");
     } else if (active && (!status.gps_requested || status.gps.state != CERBERUS_WARDRIVE_GPS_FRESH || !status.gps.utc_valid)) {
         ESP_RETURN_ON_ERROR(draw_centered(324, "SCANNING / CSV NEEDS GPS FIX + UTC", UI_MUTED, 1), TAG, "wardrive fix wait");
     } else if (unsaved) {
@@ -8135,9 +8152,10 @@ static esp_err_t draw_wardrive(void)
         ESP_RETURN_ON_ERROR(draw_centered(324, "START WILL WAIT FOR GPS FIX + UTC",
             UI_MUTED, 1), TAG, "wardrive start GPS gate");
     }
-    snprintf(line,sizeof(line),"R1-R6: %s / %u ONLINE",wardrive_include_expansions?"ON":"OFF",expansion_count);
-    ESP_RETURN_ON_ERROR(draw_small_button(24, 346, 272, 28, line),
+    snprintf(line,sizeof(line),"R1-R6 %s / %u",wardrive_include_expansions?"ON":"OFF",expansion_count);
+    ESP_RETURN_ON_ERROR(draw_small_button(24, 346, 132, 28, line),
         TAG, "wardrive expansion control");
+    ESP_RETURN_ON_ERROR(draw_small_button(164, 346, 132, 28, "GEOFENCES"), TAG, "wardrive areas");
     ESP_RETURN_ON_ERROR(draw_button(8, 380, 96, 32,
         active || wardrive_start_pending ? "STOP" : "START"), TAG, "wardrive start stop");
     ESP_RETURN_ON_ERROR(draw_button(112,380,96,32,"RECENT NETS"),TAG,"wardrive recent");
@@ -8150,6 +8168,7 @@ static esp_err_t draw_detail_page(void)
     if (current_page == UI_PAGE_IEEE802154 && ieee802154_mode == UI_IEEE802154_MODE_MESH) return mesh_ui_draw();
     if (current_page == UI_PAGE_WIFI && wifi_mode == UI_WIFI_MODE_PACKET_COUNT) return wifi_packet_count_draw();
     if (current_page == UI_PAGE_WIFI && wifi_mode == UI_WIFI_MODE_PROBE_SNIFF) return probe_sniff_draw();
+    if (wardrive_areas_is_open()) return wardrive_areas_draw();
     if (wardrive_gps_view_is_open()) return wardrive_gps_view_draw();
     if (wardrive_recent_is_open()) return wardrive_recent_draw();
     if (wardrive_logs_is_open()) return wardrive_logs_draw();
@@ -11450,6 +11469,7 @@ static void handle_scripts_tap(uint16_t x, uint16_t y)
 #include "wardrive_recent_live_ui.h"
 #include "wardrive_gps_live_ui.h"
 #include "wardrive_logs_ui.h"
+#include "wardrive_geofence_ui.h"
 #include "sentinel_watch_ui.h"
 #include "remote_id_live_ui.h"
 #include "mac_monitor_live_ui.h"
@@ -11497,6 +11517,7 @@ static void open_tool_page(ui_page_t page)
         ble_sound_last_draw_ms = 0U;
     }
     if (current_page == UI_PAGE_WARDRIVE) {
+        wardrive_areas_close();
         wardrive_gps_view_close();
         wardrive_recent_close();
         wardrive_waiting_for_gps = false;
@@ -11763,6 +11784,7 @@ static void ble_attack_tick(uint32_t now_ms, bool asleep)
 
 static void wardrive_handle_tap(uint16_t x, uint16_t y)
 {
+    if(y>=346U&&y<374U&&x>=164U&&x<296U){wardrive_areas_open();return;}
     if(y>=380U&&y<412U&&x>=216U&&x<312U){wardrive_logs_open();return;}
     if(y>=380U&&y<412U&&x>=112U&&x<208U){wardrive_recent_open();return;}
     if(y>=380U&&y<412U&&x>=104U)return;
@@ -11784,7 +11806,7 @@ static void wardrive_handle_tap(uint16_t x, uint16_t y)
         wardrive_last_draw_ms=0U;ESP_ERROR_CHECK(draw_detail_page());
         return;
     }
-    if (y >= 346U && y < 374U && !active && !wardrive_start_pending) {
+    if (y >= 346U && y < 374U && x < 156U && !active && !wardrive_start_pending) {
         if(wardrive_mode!=CERBERUS_WD_BLE)wardrive_include_expansions=!wardrive_include_expansions;
     } else if (y >= 380U && y < 412U) {
         if (active) {
@@ -11797,6 +11819,10 @@ static void wardrive_handle_tap(uint16_t x, uint16_t y)
         } else {
             wardrive_start_error = ESP_OK;
             wardrive_blocked_reason[0] = '\0';
+            wardrive_start_error = wardrive_areas_start_check();
+            if (wardrive_start_error != ESP_OK) {
+                wardrive_last_draw_ms = 0U; ESP_ERROR_CHECK(draw_detail_page()); return;
+            }
             wardrive_waiting_for_gps = true;
             wardrive_start_requested_ms = (uint32_t)(esp_timer_get_time() / 1000);
             wardrive_last_start_attempt_ms = wardrive_start_requested_ms - 250U;
@@ -11811,6 +11837,7 @@ static void wardrive_handle_tap(uint16_t x, uint16_t y)
 
 static void wardrive_tick(uint32_t now_ms, bool asleep)
 {
+    wardrive_areas_release_if_hidden(asleep);
     wardrive_logs_tick(asleep);
     wardrive_gps_view_release_if_hidden(now_ms, asleep);
     gps_preview_poll(now_ms,asleep);
@@ -11881,7 +11908,7 @@ static void wardrive_tick(uint32_t now_ms, bool asleep)
     }
     if (!asleep && (wardrive_last_draw_ms == 0U ||
         (uint32_t)(now_ms - wardrive_last_draw_ms) >=
-            (wardrive_recent_is_open() || wardrive_gps_view_is_open() || wardrive_logs_is_open() ? 500U : 1000U))) {
+            (wardrive_recent_is_open() || wardrive_gps_view_is_open() || wardrive_logs_is_open() || wardrive_areas_is_open() ? 500U : 1000U))) {
         ESP_ERROR_CHECK(draw_detail_page());
         wardrive_last_draw_ms = now_ms;
     }
@@ -11892,6 +11919,7 @@ static void handle_tap(uint16_t x, uint16_t y)
     if (x >= CERBERUS_LCD_WIDTH || y >= CERBERUS_LCD_HEIGHT) {
         return;
     }
+    if (wardrive_areas_is_open()) {wardrive_areas_handle_tap(x,y);return;}
     if (wardrive_logs_is_open()) {wardrive_logs_tap(x,y);return;}
     if (wardrive_gps_view_is_open()) {
         wardrive_gps_view_handle_tap(x, y);

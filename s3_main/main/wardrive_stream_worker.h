@@ -31,6 +31,7 @@ static void stream_publish(bool c5,const cerberus_wd_status_t *s)
     wardrive_status.elapsed_ms=(uint32_t)(now_ms64()-started_ms);
     portEXIT_CRITICAL(&wardrive_lock);
 }
+#include "wardrive_geofence_stream.h"
 static void wardrive_stream_worker(void *unused)
 {
     (void)unused;recent_begin_session();stream_recording=true;
@@ -44,6 +45,8 @@ static void wardrive_stream_worker(void *unused)
         {.session=session,.mode=wardrive_status.mode==CERBERUS_WD_BLE?CERBERUS_WD_BLE:CERBERUS_WD_WIFI}};
     cerberus_wd_status_t radios[2]={{0}};
     bool begun[2]={false,false},stopped[2]={false,false};
+    bool attempted[2]={false,false};
+    wardrive_stream_geofence_t area={.enabled=wardrive_status.geofences_enabled};
     uint32_t last_ok[2]={now_ms(),now_ms()},last_sync=now_ms(),last_expansion=now_ms();
     esp_err_t failure=gps_error==ESP_OK?cerberus_wardrive_start_check(gps_enabled):gps_error;
     bool storage_failed=false;
@@ -51,12 +54,25 @@ static void wardrive_stream_worker(void *unused)
     if(failure!=ESP_OK)publish_error(failure,'G');
     if(failure==ESP_OK)begin_rssi_filter();
     while(!wants_stop()&&failure==ESP_OK){
+        stream_area_poll(&area,false);
+        if(area.result.pause){
+            /* Sync the existing file before a potentially long pause. The
+             * file/session and RSSI cache remain open for the whole recording. */
+            failure=wardrive_file_open?cerberus_storage_wardrive_sync():ESP_OK;
+            if(failure==ESP_OK&&wigle_file_open)failure=cerberus_storage_wardrive_wigle_sync();
+            if(failure!=ESP_OK){storage_failed=true;publish_error(failure,'S');break;}
+            failure=stream_area_hold(&area,queries,radios,attempted,begun,last_ok);
+            if(failure!=ESP_OK){publish_error(failure,'G');break;}
+            if(wants_stop())break;
+        }
         for(unsigned chip=0;chip<2&&failure==ESP_OK&&!wants_stop();++chip){
             bool c5=chip==1;cerberus_wd_request_t *q=&queries[chip];
             if(!begun[chip]){
                 failure=cerberus_wardrive_start_check(gps_enabled);
                 if(failure!=ESP_OK){publish_error(failure,'G');break;}
             }
+            if(!attempted[chip])last_ok[chip]=now_ms();
+            attempted[chip]=true;
             esp_err_t e=stream_exchange(c5,begun[chip]?CERBERUS_WD_STATUS:CERBERUS_WD_START,q,&radios[chip]);
             if(e==ESP_OK){
                 begun[chip]=true;last_ok[chip]=now_ms();stream_publish(c5,&radios[chip]);
@@ -74,6 +90,8 @@ static void wardrive_stream_worker(void *unused)
                 if(e!=ESP_OK)break;
                 if(!row.sequence)break;
                 if(row.sequence<=q->ack){e=ESP_ERR_INVALID_RESPONSE;break;}
+                stream_area_poll(&area,false);
+                if(area.result.pause)break; /* Leave this row unacknowledged for the boundary drain. */
                 e=stream_append(&row,c5);
                 if(e!=ESP_OK){storage_failed=true;failure=e;publish_error(e,'S');break;}
                 q->ack=row.sequence;
@@ -81,6 +99,7 @@ static void wardrive_stream_worker(void *unused)
             if(e!=ESP_OK&&e!=ESP_ERR_TIMEOUT&&e!=ESP_ERR_INVALID_RESPONSE&&failure==ESP_OK){
                 failure=e;publish_error(e,c5?'C':'B');
             }
+            if(area.result.pause)break;
         }
         uint32_t now=now_ms();
         if(failure==ESP_OK&&wardrive_status.expansions_requested&&(uint32_t)(now-last_expansion)>=WARDRIVE_EXPANSION_POLL_MS){
@@ -98,6 +117,7 @@ static void wardrive_stream_worker(void *unused)
         vTaskDelay(pdMS_TO_TICKS(5U) ? pdMS_TO_TICKS(5U) : 1U);
     }
     portENTER_CRITICAL(&wardrive_lock);wardrive_status.state=CERBERUS_WARDRIVE_STOPPING;portEXIT_CRITICAL(&wardrive_lock);
+    for(unsigned chip=0;chip<2;++chip)stopped[chip]=!attempted[chip];
     /* START responses can be lost. Always reconcile/stop the exact candidate
      * session, including candidates whose START was never acknowledged. */
     while(!stopped[0]||!stopped[1]){
@@ -117,7 +137,9 @@ static void wardrive_stream_worker(void *unused)
                     cerberus_wd_record_t row={0};e=stream_exchange(c5,CERBERUS_WD_READ,q,&row);
                     if(e!=ESP_OK||!row.sequence)break;
                     if(row.sequence<=q->ack){e=ESP_ERR_INVALID_RESPONSE;break;}
-                    e=stream_append(&row,c5);if(e!=ESP_OK){storage_failed=true;publish_error(e,'S');break;}
+                    stream_area_poll(&area,false);
+                    e=(area.hold_rows||area.result.pause)?stream_area_discard(&row):stream_append(&row,c5);
+                    if(e!=ESP_OK){storage_failed=true;publish_error(e,'S');break;}
                     q->ack=row.sequence;
                 }
                 if(e!=ESP_OK&&!storage_failed)continue;

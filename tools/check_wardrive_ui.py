@@ -48,6 +48,18 @@ subprocess.run([sys.executable, "-m", "ziglang", "cc", "-std=c11", "-O1", "-Wall
     str(root / "s3_main/main/ui_widgets.c"), "-o", str(exe)], check=True, env=env)
 subprocess.run([str(exe), str(out / "wardrive")], check=True, env=env)
 
+areas = out / "wardrive-areas-ui-check.exe"
+subprocess.run([sys.executable, "-m", "ziglang", "cc", "-std=c11", "-O1", "-Wall", "-Wextra", "-Werror",
+    "-I", str(out), "-I", str(root / "tools/host_checks/stubs"),
+    "-I", str(root / "s3_main/main"), "-I", str(root / "shared"),
+    str(root / "tools/host_checks/wardrive_geofence_ui_check.c"),
+    str(root / "s3_main/main/s3_ble_discovery_session.c"), str(root / "s3_main/main/ui_widgets.c"),
+    str(root / "s3_main/main/keyboard.c"), str(root / "s3_main/main/wardrive_geofence.c"),
+    "-lm", "-o", str(areas)], check=True, env=env)
+subprocess.run([str(areas), str(out / "wardrive-areas")], check=True, env=env)
+assert "if (wardrive_areas_is_open()) return wardrive_areas_draw();" in ui
+assert "if (wardrive_areas_is_open()) {wardrive_areas_handle_tap(x,y);return;}" in ui
+
 def chunk(kind, data):
     return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
 
