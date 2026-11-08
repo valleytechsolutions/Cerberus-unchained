@@ -131,12 +131,47 @@ capture filters BSSIDs while hopping its general channel set. Cerberus's 42
 candidate channels also do not claim equivalence to all 51 upstream entries.
 
 Rev167 source and focused fixtures cover the new scopes, independent evidence,
-priority admission and menu lifecycle. Full checkpoint validation is recorded
-below when completed. Physical acceptance still needs controlled AP/client
+priority admission and menu lifecycle. The installed checkpoint validation is recorded below. Physical acceptance still needs controlled AP/client
 traffic, comparison with an independent capture, both-band reception, PCAP
 readback, repeated Stop/Back/next-scan transitions, sleep/wake, SD failures and
 sustained loaded memory/stack measurements. Zero exchanges can be normal on
 an idle network. Full upstream option/CLI parity remains open.
+
+## Rev167 installed checkpoint
+
+Rev167 is installed from `a1b83a6ca7c9dfd1771d84d3727494dcaff457fc` with C5 capability 87.
+All **194 host suites** passed on **1,456 unchanged inputs**;
+all five native targets, native placement/link checks and matched packaging
+passed. The separate 21-test shard verifier passed. The first full host run
+found one root-routing fixture compile failure after adding AUTH; its enum
+boundary and idle-entry assertion were updated, then all 194 suites passed.
+
+Package: `cerberus-unchained-0.1.0-dev.rev167-20261108T130124Z`.
+Manifest SHA-256: `19e4f983541693664255d2fa552c7c29386a9c1381ba6bb29920846e9291b5c8`.
+Application sizes are 2,475,088 S3 bytes, 1,751,488 C5 bytes and 255,280 bridge
+bytes. Relative to rev166, the S3 app grows by 7,200 bytes and C5 by 336 bytes.
+
+Fresh rev166 S3/C5 recovery backups matched the installed baseline and were
+verified against flash. All nine bridge/C5/S3 image writes verified. Both live
+application descriptors match the packaged version, project, SDK, compile
+time and full ELF hash. The card mounted; saved home Wi-Fi, WiGLE and WDGWars
+profile readiness remained set. Wardrift remained unconfigured. No connection
+or upload was requested.
+
+Two idle captures **72.5 seconds apart** showed advancing uptimes and SPI
+exchanges, one C5 boot and no additional listed transport errors. Initial
+READY timeouts/fallbacks stayed at 4/4; mutex, READY-fall, READY-high and driver
+errors stayed zero. Both captures reported 133,820 S3 internal free bytes,
+a 90,112-byte largest internal block, 1,426,140 free PSRAM bytes,
+10 tasks and 52,740 C5 free bytes. The observed console stack
+low-water changed from 2,092 to 924 bytes during diagnostics;
+it is not a loaded-stack-margin measurement. These are sampled idle results,
+not RF, touchscreen, recording, endurance or performance acceptance.
+
+Focused checks include 10,531 parser checks, the production session fixture,
+4,312 EAPOL UI checks and 17,097 SAE UI checks. The renderer previews were
+inspected. No monitor was started on the connected device during installation.
+The controlled-traffic and navigation acceptance checks above remain open.
 
 ## Historical rev164 validation
 
@@ -167,7 +202,7 @@ SD failure handling and sustained loaded memory/stack measurements. Zero
 observed exchanges can be normal when no relevant connection occurs. Neither
 full upstream parity nor authenticated-handshake verification is claimed.
 
-## Installed checkpoint
+## Historical rev164 installed checkpoint
 
 Rev164 is installed from source `345ba46f1fc1220c99dabc8e9ae5d11220bac9d1`,
 tagged `checkpoint/rev164-passive-eapol`, with C5 capability 85. Package:

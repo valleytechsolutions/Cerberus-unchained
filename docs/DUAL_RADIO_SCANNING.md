@@ -1,14 +1,20 @@
 # Adaptive two-radio scanning
 
-## Rev167 source checkpoint
+## Current installed checkpoint: rev167
 
 [Scoped passive EAPOL monitoring](WIFI_EAPOL_MONITOR.md) adds direct all-band,
 single-band, fixed-channel and selected-AP scopes. C5 owns two-second channel
 dwells and prioritizes EAPOL over bounded beacon context; S3 owns copied scope,
 AP/station/channel correlation, separate context ages and optional SD writes.
 Wi-Fi Tools now has one AUTH RX chooser for EAPOL and SAE. AP selection opens
-paused and starts scanning only after SCAN. Full validation and installation
-for this source checkpoint are recorded after they complete.
+paused and starts scanning only after SCAN.
+
+Rev167 is installed from `a1b83a6` with C5 capability 87 after all 194 host
+suites, five native targets, matched packaging and verified recovery backups
+and writes. Both live descriptors match; 72.5 seconds of sampled idle checks
+showed stable free heap/task counts and no new listed transport errors.
+Physical reception/navigation, optional PCAP readback and loaded performance
+remain pending; full Marauder parity is still open.
 
 The preceding installed [rev166 SSID workspace](SSID_LISTS.md) passed 194 host
 suites, five native targets, matched packaging, verified recovery backups and
