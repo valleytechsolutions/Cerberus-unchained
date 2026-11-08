@@ -69,7 +69,8 @@ position in single- and three-journal finalization and rollover, including
 short writes. Existing-file collisions, failed continuation cleanup, filename
 reservation, USB leases and GPX stream checks are also covered.
 
-These are source and host results. Installation, physical boundary crossing,
-Stop latency, CSV readback, concurrent GPS/GPX and prolonged field performance
-remain pending. Rev152's frozen installation package is retained separately;
-rev156 is a development checkpoint and does not establish full Marauder parity.
+These tests establish source and host behavior. The matched rev156 pair is now
+installed with boot and SD checks recorded in the [checkpoint](DUAL_RADIO_REV156.md).
+Physical boundary crossing, Stop latency, CSV readback, concurrent GPS/GPX and
+prolonged field performance remain pending. Rev152's frozen installation package
+is retained separately; this does not establish full Marauder parity.
