@@ -5,6 +5,14 @@ For the current source and installed checkpoint, see the
 The dated sections below preserve historical evidence; their version-specific
 acceptance does not establish behavior in later builds.
 
+The [rev164 passive EAPOL monitor](WIFI_EAPOL_MONITOR.md) extends the existing
+selected-AP capture path with bounded per-station phase/exchange evidence and
+clear PMKID-element presence counts. C5 receives; S3 analyzes and optionally
+writes PCAPNG. The linked checkpoint separates implementation and focused
+checks from build, installation and physical acceptance. This is not
+authenticated-handshake verification or full EAPOL option parity; the
+historical EAPOL/SAE row below keeps its original scope.
+
 ## Rev93 source contribution
 
 The rev82–93 contribution adds passive result-readout resilience, cached AP analysis/list controls, BLE analysis and SD snapshots, Recon recording/inventory, SD copy error handling and integrated Wardriving Recent Nets. The current ledger has 95 mode symbols: 73 partial, 8 pending, 10 needing review and 4 hardware limited. No mode is declared complete.

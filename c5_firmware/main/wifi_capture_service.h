@@ -24,12 +24,16 @@ uint32_t cerberus_wifi_capture_service_generation(void);
 uint32_t cerberus_wifi_capture_service_deadline_ms(void);
 void cerberus_wifi_capture_service_set_deadline(uint32_t monotonic_ms);
 uint32_t cerberus_wifi_capture_service_inflight(void);
+/* Sample at callback entry, before any other receive consumer. Zero means
+ * that callback arrived outside an armed capture interval. Each rearm gets a
+ * distinct token; this is independent of the transport's capture generation. */
+uint32_t cerberus_wifi_capture_service_admission_token(void);
 /* Scanner-owned admission gate. Zero pauses callbacks without stopping the
  * ring/session or its transport lease. Drain inflight before retuning and
  * publish the new channel only after promiscuous reception is enabled. */
-void cerberus_wifi_capture_service_set_channel(uint8_t channel);
+esp_err_t cerberus_wifi_capture_service_set_channel(uint8_t channel);
 void cerberus_wifi_capture_service_receive(const uint8_t *frame,size_t length,
-    uint8_t channel,int8_t rssi_dbm,uint64_t monotonic_us);
+    uint8_t channel,int8_t rssi_dbm,int64_t callback_us,uint32_t admission_token);
 void cerberus_wifi_capture_service_status(cerberus_wifi_capture_status_payload_t *out);
 esp_err_t cerberus_wifi_capture_service_peek(uint32_t generation,
     cerberus_wifi_capture_peek_payload_t *out);

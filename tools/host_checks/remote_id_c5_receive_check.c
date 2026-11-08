@@ -54,9 +54,10 @@ static void wifi_fox_hunt_receive(const wifi_promiscuous_pkt_t *p,
     wifi_promiscuous_pkt_type_t type, int64_t entered, uint32_t token)
 { (void)p; (void)type; (void)entered; (void)token; }
 static void packet_monitor_receive(const wifi_promiscuous_pkt_t *p,unsigned type){(void)p;(void)type;}
+static uint32_t cerberus_wifi_capture_service_admission_token(void){return 0;}
 static bool cerberus_wifi_capture_service_active(void){return false;}
-static void cerberus_wifi_capture_service_receive(const uint8_t *p,unsigned n,unsigned c,int r,uint64_t t)
-{(void)p;(void)n;(void)c;(void)r;(void)t;CHECK(false);}
+static void cerberus_wifi_capture_service_receive(const uint8_t *p,unsigned n,unsigned c,int r,int64_t t,uint32_t generation)
+{(void)generation;(void)p;(void)n;(void)c;(void)r;(void)t;CHECK(false);}
 static void station_receive(const wifi_promiscuous_pkt_t *p){(void)p;}
 static void cerberus_c5_test_receive(const uint8_t *p,unsigned n,unsigned c){(void)p;(void)n;(void)c;}
 #define watch_capture transport
@@ -151,7 +152,7 @@ static void decoded_formats_and_selected_source(void)
     cerberus_remote_id_page_t page;CHECK(cerberus_remote_id_inventory_page(&inventory,0,&page)&&page.total==2);
     CHECK(!cerberus_remote_id_source_equal(&page.rows[0],&page.rows[1]));
 }
-static void admission_generation_and_malformed_frames(void)
+static void admission_token_and_malformed_frames(void)
 {
     for(unsigned form=0;form<3;++form){
         for(unsigned reason=0;reason<7;++reason){
@@ -195,7 +196,7 @@ static void admission_generation_and_malformed_frames(void)
 }
 int main(void)
 {
-    decoded_formats_and_selected_source();admission_generation_and_malformed_frames();
+    decoded_formats_and_selected_source();admission_token_and_malformed_frames();
     printf("Remote ID actual C5 callback/Watch producers -> S3 Watch getter -> inventory: %u checks; modern/legacy beacon, variable NAN, FCS exclusion, typed source, generation barrier/wrap, whole-payload replacement, frozen selection and invalid-frame retention passed.\n",checks);
     return 0;
 }

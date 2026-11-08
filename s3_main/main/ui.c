@@ -424,6 +424,15 @@ static esp_err_t saved_ble_lookup_draw(void);
 static void saved_ble_lookup_tap(uint16_t x, uint16_t y);
 static bool saved_ble_lookup_tick(bool asleep);
 static bool saved_ble_lookup_fox_return(bool asleep);
+static bool eapol_ui_is_open(void);
+static bool eapol_ui_busy(void);
+static bool eapol_ui_pending(void);
+static void eapol_ui_open(void);
+static void eapol_ui_close(bool back);
+static void eapol_ui_start(void);
+static esp_err_t eapol_ui_draw(void);
+static void eapol_ui_tap(uint16_t x, uint16_t y);
+static bool eapol_ui_tick(uint32_t now, bool visible);
 static void ble_archive_tap(uint16_t x, uint16_t y);
 static void ble_archive_tick(bool asleep);
 static void ble_archive_open_menu(void);
@@ -8687,6 +8696,9 @@ static void open_main_menu(void)
 
 static void return_to_launcher(void)
 {
+    if (current_page == UI_PAGE_WIFI && wifi_mode == UI_WIFI_MODE_CAPTURE && eapol_ui_is_open()) {
+        eapol_ui_close(true); ESP_ERROR_CHECK(draw_detail_page()); return;
+    }
     if (current_page == UI_PAGE_WIFI && wifi_mode == UI_WIFI_MODE_FOX_HUNT) {
         wifi_fox_hunt_back(); ESP_ERROR_CHECK(draw_detail_page()); return;
     }
@@ -11588,6 +11600,7 @@ static void handle_scripts_tap(uint16_t x, uint16_t y)
 #include "dual_wifi_live_ui.h"
 #include "wifi_packet_count_ui.h"
 #include "wifi_fox_hunt_ui.h"
+#include "wifi_eapol_ui.h"
 #include "probe_sniff_ui.h"
 #include "mesh_ui.h"
 #include "mesh_archive_ui.h"
@@ -12720,6 +12733,8 @@ void cerberus_ui_run(const cerberus_ui_config_t *config)
         }
         bool capture_visible = current_page == UI_PAGE_WIFI &&
             wifi_mode == UI_WIFI_MODE_CAPTURE && !screen_asleep;
+        if (eapol_ui_tick((uint32_t)now_ms, capture_visible) && capture_visible)
+            ESP_ERROR_CHECK(draw_detail_page());
         if (capture_visible && capture_tick((uint32_t)now_ms))
             ESP_ERROR_CHECK(draw_detail_page());
         bool pinescan_visible = current_page == UI_PAGE_WIFI &&

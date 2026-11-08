@@ -17,7 +17,7 @@ static esp_err_t capture_terminal_reason;
  * changes are made until these callbacks drain. The ring stays live/pinned. */
 static esp_err_t capture_hop_pause(void)
 {
-    cerberus_wifi_capture_service_set_channel(0U);
+    (void)cerberus_wifi_capture_service_set_channel(0U);
     if(capture_disable_pending){
         esp_err_t error=esp_wifi_set_promiscuous(false);
         if(error!=ESP_OK)return error;
@@ -69,7 +69,8 @@ static esp_err_t capture_hop_next(void)
         capture_disable_pending=true; /* Also clean up a failed enable. */
         error=esp_wifi_set_promiscuous(true);
         if(error!=ESP_OK)return error;
-        cerberus_wifi_capture_service_set_channel(channel);
+        error=cerberus_wifi_capture_service_set_channel(channel);
+        if(error!=ESP_OK)return error;
         capture_next_hop_ms=(uint32_t)(esp_timer_get_time()/1000LL)+
             CERBERUS_WIFI_CAPTURE_HOP_DWELL_MS;
         return ESP_OK;
@@ -166,6 +167,7 @@ esp_err_t cerberus_wifi_capture_start(const cerberus_wifi_capture_start_request_
         capture_disable_pending=true;
         err=esp_wifi_set_promiscuous(true);
     }
+    if(err==ESP_OK)err=cerberus_wifi_capture_service_set_channel(request->channel);
     if(err==ESP_OK){
         cerberus_wifi_capture_service_set_deadline(
             (uint32_t)(esp_timer_get_time()/1000LL)+request->lease_ms);

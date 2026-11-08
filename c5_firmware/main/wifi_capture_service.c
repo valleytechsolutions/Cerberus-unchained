@@ -18,6 +18,11 @@ static uint8_t state;
 static atomic_bool receiving;
 static atomic_uint callback_inflight;
 static atomic_uchar receive_channel;
+static atomic_uint receive_token;
+static uint32_t last_admission_token;
+/* Written only with admission closed and its callbacks drained. Publishing
+ * receive_token makes this arm boundary visible to the RX producer. */
+static int64_t receive_armed_us;
 
 static bool valid_channel(uint8_t channel)
 {return (channel>=1U&&channel<=14U)||(channel>=32U&&channel<=177U);}
@@ -51,7 +56,7 @@ esp_err_t cerberus_wifi_capture_service_start(
        request->lease_ms>CERBERUS_WIFI_CAPTURE_LEASE_MAX_MS)
         return ESP_ERR_INVALID_ARG;
     if(atomic_load_explicit(&receiving,memory_order_acquire)||
-       atomic_load_explicit(&callback_inflight,memory_order_acquire)||
+       atomic_load_explicit(&callback_inflight,memory_order_seq_cst)||
        request->generation<=last_generation)return ESP_ERR_INVALID_STATE;
     if(!capture_ring){
         const size_t size=sizeof(*capture_ring);
@@ -69,13 +74,15 @@ esp_err_t cerberus_wifi_capture_service_start(
     atomic_store_explicit(&deadline_ms,0U,memory_order_relaxed);
     last_error=ESP_OK;
     state=CERBERUS_WIFI_CAPTURE_RUNNING;
-    atomic_store_explicit(&receive_channel,request->channel,memory_order_release);
+    atomic_store_explicit(&receive_token,0U,memory_order_seq_cst);
+    atomic_store_explicit(&receive_channel,0U,memory_order_release);
     atomic_store_explicit(&receiving,true,memory_order_release);
     return ESP_OK;
 }
 
 void cerberus_wifi_capture_service_stop(esp_err_t reason)
 {
+    atomic_store_explicit(&receive_token,0U,memory_order_seq_cst);
     atomic_store_explicit(&receiving,false,memory_order_release);
     atomic_store_explicit(&receive_channel,0U,memory_order_release);
     if(capture_ring)cerberus_wifi_capture_ring_stop(capture_ring);
@@ -121,17 +128,42 @@ static void renew_lease(void)
 }
 
 uint32_t cerberus_wifi_capture_service_inflight(void)
-{return atomic_load_explicit(&callback_inflight,memory_order_acquire);}
+{return atomic_load_explicit(&callback_inflight,memory_order_seq_cst);}
 
-void cerberus_wifi_capture_service_set_channel(uint8_t channel)
-{atomic_store_explicit(&receive_channel,channel,memory_order_release);}
+uint32_t cerberus_wifi_capture_service_admission_token(void)
+{return atomic_load_explicit(&receive_token,memory_order_seq_cst);}
+
+esp_err_t cerberus_wifi_capture_service_set_channel(uint8_t channel)
+{
+    atomic_store_explicit(&receive_token,0U,memory_order_seq_cst);
+    atomic_store_explicit(&receive_channel,0U,memory_order_release);
+    if(!channel)return ESP_OK;
+    if(!valid_channel(channel))return ESP_ERR_INVALID_ARG;
+    if(!cerberus_wifi_capture_service_active()||cerberus_wifi_capture_service_inflight())
+        return ESP_ERR_INVALID_STATE;
+    /* Retunes keep the capture generation, but each armed interval needs a
+     * distinct token even if a delayed callback samples its clock afterward. */
+    if(last_admission_token==UINT32_MAX)return ESP_ERR_INVALID_STATE;
+    int64_t armed_us=esp_timer_get_time();
+    if(armed_us<0||(uint64_t)armed_us>UINT64_C(0xffffffffffff))return ESP_ERR_INVALID_STATE;
+    receive_armed_us=armed_us;
+    atomic_store_explicit(&receive_channel,channel,memory_order_release);
+    atomic_store_explicit(&receive_token,++last_admission_token,memory_order_seq_cst);
+    return ESP_OK;
+}
 
 void cerberus_wifi_capture_service_receive(const uint8_t *frame,size_t length,
-    uint8_t channel,int8_t rssi_dbm,uint64_t monotonic_us)
+    uint8_t channel,int8_t rssi_dbm,int64_t callback_us,uint32_t admission_token)
 {
-    if(!atomic_load_explicit(&receiving,memory_order_acquire))return;
-    atomic_fetch_add_explicit(&callback_inflight,1U,memory_order_acq_rel);
-    if(!atomic_load_explicit(&receiving,memory_order_acquire))goto done;
+    if(!admission_token)return;
+    /* Sequential admission/counter operations prevent Stop/retune and a late
+     * callback from both missing each other's gate/count update. The radio
+     * owner cannot replace request/arm fields while an admitted reader lives. */
+    atomic_fetch_add_explicit(&callback_inflight,1U,memory_order_seq_cst);
+    if(admission_token!=atomic_load_explicit(&receive_token,memory_order_seq_cst)||
+       !atomic_load_explicit(&receiving,memory_order_acquire))goto done;
+    if(callback_us<receive_armed_us||callback_us<0||
+       (uint64_t)callback_us>UINT64_C(0xffffffffffff))goto done;
     if(!frame||!length||length>UINT16_MAX||!capture_ring)goto done;
     const cerberus_wifi_capture_start_request_t *request=&current_request;
     if(channel==0U||channel!=atomic_load_explicit(&receive_channel,memory_order_acquire)||
@@ -141,12 +173,12 @@ void cerberus_wifi_capture_service_receive(const uint8_t *frame,size_t length,
     cerberus_wifi_pcap_metadata_t metadata={
         .channel=channel,.rssi_dbm=rssi_dbm,.rssi_known=true,
         .frame_has_fcs=false,.time_kind=CERBERUS_WIFI_PCAP_TIME_MONOTONIC,
-        .capture_time_us=monotonic_us,
+        .capture_time_us=(uint64_t)callback_us,
     };
     (void)cerberus_wifi_capture_ring_push(capture_ring,request->generation,
         &metadata,frame,length,length);
 done:
-    atomic_fetch_sub_explicit(&callback_inflight,1U,memory_order_release);
+    atomic_fetch_sub_explicit(&callback_inflight,1U,memory_order_seq_cst);
 }
 
 void cerberus_wifi_capture_service_status(cerberus_wifi_capture_status_payload_t *out)

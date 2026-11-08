@@ -7,8 +7,12 @@
 #include <stdatomic.h>
 static unsigned checks;
 #define CHECK(x) do { ++checks; assert(x); } while (0)
+#ifdef CERBERUS_CAPTURE_OUTER_TEST
+#include "wifi_capture_service.h"
+#else
 enum { ESP_OK,ESP_ERR_INVALID_ARG,ESP_ERR_INVALID_STATE };
 typedef int esp_err_t;
+#endif
 typedef unsigned wifi_promiscuous_pkt_type_t;
 typedef struct { unsigned rx_state,sig_len,channel; int rssi,noise_floor; } wifi_pkt_rx_ctrl_t;
 typedef struct { wifi_pkt_rx_ctrl_t rx_ctrl; uint8_t payload[2400]; } wifi_promiscuous_pkt_t;
@@ -35,7 +39,13 @@ static void enter(int *m){CHECK(m==&defense_capture_mux&&!locked);locked=true;++
 static void leave(int *m){CHECK(m==&defense_capture_mux&&locked);locked=false;}
 #define portENTER_CRITICAL(m) enter(m)
 #define portEXIT_CRITICAL(m) leave(m)
+#ifdef CERBERUS_CAPTURE_OUTER_TEST
+static void (*capture_clock_hook)(void);
+int64_t esp_timer_get_time(void)
+{if(capture_clock_hook)capture_clock_hook();return clock_us;}
+#else
 static int64_t esp_timer_get_time(void){return clock_us;}
+#endif
 static void scan_observation_receive(const wifi_promiscuous_pkt_t *p,unsigned t)
 {
     (void)p;(void)t;clock_us+=handler_delay;
@@ -56,9 +66,12 @@ static void wifi_fox_hunt_receive(const wifi_promiscuous_pkt_t *p,
     wifi_promiscuous_pkt_type_t type, int64_t entered, uint32_t token)
 { (void)p; (void)type; (void)entered; (void)token; }
 static void packet_monitor_receive(const wifi_promiscuous_pkt_t *p,unsigned t){(void)p;(void)t;}
+#ifndef CERBERUS_CAPTURE_OUTER_TEST
+static uint32_t cerberus_wifi_capture_service_admission_token(void){return 0;}
 static bool cerberus_wifi_capture_service_active(void){return false;}
-static void cerberus_wifi_capture_service_receive(const uint8_t *p,unsigned n,unsigned c,int r,uint64_t t)
-{(void)p;(void)n;(void)c;(void)r;(void)t;CHECK(false);}
+static void cerberus_wifi_capture_service_receive(const uint8_t *p,unsigned n,unsigned c,int r,int64_t t,uint32_t generation)
+{(void)generation;(void)p;(void)n;(void)c;(void)r;(void)t;CHECK(false);}
+#endif
 static void station_receive(const wifi_promiscuous_pkt_t *p){(void)p;}
 static void cerberus_c5_test_receive(const uint8_t *p,unsigned n,unsigned c){(void)p;(void)n;(void)c;}
 /* Dedicated Probe capture is inactive in this legacy consumer fixture. */

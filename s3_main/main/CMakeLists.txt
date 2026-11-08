@@ -84,6 +84,8 @@ idf_component_register(
         "wifi_readout_diagnostics.c"
         "s3_wifi_receiver.c"
         "wifi_capture_session.c"
+        "wifi_eapol_session.c"
+        "../../shared/wifi_eapol_analysis.c"
         "s3_wifi_packet_count.c"
         "wifi_packet_count_scan.c"
         "wifi_packet_monitor_scan.c"

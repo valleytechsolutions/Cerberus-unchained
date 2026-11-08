@@ -24,7 +24,7 @@ extern "C" {
 
 #define CERBERUS_PROTOCOL_VERSION_V1 1U
 #define CERBERUS_PROTOCOL_VERSION 2U
-#define CERBERUS_C5_FIRMWARE_VERSION 84U
+#define CERBERUS_C5_FIRMWARE_VERSION 85U
 #define CERBERUS_SPI_MAGIC 0x43455242UL
 #define CERBERUS_SPI_TRANSFER_SIZE 32U
 #define CERBERUS_SPI_FRAME_PAYLOAD_SIZE 22U
@@ -552,6 +552,7 @@ typedef struct __attribute__((packed)) {
  * A frame stays pinned until its generation/sequence ACK. READ chunks are
  * padded to 20 bytes; the consumer copies min(20, length-offset) bytes. */
 #define CERBERUS_WIFI_CAPTURE_MIN_FIRMWARE 45U
+#define CERBERUS_WIFI_EAPOL_MIN_FIRMWARE 85U
 #define CERBERUS_WIFI_CAPTURE_SAE_MIN_FIRMWARE 48U
 #define CERBERUS_WIFI_CAPTURE_BEACON_MIN_FIRMWARE 50U
 #define CERBERUS_WIFI_CAPTURE_HOP_MIN_FIRMWARE 50U

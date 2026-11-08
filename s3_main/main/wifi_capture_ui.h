@@ -15,18 +15,23 @@ static const uint8_t capture_modes[] = {
     CERBERUS_WIFI_CAPTURE_MODE_SAE_COMMIT,
 };
 static const char *const capture_mode_names[] = {
-    "AP FRAMES", "CHANNEL PROBES", "DEAUTH / DISASSOC", "EAPOL FRAMES",
+    "AP FRAMES", "CHANNEL PROBES", "DEAUTH / DISASSOC", "EAPOL MONITOR",
     "SAE COMMIT FRAMES",
 };
 
 static uint32_t capture_required_firmware(void)
 {
+    if (capture_modes[capture_mode_index] == CERBERUS_WIFI_CAPTURE_MODE_EAPOL)
+        return CERBERUS_WIFI_EAPOL_MIN_FIRMWARE;
     return capture_modes[capture_mode_index] == CERBERUS_WIFI_CAPTURE_MODE_SAE_COMMIT ?
         CERBERUS_WIFI_CAPTURE_SAE_MIN_FIRMWARE : CERBERUS_WIFI_CAPTURE_MIN_FIRMWARE;
 }
 
 static void capture_enter(void)
 {
+    /* A hidden page can still own its final receiver/file cleanup. Preserve
+     * that source until its exact release instead of relabeling the session. */
+    if (eapol_ui_is_open()) return;
     capture_target = wifi_selected_result;
     snprintf(capture_ssid, sizeof(capture_ssid), "%s",
         capture_target.ssid[0] ? capture_target.ssid : "<HIDDEN SSID>");
@@ -40,6 +45,7 @@ static void capture_enter(void)
 
 static bool capture_busy(void)
 {
+    if (eapol_ui_busy() || eapol_ui_pending()) return true;
     cerberus_s3_capture_status_t state;
     cerberus_s3_capture_status(&state);
     return state.state == CERBERUS_S3_CAPTURE_STARTING ||
@@ -49,6 +55,10 @@ static bool capture_busy(void)
 
 static void capture_start(void)
 {
+    if (eapol_ui_is_open() || capture_modes[capture_mode_index] == CERBERUS_WIFI_CAPTURE_MODE_EAPOL) {
+        if (!eapol_ui_is_open()) eapol_ui_open();
+        eapol_ui_start(); return;
+    }
     capture_message[0] = '\0';
     if (!c5_online || c5_status.firmware_version < capture_required_firmware()) {
         snprintf(capture_message, sizeof(capture_message), "C5 CAPTURE REQUIRES REVISION %lu",
@@ -66,6 +76,9 @@ static void capture_start(void)
 
 static esp_err_t capture_draw(void)
 {
+    if (capture_modes[capture_mode_index] == CERBERUS_WIFI_CAPTURE_MODE_EAPOL && !eapol_ui_is_open())
+        eapol_ui_open();
+    if (eapol_ui_is_open()) return eapol_ui_draw();
     cerberus_s3_capture_status_t state;
     cerberus_s3_capture_status(&state);
     char line[80], identifier[24];
@@ -119,8 +132,13 @@ static void capture_tap(uint16_t x, uint16_t y)
 {
     if (x < 12U || x >= 308U) return;
     if (y >= 150U && y < 190U && !capture_busy()) {
+        if (eapol_ui_is_open()) { eapol_ui_close(false); return; }
         capture_mode_index = (uint8_t)((capture_mode_index + 1U) %
             (sizeof(capture_modes) / sizeof(capture_modes[0])));
+        if (capture_modes[capture_mode_index] == CERBERUS_WIFI_CAPTURE_MODE_EAPOL)
+            eapol_ui_open();
+    } else if (eapol_ui_is_open()) {
+        eapol_ui_tap(x, y);
     } else if (y >= 366U && y < 412U) {
         if (capture_busy()) cerberus_s3_capture_stop();
         else capture_start();
@@ -129,6 +147,7 @@ static void capture_tap(uint16_t x, uint16_t y)
 
 static bool capture_back(void)
 {
+    if (eapol_ui_is_open()) { eapol_ui_close(true); return false; }
     if (capture_busy()) {
         cerberus_s3_capture_stop();
         snprintf(capture_message, sizeof(capture_message), "STOPPING / WAIT FOR FILE CLOSE");
@@ -139,6 +158,7 @@ static bool capture_back(void)
 
 static bool capture_tick(uint32_t now)
 {
+    if (eapol_ui_is_open()) return false;
     if ((uint32_t)(now - capture_last_poll) < 500U) return false;
     capture_last_poll = now;
     cerberus_s3_capture_status_t state;

@@ -116,8 +116,9 @@ static void wifi_fox_hunt_receive(const wifi_promiscuous_pkt_t *p,
     wifi_promiscuous_pkt_type_t type, int64_t entered, uint32_t token)
 { (void)p; (void)type; (void)entered; (void)token; }
 static void packet_monitor_receive(const wifi_promiscuous_pkt_t*p,unsigned type){(void)p;(void)type;}
+static uint32_t cerberus_wifi_capture_service_admission_token(void){return 0;}
 static bool cerberus_wifi_capture_service_active(void){return false;}
-static void cerberus_wifi_capture_service_receive(const uint8_t*p,unsigned n,unsigned ch,int rssi,uint64_t time){(void)p;(void)n;(void)ch;(void)rssi;(void)time;CHECK(false);}
+static void cerberus_wifi_capture_service_receive(const uint8_t*p,unsigned n,unsigned ch,int rssi,int64_t time,uint32_t generation){(void)generation;(void)p;(void)n;(void)ch;(void)rssi;(void)time;CHECK(false);}
 static void station_receive(const wifi_promiscuous_pkt_t*p){(void)p;}
 static void cerberus_c5_test_receive(const uint8_t*p,unsigned n,unsigned ch){(void)p;(void)n;(void)ch;}
 static bool sentinel_watch_protocol_decode_wifi(const uint8_t*p,unsigned n,sentinel_watch_protocol_record_t*out){(void)p;(void)n;(void)out;return false;}

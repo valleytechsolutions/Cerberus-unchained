@@ -119,8 +119,9 @@ static void wifi_fox_hunt_receive(const wifi_promiscuous_pkt_t *p,
     wifi_promiscuous_pkt_type_t type, int64_t entered, uint32_t token)
 { (void)p; (void)type; (void)entered; (void)token; }
 static void packet_monitor_receive(const wifi_promiscuous_pkt_t *p,unsigned t){(void)p;(void)t;}
+static uint32_t cerberus_wifi_capture_service_admission_token(void){return 0;}
 static bool cerberus_wifi_capture_service_active(void){return false;}
-static void cerberus_wifi_capture_service_receive(const uint8_t *p,unsigned n,unsigned c,int r,uint64_t t){(void)p;(void)n;(void)c;(void)r;(void)t;CHECK(false);}
+static void cerberus_wifi_capture_service_receive(const uint8_t *p,unsigned n,unsigned c,int r,int64_t t,uint32_t generation){(void)generation;(void)p;(void)n;(void)c;(void)r;(void)t;CHECK(false);}
 static void station_receive(const wifi_promiscuous_pkt_t *p){(void)p;}
 static void cerberus_c5_test_receive(const uint8_t *p,unsigned n,unsigned c){(void)p;(void)n;(void)c;}
 /* Dedicated Probe capture is inactive in this legacy consumer fixture. */

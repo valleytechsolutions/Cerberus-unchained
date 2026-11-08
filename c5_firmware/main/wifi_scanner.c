@@ -214,6 +214,7 @@ static void scan_observation_receive(const wifi_promiscuous_pkt_t *packet,
 
 static void wifi_promiscuous_callback(void *buffer, wifi_promiscuous_pkt_type_t type)
 {
+    const uint32_t capture_token=cerberus_wifi_capture_service_admission_token();
     const uint32_t fox_token=atomic_load_explicit(&wifi_fox_hunt_admission_token,memory_order_acquire);
     const uint32_t mac_token=atomic_load_explicit(&mac_admission_token,memory_order_acquire);
     const int64_t callback_us = esp_timer_get_time();
@@ -258,9 +259,9 @@ static void wifi_promiscuous_callback(void *buffer, wifi_promiscuous_pkt_type_t 
     channel_survey_receive(packet, type);
     wifi_fox_hunt_receive(packet, type, callback_us, fox_token);
     packet_monitor_receive(packet, type);
-    if(cerberus_wifi_capture_service_active()&&rx->rx_state==0&&rx->sig_len>4U)
+    if(capture_token&&cerberus_wifi_capture_service_active()&&rx->rx_state==0&&rx->sig_len>4U)
         cerberus_wifi_capture_service_receive(packet->payload,rx->sig_len-4U,
-            rx->channel,rx->rssi,(uint64_t)esp_timer_get_time());
+            rx->channel,rx->rssi,callback_us,capture_token);
     station_receive(packet);
     if (relation_epoch) {
         cerberus_wifi_relation_row_t relation;

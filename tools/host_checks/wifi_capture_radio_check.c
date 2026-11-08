@@ -68,12 +68,12 @@ static esp_err_t operation(enum operation op)
 }
 static void verify_paused(void)
 {
-    if(!hop_expected)return;
     cerberus_wifi_capture_status_payload_t before,after;
     cerberus_wifi_capture_service_status(&before);
-    assert(before.channel==0);
+    if(hop_expected)assert(before.channel==0);
+    assert(cerberus_wifi_capture_service_admission_token()==0);
     /* Deliberately deliver callbacks at every driver boundary while paused. */
-    cerberus_wifi_capture_service_receive(beacon,sizeof(beacon),radio_channel,-60,(uint64_t)fake_us);
+    cerberus_wifi_capture_service_receive(beacon,sizeof(beacon),radio_channel,-60,fake_us,cerberus_wifi_capture_service_admission_token());
     cerberus_wifi_capture_service_status(&after);
     assert(after.accepted==before.accepted);
 }
@@ -141,7 +141,7 @@ static void successful_hops(void)
     assert(status().channel==1&&status().generation==r.generation);
     unsigned setups=calls[SET_CHANNEL];
     assert(cerberus_wifi_capture_start(&r)==ESP_OK&&calls[SET_CHANNEL]==setups);
-    cerberus_wifi_capture_service_receive(beacon,sizeof(beacon),1,-41,(uint64_t)fake_us);
+    cerberus_wifi_capture_service_receive(beacon,sizeof(beacon),1,-41,fake_us,cerberus_wifi_capture_service_admission_token());
     cerberus_wifi_capture_peek_payload_t p;
     assert(cerberus_wifi_capture_service_peek(r.generation,&p)==ESP_OK&&p.sequence&&p.channel==1);
     uint32_t sequence=p.sequence,crc=p.crc32;
@@ -149,7 +149,7 @@ static void successful_hops(void)
     advance(1);assert(radio_channel==3&&status().channel==3);
     assert(cerberus_wifi_capture_service_peek(r.generation,&p)==ESP_OK&&
         p.sequence==sequence&&p.channel==1&&p.crc32==crc);
-    cerberus_wifi_capture_service_receive(beacon,sizeof(beacon),3,-42,(uint64_t)fake_us);
+    cerberus_wifi_capture_service_receive(beacon,sizeof(beacon),3,-42,fake_us,cerberus_wifi_capture_service_admission_token());
     /* Keep a pinned record across both bands, renewing only via transport. */
     for(unsigned i=0;i<12;++i){
         assert(cerberus_wifi_capture_service_peek(r.generation,&p)==ESP_OK);
@@ -210,7 +210,7 @@ static void faults_and_retries(void)
     /* A failed enable during a later hop stops capture and restores the
      * original channel, without losing the pending pre-hop observation. */
     reset_driver();r=request(true);assert(cerberus_wifi_capture_start(&r)==ESP_OK);
-    cerberus_wifi_capture_service_receive(beacon,sizeof(beacon),1,-42,(uint64_t)fake_us);
+    cerberus_wifi_capture_service_receive(beacon,sizeof(beacon),1,-42,fake_us,cerberus_wifi_capture_service_admission_token());
     fail_count[ENABLE]=1;advance(250);
     assert(status().state==CERBERUS_WIFI_CAPTURE_ERROR&&status().pending==1);
     assert(!promiscuous&&!atomic_load(&capture_radio_reserved)&&radio_channel==11);
@@ -248,7 +248,7 @@ static void drain_and_lease(void)
     assert(radio_channel==6&&calls[SET_CHANNEL]==tunes);
     reset_driver();r=request(false);r.channel=36;r.mode_mask=CERBERUS_WIFI_CAPTURE_MODE_BEACON;
     assert(cerberus_wifi_capture_start(&r)==ESP_OK&&radio_channel==36);
-    cerberus_wifi_capture_service_receive(beacon,sizeof(beacon),36,-51,(uint64_t)fake_us);
+    cerberus_wifi_capture_service_receive(beacon,sizeof(beacon),36,-51,fake_us,cerberus_wifi_capture_service_admission_token());
     assert(status().accepted==1&&status().pending==1&&calls[GET_MODE]==0);
     assert(cerberus_wifi_capture_stop(r.generation)==ESP_OK);drain(r.generation);
     /* Fixed captures must not acknowledge cleanup while an admitted producer
@@ -263,7 +263,23 @@ static void drain_and_lease(void)
     reset_driver();r=request(false);assert(cerberus_wifi_capture_start(&r)==ESP_OK);
     fail_count[DISABLE]=1;
     assert(cerberus_wifi_capture_stop(r.generation)==ESP_FAIL&&atomic_load(&capture_radio_reserved));
+    assert(!cerberus_wifi_capture_service_admission_token());
+    cerberus_wifi_capture_start_request_t next=r;++next.generation;
+    assert(cerberus_wifi_capture_start(&next)==ESP_ERR_INVALID_STATE);
     advance(50);assert(!promiscuous&&!atomic_load(&capture_radio_reserved));
+    /* A failed arm clock after driver enable follows the same recoverable
+     * cleanup path and cannot admit a frame or release a failed disable. */
+    reset_driver();r=request(false);fake_us=-1;fail_count[DISABLE]=1;
+    assert(cerberus_wifi_capture_start(&r)==ESP_ERR_INVALID_STATE);
+    assert(!cerberus_wifi_capture_service_admission_token());
+    assert(atomic_load(&capture_radio_reserved)&&status().state==CERBERUS_WIFI_CAPTURE_ERROR);
+    fake_us=1000000;advance(50);
+    assert(!promiscuous&&!atomic_load(&capture_radio_reserved));
+    /* Exhaustion cannot wrap an arm token onto a delayed callback's token. */
+    reset_driver();r=request(false);last_admission_token=UINT32_MAX;
+    assert(cerberus_wifi_capture_start(&r)==ESP_ERR_INVALID_STATE);
+    assert(!cerberus_wifi_capture_service_admission_token());
+    assert(!promiscuous&&!atomic_load(&capture_radio_reserved));
 }
 int main(void)
 {

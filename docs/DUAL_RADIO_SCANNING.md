@@ -1,5 +1,17 @@
 # Adaptive two-radio scanning
 
+## Current source work
+
+[Rev164 passive EAPOL monitoring](WIFI_EAPOL_MONITOR.md) adds per-station
+observed exchange evidence to the existing selected-AP capture page. C5
+capability 85 provides callback admission provenance; the S3 owns bounded
+analysis, reporting and optional PCAPNG writing. Analysis-only is the default,
+Stop retains the report, and navigation waits for exact receiver/file release.
+Implementation and focused host checks are recorded; the full matrix, native
+builds, packaging and installation are not yet recorded for rev164. Physical
+reception/navigation and full upstream parity remain open. These observed
+patterns do not verify authentication.
+
 ## Current installed checkpoint
 
 The latest installed checkpoint is [rev163 saved Bluetooth lookup](SAVED_BLE_LOOKUP.md):
