@@ -25,6 +25,8 @@ parts += between(ui, "static const char *wardrive_state_label(", "static const c
 parts += between(ui, "static esp_err_t draw_wardrive(", "static esp_err_t draw_detail_page(void)\n{")
 parts += between(ui, "static void wardrive_handle_tap(", "static void wardrive_tick(")
 parts += between(ui, "static bool recon_sessions_idle_for_takeover(void)\n{", "static void ble_sound_handle_tap(")
+gps_ui = (root / "s3_main/main/gps_settings_ui.h").read_text(encoding="utf-8")
+parts += gps_ui[gps_ui.index("static void gps_preview_poll("):]
 parts += between(ui, "static void wardrive_tick(", "static void handle_tap(uint16_t x, uint16_t y)\n{")
 tap = ui[ui.index("static void handle_tap(uint16_t x, uint16_t y)\n{"):]
 back = tap.index("} else if (current_page == UI_PAGE_WARDRIVE) {")

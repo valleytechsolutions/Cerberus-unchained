@@ -1,14 +1,23 @@
 # Wardriving GPS admission and RSSI extrema
 
-Development candidate for rev148. This changes new recordings; existing CSVs
-and upload receipts are left intact.
+RSSI extrema filtering was introduced in rev148. Rev149 simplifies the GPS
+start control. These changes affect new recordings; existing CSVs and upload
+receipts are left intact.
 
 ## Starting a recording
 
-Open **Scan → Wardriving**, enable GPS and wait for **FIX + UTC**. The start
-control reads **WAIT GPS** until the receiver has a current position and RMC
-date/time. Tap **START** once it becomes available. Getting a fix does not
-automatically start scanning.
+Open **Scan → Wardriving** and tap **START**. GPS is always enabled on this
+page; its pins, baud and receiver profile still come from **Settings → GPS**.
+The **PREVIEW** control in Settings affects only the Settings page.
+If a fresh fix and RMC UTC are already available, scanning starts immediately.
+Otherwise the screen shows **WAITING FOR GPS** and starts automatically when
+both are ready. There is no acquisition timeout and no second tap is needed.
+Opening the page alone does not start a recording.
+
+**STOP** or **Back** cancels a pending start. Mode changes and log uploads are
+unavailable while waiting or recording. The enlarged **WI-FI** and **BLE**
+counters show received observations from the participating radios; the valid
+and saved row counts below them describe what reaches the log.
 
 The service checks the same condition before allocating recording resources,
 after radio preparation and before each receiver starts. The receiver must be
@@ -74,7 +83,8 @@ source journal.
 ## Validation
 
 Focused production-code checks cover GPS-off/no-fix/stale-fix/missing-UTC
-admission, a fix lost between the two receiver starts, Stop/Back cleanup,
+service admission, wait/autostart/cancel routes, GPS preview ownership, a fix
+lost between the two receiver starts, Stop/Back cleanup,
 CSV quoting and UTF-8, equal RSSI ties, shared names and mixed radio identities.
 Independent Python CSV checks compare complete retained rows against the
 production C compactor, including a 100,000-row sample with more identities

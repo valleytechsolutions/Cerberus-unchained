@@ -91,8 +91,10 @@ See [Unchained build and release instructions](docs/UNCHAINED_BUILD.md) and
 
 ## Development status
 
-The rev148 development candidate requires a fresh GPS fix and RMC UTC before
-Wardriving starts. After Stop, it saves the strongest and weakest complete
+The rev149 development candidate makes Wardriving START wait for a fresh GPS
+fix and RMC UTC, then start automatically. GPS is always enabled on that page;
+STOP or Back cancels the wait. Larger Wi-Fi and BLE counters show received
+observations. After Stop, it saves the strongest and weakest complete
 observation per Wi-Fi BSSID or Bluetooth address in one `CERBWardrive###.CSV`.
 Compaction runs after the receivers stop with a fixed working buffer; capture
 cadence is unchanged. See [data quality, recovery and validation limits](docs/WARDRIVE_DATA_QUALITY.md).

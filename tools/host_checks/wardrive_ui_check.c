@@ -2,6 +2,7 @@
 #include "wardrive_service.h"
 #include "wardrive_log_feedback.h"
 #include "wardrive_gps_uart.h"
+#include "gps_config.h"
 #include "ui_widgets.h"
 #include "display.h"
 #include "esp_check.h"
@@ -18,22 +19,29 @@ static unsigned checks, calls, fail_at, status_reads, stop_requests, page_draws,
 #define CHECK(x) do { ++checks; if (!(x)) { fprintf(stderr,"%s:%d: %s\n",__FILE__,__LINE__,#x);abort(); } } while (0)
 #define ESP_ERROR_CHECK(x) CHECK((x)==ESP_OK)
 #define UI_HEADER_HEIGHT 48U
-enum { UI_PAGE_BLE=1, UI_PAGE_IEEE802154=2, UI_PAGE_WARDRIVE=3 };
+enum { UI_PAGE_BLE=1, UI_PAGE_IEEE802154=2, UI_PAGE_WARDRIVE=3, UI_PAGE_SETTINGS=4 };
+enum { UI_SETTINGS_MODE_GPS=1 };
 static unsigned current_page;
 static const char *TAG="wardrive_host";
 static uint16_t pixels[480][320];
-static char drawn[8192], lines[480][128];
+static char drawn[8192], lines[480][128], counter_text[2][16];
 static cerberus_wardrive_status_t runtime;
 esp_err_t cerberus_wardrive_gps_uart_get_state(cerberus_wardrive_gps_uart_state_t *out)
 {memset(out,0,sizeof(*out));out->gps=runtime.gps;out->error=runtime.gps_error;out->active_baud=115200;
  out->driver_active=out->reader_running=out->clock_valid=true;return ESP_OK;}
 esp_err_t cerberus_wardrive_start_check(bool enabled)
 {cerberus_wardrive_gps_uart_state_t s;cerberus_wardrive_gps_uart_get_state(&s);
- return cerberus_wardrive_gps_start_ready(enabled,&s)?ESP_OK:ESP_ERR_NOT_FINISHED;}
-static bool wardrive_start_pending,wardrive_return_pending,wardrive_gps_enabled,wardrive_include_expansions;
+ return s.error!=ESP_OK?s.error:cerberus_wardrive_gps_start_ready(enabled,&s)?ESP_OK:ESP_ERR_NOT_FINISHED;}
+static bool wardrive_start_pending,wardrive_return_pending,wardrive_waiting_for_gps,wardrive_include_expansions;
 static uint8_t wardrive_mode;
-static esp_err_t gps_preview_error;
-static void gps_preview_poll(uint32_t now,bool asleep){(void)now;(void)asleep;}
+static esp_err_t gps_preview_error, gps_preview_result;
+static bool gps_preview_attached, gps_preview_cleanup;
+static uint32_t gps_preview_retry_ms;
+static unsigned settings_mode, gps_preview_starts, gps_preview_stops;
+static cerberus_gps_config_t gps_settings;
+static cerberus_gps_config_t cerberus_settings_gps_get(void){return gps_settings;}
+esp_err_t cerberus_wardrive_gps_uart_preview(bool enabled)
+{if(enabled)++gps_preview_starts;else ++gps_preview_stops;return gps_preview_result;}
 esp_err_t cerberus_wardrive_set_mode(uint8_t mode){wardrive_mode=mode;return ESP_OK;}
 
 static esp_err_t wardrive_start_error;
@@ -85,6 +93,7 @@ esp_err_t cerberus_display_draw_text(uint16_t x,uint16_t y,const char *text,uint
     CHECK(strlen(drawn)+strlen(text)+2U<sizeof(drawn));
     strcat(drawn,text);strcat(drawn,"\n");
     snprintf(lines[y],sizeof(lines[y]),"%s",text);
+    if(y==176){CHECK(scale==2);snprintf(counter_text[x>=160],16,"%s",text);}
     for(size_t i=0;text[i];++i){const uint8_t *font=font5x7((unsigned char)text[i]);
         for(unsigned cy=0;cy<7U;++cy)for(unsigned cx=0;cx<6U;++cx)
             for(unsigned sy=0;sy<scale;++sy)for(unsigned sx=0;sx<scale;++sx)
@@ -104,7 +113,7 @@ static esp_err_t draw_detail_page(void)
 static void reset(void)
 {
     memset(&runtime,0,sizeof(runtime));wardrive_start_pending=wardrive_return_pending=false;
-    wardrive_gps_enabled=wardrive_include_expansions=false;wardrive_start_error=ESP_OK;
+    wardrive_waiting_for_gps=wardrive_include_expansions=false;wardrive_start_error=ESP_OK;
     wardrive_blocked_reason[0]='\0';calls=fail_at=status_reads=stop_requests=page_draws=recent_opens=0;
     wardrive_last_draw_ms=999;clock_us=1234000;
     live_session=(sentinel_scan_session_t){0};live_ble_session=(sentinel_scan_session_t){0};
@@ -112,6 +121,9 @@ static void reset(void)
     service_starts=launcher_returns=storage_owner=0;recent_is_open=requested_gps=requested_expansions=false;
     service_start_result=ESP_OK;host_owner=CERBERUS_S3_BLE_OWNER_NONE;current_page=UI_PAGE_WARDRIVE;
     wardrive_start_requested_ms=wardrive_last_start_attempt_ms=0;
+    gps_preview_error=gps_preview_result=ESP_OK;gps_preview_attached=gps_preview_cleanup=false;
+    gps_preview_retry_ms=settings_mode=gps_preview_starts=gps_preview_stops=0;
+    gps_settings=(cerberus_gps_config_t){0};
 }
 static void draw(void)
 {
@@ -122,7 +134,6 @@ static void draw(void)
 }
 static void ready_gps(void)
 {
-    wardrive_gps_enabled=true;
     runtime.gps=(cerberus_wardrive_gps_snapshot_t){.state=CERBERUS_WARDRIVE_GPS_FRESH,
         .coordinates_valid=true,.utc_valid=true,.utc_from_rmc=true};
 }
@@ -139,19 +150,19 @@ static void save(const char *prefix,const char *name)
 }
 static void check_views(const char *prefix)
 {
-    reset();draw();CHECK(!strcmp(lines[80],"GPS DATA > OFF / ENABLE GPS TO START"));
-    CHECK(!strcmp(lines[178],"C5 5G: 0 WIFI / 0 BLE")&&strstr(drawn,"WAIT GPS\n"));save(prefix,"idle-no-gps");
+    reset();draw();CHECK(!strcmp(lines[80],"GPS DATA > WAITING FOR RECEIVER"));
+    CHECK(!strcmp(counter_text[0],"0")&&!strcmp(counter_text[1],"0")&&strstr(drawn,"START\n"));save(prefix,"idle-no-gps");
     runtime=(cerberus_wardrive_status_t){.state=CERBERUS_WARDRIVE_RUNNING,.c5_wifi_sweeps=12,.c5_wifi_observations=96,
         .c5_stream={.wifi_reports=96},.s3_stream={.ble_reports=173},.s3_ble_sweeps=9,.s3_ble_observations=173,.s3_ble_flock_observations=23,
         .s3_ble_flock_clue=3,.s3_ble_flock_signature=15,.s3_ble_flock_corroborated=5,
         .c5_probe_state=CERBERUS_WARDRIVE_PROBE_AVAILABLE,.c5_probe_observations=4,
         .skipped_no_fix=269};
-    draw();CHECK(!strcmp(lines[178],"C5 5G: 96 WIFI / 0 BLE"));
-    CHECK(!strcmp(lines[158],"S3 2.4G/BLE: 0 WIFI / 173 BLE")&&strstr(drawn,"STOP\n"));
+    draw();CHECK(!strcmp(counter_text[0],"96"));
+    CHECK(!strcmp(counter_text[1],"173")&&strstr(drawn,"STOP\n"));
     CHECK(!strcmp(lines[300],"NOT SAVED: 269 / NO FIX 269"));
     CHECK(!strcmp(lines[324],"SCANNING / CSV NEEDS GPS FIX + UTC"));save(prefix,"running-no-gps");
     runtime.c5_stream.wifi_reports=runtime.c5_stream.ble_reports=UINT32_MAX;draw();
-    CHECK(!strcmp(lines[178],"C5 5G: 4294967295 WIFI / 4294967295 BLE"));save(prefix,"max-counts");
+    CHECK(!strcmp(counter_text[0],"4294967295")&&!strcmp(counter_text[1],"4294967468"));save(prefix,"max-counts");
     runtime.state=CERBERUS_WARDRIVE_STOPPING;wardrive_return_pending=true;draw();
     CHECK(!strcmp(lines[105],"STATE: STOPPING / SAVING"));
     CHECK(!strcmp(lines[324],"WAITING FOR RADIOS AND FILES")&&strstr(drawn,"STOP\n"));save(prefix,"stopping");
@@ -159,10 +170,10 @@ static void check_views(const char *prefix)
     CHECK(!strcmp(lines[105],"STATE: SAVING RSSI EXTREMES")&&strstr(drawn,"STOP\n"));save(prefix,"compacting");
     runtime.compacting=false;
     runtime.state=CERBERUS_WARDRIVE_STOPPED;wardrive_return_pending=false;draw();
-    CHECK(!strcmp(lines[105],"STATE: STOPPED / NO CSV SAVED")&&strstr(drawn,"WAIT GPS\n"));
+    CHECK(!strcmp(lines[105],"STATE: STOPPED / NO CSV SAVED")&&strstr(drawn,"START\n"));
     CHECK(!strcmp(lines[280],"LAST FILE: NO CSV CREATED"));
     CHECK(!strcmp(lines[324],"GPS WAS OFF / SCAN ONLY"));save(prefix,"stopped-gps-off");
-    runtime.gps_requested=true;wardrive_gps_enabled=true;draw();
+    runtime.gps_requested=true;draw();
     CHECK(!strcmp(lines[324],"NO VALID GPS FIX + UTC DURING CAPTURE"));save(prefix,"stopped-no-fix");
     /* A later receiver fix must not rewrite the completed session's outcome. */
     runtime.gps.state=CERBERUS_WARDRIVE_GPS_FRESH;runtime.gps.utc_valid=true;draw();
@@ -180,9 +191,9 @@ static void check_views(const char *prefix)
     draw();CHECK(!strcmp(lines[324],"S3: ESP_ERR_TIMEOUT"));save(prefix,"error");
     runtime=(cerberus_wardrive_status_t){.state=CERBERUS_WARDRIVE_RUNNING,.gps_requested=true,
         .gps={.state=CERBERUS_WARDRIVE_GPS_FRESH,.utc_valid=true},.expansion_present_mask=0x3f};
-    wardrive_gps_enabled=wardrive_include_expansions=true;draw();
+    wardrive_include_expansions=true;draw();
     CHECK(!strcmp(lines[80],"GPS DATA > FIX + UTC / WIGLE CSV"));
-    CHECK(!strcmp(lines[240],"EXPANSION R1-R6: 6 ONLINE"));save(prefix,"gps-format-preview");
+    CHECK(strstr(drawn,"R1-R6: ON / 6 ONLINE"));save(prefix,"gps-format-preview");
     runtime.gps.utc_valid=false;draw();CHECK(!strcmp(lines[80],"GPS DATA > FIX / UTC UNVERIFIED"));
     strcpy(runtime.last_file_name,"CERBWardrive001.CSV");runtime.files_saved=1;draw();
     CHECK(!strcmp(lines[280],"LAST FILE: CERBWardrive001.CSV"));
@@ -197,10 +208,11 @@ static void check_routes(void)
 {
     reset();wardrive_mode=0;wardrive_handle_tap(80,130);CHECK(wardrive_mode==CERBERUS_WD_WIFI);
     wardrive_handle_tap(80,130);CHECK(wardrive_mode==CERBERUS_WD_BLE);
-    wardrive_handle_tap(24,346);CHECK(!wardrive_gps_enabled&&!wardrive_include_expansions);
+    wardrive_handle_tap(24,346);CHECK(!wardrive_waiting_for_gps&&!wardrive_include_expansions);
     wardrive_handle_tap(80,130);CHECK(wardrive_mode==CERBERUS_WD_COMBINED);
-    wardrive_handle_tap(24,346);CHECK(wardrive_include_expansions&&!wardrive_gps_enabled);
-    wardrive_handle_tap(164,346);CHECK(wardrive_gps_enabled);
+    wardrive_handle_tap(24,346);CHECK(wardrive_include_expansions&&!wardrive_waiting_for_gps);
+    wardrive_handle_tap(164,346);CHECK(!wardrive_include_expansions);
+    wardrive_handle_tap(164,346);CHECK(wardrive_include_expansions);
     unsigned old=status_reads;wardrive_handle_tap(7,390);wardrive_handle_tap(312,390);CHECK(status_reads==old);
     unsigned draws=page_draws;wardrive_handle_tap(200,178);CHECK(page_draws==draws&&!stop_requests);
     ready_gps();wardrive_start_error=ESP_FAIL;strcpy(wardrive_blocked_reason,"old failure");
@@ -211,7 +223,7 @@ static void check_routes(void)
     for(unsigned state=CERBERUS_WARDRIVE_STARTING;state<=CERBERUS_WARDRIVE_STOPPING;++state){
         runtime.state=(cerberus_wardrive_state_t)state;unsigned stops=stop_requests;
         wardrive_handle_tap(80,380);CHECK(stop_requests==stops+1&&!wardrive_start_pending);
-        wardrive_handle_tap(164,346);CHECK(wardrive_gps_enabled);
+        wardrive_handle_tap(164,346);CHECK(wardrive_include_expansions);
     }
     old=status_reads;draws=page_draws;
     wardrive_handle_tap(104,390);wardrive_handle_tap(211,390);
@@ -261,8 +273,8 @@ static void check_lifecycle(const char *prefix)
     wardrive_tick(1500,true);CHECK(!service_starts&&!wardrive_start_pending&&wardrive_start_error==ESP_ERR_INVALID_STATE);
     CHECK(!strcmp(wardrive_blocked_reason,"RETURN SD FROM USB DRIVE MODE"));
     reset();ready_gps();wardrive_handle_tap(80,380);live_ble_lease_epoch=UINT64_MAX;
-    wardrive_tick(16234,true);CHECK(!service_starts&&!wardrive_start_pending&&wardrive_start_error==ESP_ERR_TIMEOUT);
-    reset();ready_gps();wardrive_include_expansions=wardrive_gps_enabled=true;wardrive_handle_tap(80,380);
+    wardrive_tick(1500,true);wardrive_tick(16500,true);CHECK(!service_starts&&!wardrive_start_pending&&wardrive_start_error==ESP_ERR_TIMEOUT);
+    reset();ready_gps();wardrive_include_expansions=true;wardrive_handle_tap(80,380);
     service_start_result=ESP_ERR_INVALID_STATE;wardrive_tick(1500,true);
     CHECK(service_starts==1&&wardrive_start_pending&&requested_gps&&requested_expansions);
     wardrive_tick(1600,true);CHECK(service_starts==1);
@@ -270,17 +282,46 @@ static void check_lifecycle(const char *prefix)
 }
 int main(int argc,char **argv)
 {
+    CHECK(argc==2);
+    /* Wardriving owns preview even with the saved Settings preview disabled.
+     * Sleeping the display must not interrupt acquisition; leaving releases it. */
+    reset();gps_preview_poll(300,true);
+    CHECK(gps_preview_attached&&gps_preview_starts==1&&!gps_preview_stops);
+    gps_preview_poll(1000,false);CHECK(gps_preview_starts==1);
+    current_page=UI_PAGE_SETTINGS;settings_mode=UI_SETTINGS_MODE_GPS;gps_preview_poll(1300,false);
+    CHECK(!gps_preview_attached&&gps_preview_stops==1);
+    gps_settings.enabled=1;gps_preview_poll(1600,false);CHECK(gps_preview_attached&&gps_preview_starts==2);
+    gps_preview_poll(1900,true);CHECK(!gps_preview_attached&&gps_preview_stops==2);
+    /* A failed attach is released before the next retry. */
+    reset();gps_preview_result=ESP_ERR_NO_MEM;gps_preview_poll(300,false);
+    CHECK(gps_preview_cleanup&&!gps_preview_attached&&gps_preview_starts==1);
+    gps_preview_result=ESP_OK;gps_preview_poll(600,false);CHECK(!gps_preview_cleanup&&gps_preview_stops==1);
+    gps_preview_poll(900,false);CHECK(gps_preview_attached&&gps_preview_starts==2);
     reset();wardrive_handle_tap(80,380);
-    CHECK(!wardrive_start_pending&&!service_starts&&strstr(wardrive_blocked_reason,"ENABLE GPS"));
-    wardrive_gps_enabled=true;wardrive_handle_tap(80,380);
-    CHECK(!wardrive_start_pending&&!service_starts&&strstr(wardrive_blocked_reason,"GPS FIX + UTC"));
-    ready_gps();runtime.gps.utc_valid=false;wardrive_handle_tap(80,380);
-    CHECK(!wardrive_start_pending&&!service_starts);
-    ready_gps();runtime.gps.fix_age_ms=CERBERUS_WARDRIVE_GPS_FIX_MAX_AGE_MS+1U;wardrive_handle_tap(80,380);
-    CHECK(!wardrive_start_pending&&!service_starts);
-    ready_gps();wardrive_handle_tap(80,380);CHECK(wardrive_start_pending);
-    runtime.gps.utc_valid=false;wardrive_tick(1500,true);
-    CHECK(!wardrive_start_pending&&strstr(wardrive_blocked_reason,"GPS FIX LOST"));
-    CHECK(argc==2);check_views(argv[1]);check_routes();check_lifecycle(argv[1]);
-    printf("Wardriving production UI: %u checks; one status snapshot per draw, Flock hint counts, GPS/no-GPS labels, Stop/config routes and bounded native rendering pass.\n",checks);
+    CHECK(wardrive_start_pending&&wardrive_waiting_for_gps&&!service_starts);
+    for(unsigned t=1500;t<=240000;t+=1000)wardrive_tick(t,true);
+    CHECK(wardrive_start_pending&&!service_starts&&!wardrive_start_error);
+    draw();CHECK(!strcmp(lines[105],"STATE: WAITING FOR GPS")&&strstr(drawn,"STOP\n"));
+    CHECK(!strstr(drawn,"GPS: ON")&&!strstr(drawn,"GPS: OFF"));save(argv[1],"waiting-gps");
+    ready_gps();wardrive_tick(241000,true);
+    CHECK(!wardrive_start_pending&&service_starts==1&&requested_gps);
+    wardrive_tick(242000,true);CHECK(service_starts==1);
+    reset();wardrive_handle_tap(80,380);wardrive_handle_tap(80,380);
+    ready_gps();wardrive_tick(2000,true);CHECK(!wardrive_start_pending&&!service_starts);
+    reset();wardrive_handle_tap(80,380);wardrive_back();
+    ready_gps();wardrive_tick(2000,true);CHECK(!wardrive_start_pending&&!service_starts);
+    reset();ready_gps();wardrive_handle_tap(80,380);service_start_result=ESP_ERR_NOT_FINISHED;
+    wardrive_tick(1500,true);CHECK(wardrive_start_pending&&wardrive_waiting_for_gps&&service_starts==1);
+    runtime.gps.utc_valid=false;wardrive_tick(90000,true);
+    CHECK(wardrive_start_pending&&service_starts==1&&!wardrive_start_error);
+    ready_gps();service_start_result=ESP_OK;wardrive_tick(91000,true);
+    CHECK(!wardrive_start_pending&&service_starts==2);
+    reset();wardrive_handle_tap(80,380);runtime.gps_error=ESP_FAIL;wardrive_tick(1500,true);
+    CHECK(wardrive_start_pending&&!service_starts&&wardrive_start_error==ESP_FAIL);
+    runtime.gps_error=ESP_OK;ready_gps();wardrive_tick(1750,true);
+    CHECK(!wardrive_start_pending&&service_starts==1&&!wardrive_start_error&&!wardrive_blocked_reason[0]);
+    reset();wardrive_handle_tap(80,380);runtime.gps_error=ESP_FAIL;wardrive_tick(1500,true);
+    wardrive_handle_tap(80,380);CHECK(!wardrive_start_pending&&!wardrive_waiting_for_gps&&!wardrive_start_error);
+    check_views(argv[1]);check_routes();check_lifecycle(argv[1]);
+    printf("Wardriving production UI: %u checks; GPS wait/autostart/cancel, preview ownership, large radio counts, Stop/config routes and bounded rendering pass.\n",checks);
 }

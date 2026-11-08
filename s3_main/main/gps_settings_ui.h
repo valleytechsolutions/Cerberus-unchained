@@ -27,7 +27,7 @@ static esp_err_t draw_settings_gps(void)
     else snprintf(line,sizeof(line),"PPS: GPIO %d / RESERVED",gps_edit.pps_gpio);
     ESP_RETURN_ON_ERROR(draw_small_button(16,260,288,34,line),TAG,"GPS PPS");
     ESP_RETURN_ON_ERROR(draw_centered(306,"RECEIVE NMEA / NO MODULE REPROGRAMMING",UI_MUTED,1),TAG,"GPS config scope");
-    ESP_RETURN_ON_ERROR(draw_small_button(16,330,136,34,gps_edit.enabled?"GPS ENABLED":"GPS DISABLED"),TAG,"GPS enabled");
+    ESP_RETURN_ON_ERROR(draw_small_button(16,330,136,34,gps_edit.enabled?"PREVIEW: ON":"PREVIEW: OFF"),TAG,"GPS preview");
     ESP_RETURN_ON_ERROR(draw_small_button(168,330,136,34,"SAVE / APPLY"),TAG,"GPS save");
     if(gps_settings_error!=ESP_OK){
         snprintf(line,sizeof(line),"SAVE: %s",esp_err_to_name(gps_settings_error));
@@ -71,8 +71,8 @@ static void gps_settings_tap(uint16_t x,uint16_t y)
 }
 static void gps_preview_poll(uint32_t now_ms,bool asleep)
 {
-    bool want=!asleep&&((current_page==UI_PAGE_WARDRIVE&&wardrive_gps_enabled)||
-        (current_page==UI_PAGE_SETTINGS&&settings_mode==UI_SETTINGS_MODE_GPS&&cerberus_settings_gps_get().enabled));
+    bool want=current_page==UI_PAGE_WARDRIVE || (!asleep&&
+        current_page==UI_PAGE_SETTINGS&&settings_mode==UI_SETTINGS_MODE_GPS&&cerberus_settings_gps_get().enabled);
     if(want==gps_preview_attached&&!gps_preview_cleanup)return;
     if((uint32_t)(now_ms-gps_preview_retry_ms)<250U)return;
     gps_preview_retry_ms=now_ms;

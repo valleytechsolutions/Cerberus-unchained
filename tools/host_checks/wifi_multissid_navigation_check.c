@@ -33,7 +33,7 @@ static unsigned packet_monitor_channel,packet_monitor_last_poll;
 /* Unrelated page state referenced by the complete production launcher. */
 static unsigned dashboard_mode,ble_mode,ieee802154_mode,script_mode,log_mode;
 static unsigned settings_mode,qr_mode,usb_mode,self_test_mode;
-static bool ble_attack_start_pending,ble_attack_return_pending,wardrive_gps_enabled;
+static bool ble_attack_start_pending,ble_attack_return_pending,wardrive_waiting_for_gps;
 static bool wardrive_start_pending,wardrive_return_pending,file_listing_checked;
 static bool script_listing_checked,script_running,script_complete,log_checked;
 static bool settings_reset_confirmation,settings_restore_confirmation;
