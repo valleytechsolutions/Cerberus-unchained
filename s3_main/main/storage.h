@@ -1,6 +1,7 @@
 #pragma once
 
 #include "wardrive_compact.h"
+#include "gps_gpx.h"
 
 #include "esp_err.h"
 #include "sdmmc_cmd.h"
@@ -138,6 +139,16 @@ esp_err_t cerberus_storage_write_portal_report(
     size_t data_length,
     char *file_name,
     size_t file_name_capacity);
+/* Explicit GPS track/POI recorder. This independent lease may coexist with
+ * Wardriving; USB and file mutations stay excluded until finish. Each session
+ * lazily creates one TMP, and publishes GPX only after footer/sync/close.
+ * TIMEOUT before locking has no file side effects and may be retried. */
+#define CERBERUS_STORAGE_GPS_PATH "/CERBERUS/GPS"
+#define CERBERUS_STORAGE_GPS_NAME_CAPACITY 16U
+esp_err_t cerberus_storage_gps_begin(uint64_t job, cerberus_gpx_mode_t mode);
+esp_err_t cerberus_storage_gps_append(uint64_t job, const char *row, size_t length);
+esp_err_t cerberus_storage_gps_finish(uint64_t job, bool keep,
+    char name[CERBERUS_STORAGE_GPS_NAME_CAPACITY], uint64_t *bytes);
 /* One streaming PCAPNG capture at a time. An open capture keeps the SD card
  * owned by firmware; USB handoff and unmount return INVALID_STATE until finish.
  * Records append to a .TMP file and finish atomically publishes .PCAPNG. */

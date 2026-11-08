@@ -32,6 +32,7 @@
 #endif
 #include "esp_err.h"
 #include "esp_check.h"
+#include "gps_gpx.h"
 #define CERBERUS_STORAGE_MOUNT_PATH "sdcard"
 #include "recon_storage_types.h"
 
@@ -274,6 +275,7 @@ static void admission_and_begin_failures(void)
     sd_wifi_capture_file=(FILE *)(uintptr_t)1;CHECK(begin()==ESP_ERR_INVALID_STATE);sd_wifi_capture_file=NULL;
     sd_wardrive_session_active=true;CHECK(begin()==ESP_ERR_INVALID_STATE);sd_wardrive_session_active=false;
     sd_wigle_stream.file=(FILE *)(uintptr_t)1;CHECK(begin()==ESP_ERR_INVALID_STATE);sd_wigle_stream.file=NULL;
+    sd_gps=(gps_storage_t *)(uintptr_t)1;CHECK(begin()==ESP_ERR_INVALID_STATE);sd_gps=NULL;
     storage_mutex=NULL;fail_mutex_create=true;CHECK(begin()==ESP_ERR_NO_MEM);fail_mutex_create=false;
     fail_mutex_take=true;CHECK(begin()==ESP_ERR_TIMEOUT);fail_mutex_take=false;released();
     const enum event events[]={STAT,MKDIR,OPEN,FDOPEN,WRITE,FLUSH,SYNC};

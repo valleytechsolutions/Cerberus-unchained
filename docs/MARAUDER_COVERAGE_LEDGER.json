@@ -1,7 +1,7 @@
 {
   "format": 2,
-  "audit_checkpoint": "rev144-development",
-  "scope": "Rev138 is the physically measured capture baseline: SD readback reconciles all 1,438 observations with no reported drops or service errors. Rev139 adds saved-log management and home-Wi-Fi/three-service uploads, with installed log-details/navigation acceptance. Rev140 adds a single JSON profile import with strict validation and verified NVS save before SD cleanup; see DUAL_RADIO_REV140.md for its separate validation. Rev140 physical SD evidence confirms profile import/removal and a queued WiGLE transaction; WDGWars delivery remains uncertain. Profile persistence across a controlled restart is verified. Rev141 keeps uploads manual and adds service-specific receipt-hold diagnostics; see DUAL_RADIO_REV141.md. Complete provider acceptance, expansion hardware and Marauder parity remain open. The retained develop audit was rechecked on 2026-11-05 UTC at 79cc6bcba1db6679baee1dab2b0c1ad5010e6363. Rev142 adds confirmed single-service retries and WDGWars v2 queued acknowledgements, following the current Marauder upload reference; installation and service acceptance remain separately recorded in DUAL_RADIO_REV142.md. Rev143 changes production capture to one CERBWardrive WiGLE-compatible CSV per session with explicit GPS/UTC/age/format skip counters and adds a direct service-retry control; see DUAL_RADIO_REV143.md for separate validation and installation status.",
+  "audit_checkpoint": "rev150-development",
+  "scope": "Marauder develop was rechecked on 2026-11-08 UTC at 79cc6bcba1db6679baee1dab2b0c1ad5010e6363. Rev149 is the installed GPS-wait and RSSI-extrema baseline: the user confirmed waiting, Stop cancellation and layout; a later read-only console capture confirms live located recording without a reported service error. Rev150 adds a source implementation of GPS track and POI recording with host-tested formatting, worker, storage and UI boundaries. Physical GPX acceptance, final compacted CSV readback, sustained RF/GPS performance, expansion hardware and complete upstream parity remain open. Earlier provider acknowledgement is distinct from provider-side processing; uploads remain manual.",
   "contribution_summary": "docs/CONTRIBUTION_REV93.md",
   "prior_public_contribution": "docs/CONTRIBUTION_REV81.md",
   "upstream": "https://github.com/justcallmekoko/ESP32Marauder",
@@ -23,8 +23,8 @@
   "mode_count": 95,
   "status_counts": {
     "needs_review": 9,
-    "partial": 76,
-    "pending": 10
+    "partial": 78,
+    "pending": 8
   },
   "status_count_unit": "source mode symbols, not distinct features or completion percentage",
   "modes": [
@@ -822,12 +822,12 @@
       "family": "gps_inputs_and_poi",
       "status": "partial",
       "cerberus_evidence": "docs/DUAL_RADIO_REV137.md",
-      "next_gap": "An LC29H receiver is now attached on S3 RX GPIO1/TX GPIO2, with PPS wired to GPIO46 but not used for timing. Rev137/138 establish checksum-valid NMEA, fix/UTC display and a physically read-back located export. AUTO, LC29H-AA, ATGM336H/manual settings are implemented; ATGM336H and sustained lock remain untested. GPS Data/received-NMEA views remain partial; distinct POI/geofence/tracker controls, generated-sentence/serial parity and PPS synchronization remain open. Onboard rows enforce callback-to-GNSS age bounds; expansion observations use receipt time.",
+      "next_gap": "Live DATA/NMEA views exist; rev150 corrects the displayed RX pin/baud and adds GPX track/POI controls. Verify the new physical GPX workflow, ATGM336H, generated NMEA/serial behavior and sustained fixes. PPS synchronization and geofence controls remain open.",
       "s3_role": "S3 parses optional serial GPS, timestamps, stores and presents location status.",
       "c5_role": "C5 supplies radio observations; S3 attaches location at result receipt, without a synchronized RF timestamp claim.",
       "related_menu_entries": [],
       "related_cli_commands": [],
-      "hardware_note": "No GPS module is attached. Integrated optional UART status and GPS-aware logging exist; local rev122 adds software view/freshness/cleanup work. Receiver input, location display and geotagged export remain physically unaccepted.",
+      "hardware_note": "LC29H is attached on S3 RX GPIO1; TX GPIO2 and PPS GPIO46 are assigned but not driven or used for timing. Short located CSV capture was accepted on rev138. ATGM336H and sustained moving performance remain unverified.",
       "status_detail": "A related Cerberus workflow exists, but upstream option/behavior parity or hardware acceptance remains open.",
       "upstream_value": 31,
       "upstream_source": {
@@ -1047,12 +1047,12 @@
       "family": "gps_inputs_and_poi",
       "status": "partial",
       "cerberus_evidence": "docs/DUAL_RADIO_REV137.md",
-      "next_gap": "An LC29H receiver is now attached on S3 RX GPIO1/TX GPIO2, with PPS wired to GPIO46 but not used for timing. Rev137/138 establish checksum-valid NMEA, fix/UTC display and a physically read-back located export. AUTO, LC29H-AA, ATGM336H/manual settings are implemented; ATGM336H and sustained lock remain untested. GPS Data/received-NMEA views remain partial; distinct POI/geofence/tracker controls, generated-sentence/serial parity and PPS synchronization remain open. Onboard rows enforce callback-to-GNSS age bounds; expansion observations use receipt time.",
+      "next_gap": "Live DATA/NMEA views exist; rev150 corrects the displayed RX pin/baud and adds GPX track/POI controls. Verify the new physical GPX workflow, ATGM336H, generated NMEA/serial behavior and sustained fixes. PPS synchronization and geofence controls remain open.",
       "s3_role": "S3 parses optional serial GPS, timestamps, stores and presents location status.",
       "c5_role": "C5 supplies radio observations; S3 attaches location at result receipt, without a synchronized RF timestamp claim.",
       "related_menu_entries": [],
       "related_cli_commands": [],
-      "hardware_note": "No GPS module is attached. Integrated optional UART status and GPS-aware logging exist; local rev122 adds software view/freshness/cleanup work. Receiver input, location display and geotagged export remain physically unaccepted.",
+      "hardware_note": "LC29H is attached on S3 RX GPIO1; TX GPIO2 and PPS GPIO46 are assigned but not driven or used for timing. Short located CSV capture was accepted on rev138. ATGM336H and sustained moving performance remain unverified.",
       "status_detail": "A related Cerberus workflow exists, but upstream option/behavior parity or hardware acceptance remains open.",
       "upstream_value": 40,
       "upstream_source": {
@@ -1448,15 +1448,21 @@
     {
       "symbol": "GPS_TRACKER",
       "family": "gps_inputs_and_poi",
-      "status": "pending",
-      "cerberus_evidence": "docs/DUAL_RADIO_REV137.md",
-      "next_gap": "An LC29H receiver is now attached on S3 RX GPIO1/TX GPIO2, with PPS wired to GPIO46 but not used for timing. Rev137/138 establish checksum-valid NMEA, fix/UTC display and a physically read-back located export. AUTO, LC29H-AA, ATGM336H/manual settings are implemented; ATGM336H and sustained lock remain untested. GPS Data/received-NMEA views remain partial; distinct POI/geofence/tracker controls, generated-sentence/serial parity and PPS synchronization remain open. Onboard rows enforce callback-to-GNSS age bounds; expansion observations use receipt time.",
-      "s3_role": "S3 parses optional serial GPS, timestamps, stores and presents location status.",
-      "c5_role": "C5 supplies radio observations; S3 attaches location at result receipt, without a synchronized RF timestamp claim.",
+      "status": "partial",
+      "cerberus_evidence": "docs/GPS_RECORDING.md",
+      "next_gap": "Validate GPX files from the connected LC29H, movement estimates and concurrent Wardriving. Touchscreen custom POI labels, CLI parity and other GPS options remain open.",
+      "s3_role": "S3 shares the GPS receiver with preview and Wardriving, handles UI and writes bounded GPX records to SD.",
+      "c5_role": "C5 keeps its assigned radio role during concurrent Wardriving; standalone GPS recording does not start RF work.",
       "related_menu_entries": [],
       "related_cli_commands": [],
-      "hardware_note": "No GPS module is attached. Integrated optional UART status and GPS-aware logging exist; local rev122 adds software view/freshness/cleanup work. Receiver input, location display and geotagged export remain physically unaccepted.",
-      "status_detail": "The distinct upstream workflow has no verified implementation at this checkpoint.",
+      "hardware_note": "LC29H is attached on S3 RX GPIO1; TX GPIO2 and PPS GPIO46 are assigned but not driven or used for timing. Short located CSV capture was accepted on rev138. ATGM336H and sustained moving performance remain unverified.",
+      "status_detail": "Rev150 provides a GPX track/POI workflow with fresh GPS/UTC admission, bounded asynchronous writing and tested Stop/Back cleanup. Physical recording and full upstream option parity are not yet accepted.",
+      "cerberus_code": [
+        "s3_main/main/gps_gpx.c",
+        "s3_main/main/gps_recorder.c",
+        "s3_main/main/storage_gps_impl.h",
+        "s3_main/main/wardrive_gps_log_ui.h"
+      ],
       "upstream_value": 55,
       "upstream_source": {
         "path": "esp32_marauder/WiFiScan.h",
@@ -1627,15 +1633,21 @@
     {
       "symbol": "GPS_POI",
       "family": "gps_inputs_and_poi",
-      "status": "pending",
-      "cerberus_evidence": "docs/DUAL_RADIO_REV137.md",
-      "next_gap": "An LC29H receiver is now attached on S3 RX GPIO1/TX GPIO2, with PPS wired to GPIO46 but not used for timing. Rev137/138 establish checksum-valid NMEA, fix/UTC display and a physically read-back located export. AUTO, LC29H-AA, ATGM336H/manual settings are implemented; ATGM336H and sustained lock remain untested. GPS Data/received-NMEA views remain partial; distinct POI/geofence/tracker controls, generated-sentence/serial parity and PPS synchronization remain open. Onboard rows enforce callback-to-GNSS age bounds; expansion observations use receipt time.",
-      "s3_role": "S3 parses optional serial GPS, timestamps, stores and presents location status.",
-      "c5_role": "C5 supplies radio observations; S3 attaches location at result receipt, without a synchronized RF timestamp claim.",
+      "status": "partial",
+      "cerberus_evidence": "docs/GPS_RECORDING.md",
+      "next_gap": "Validate GPX files from the connected LC29H, movement estimates and concurrent Wardriving. Touchscreen custom POI labels, CLI parity and other GPS options remain open.",
+      "s3_role": "S3 shares the GPS receiver with preview and Wardriving, handles UI and writes bounded GPX records to SD.",
+      "c5_role": "C5 keeps its assigned radio role during concurrent Wardriving; standalone GPS recording does not start RF work.",
       "related_menu_entries": [],
       "related_cli_commands": [],
-      "hardware_note": "No GPS module is attached. Integrated optional UART status and GPS-aware logging exist; local rev122 adds software view/freshness/cleanup work. Receiver input, location display and geotagged export remain physically unaccepted.",
-      "status_detail": "The distinct upstream workflow has no verified implementation at this checkpoint.",
+      "hardware_note": "LC29H is attached on S3 RX GPIO1; TX GPIO2 and PPS GPIO46 are assigned but not driven or used for timing. Short located CSV capture was accepted on rev138. ATGM336H and sustained moving performance remain unverified.",
+      "status_detail": "Rev150 provides a GPX track/POI workflow with fresh GPS/UTC admission, bounded asynchronous writing and tested Stop/Back cleanup. Physical recording and full upstream option parity are not yet accepted.",
+      "cerberus_code": [
+        "s3_main/main/gps_gpx.c",
+        "s3_main/main/gps_recorder.c",
+        "s3_main/main/storage_gps_impl.h",
+        "s3_main/main/wardrive_gps_log_ui.h"
+      ],
       "upstream_value": 63,
       "upstream_source": {
         "path": "esp32_marauder/WiFiScan.h",
@@ -2544,7 +2556,7 @@
         44,
         48
       ],
-      "next_gap": "LC29H NMEA, fix/UTC display and located CSV readback are accepted for the short rev138 run. AUTO/LC29H-AA/ATGM336H/manual configuration exists. ATGM336H hardware, sustained fix, PPS synchronization, generated NMEA/serial behavior and distinct POI/geofence/tracker workflows remain open."
+      "next_gap": "Rev150 implements track/POI GPX recording beside the existing GPS Data/NMEA view; host formatter, worker, storage and UI checks pass. Physical GPX/SD readback, custom touchscreen names, CLI parity, geofencing, generated NMEA, PPS synchronization and ATGM336H remain open."
     },
     {
       "name": "dynamic_menu_options",
@@ -2621,7 +2633,7 @@
       "status": "partial",
       "related_menu_entries": [],
       "related_cli_commands": [],
-      "next_gap": "Main-firmware capture now has Wi-Fi, BLE and combined modes, LC29H/GNSS settings, bounded callback queues and nondeduplicating CSV output. Installed rev138 short-run capture/Stop and physical SD readback reconcile all 1,438 observations. Rev139 implements saved-log review, confirmed deletion, home-AP/API setup and three manual upload adapters. Rev140 has physical profile-import/removal evidence and a queued WiGLE transaction; WDGWars delivery remains uncertain. Rev141 keeps uploads manual and adds clearer receipt holds. Physical uploader transitions, full provider imports, WiGLE processing reconciliation, sustained RF/GPS performance and six-C5 hardware remain open. See DUAL_RADIO_REV139.md and WARDRIVE_UPLOADS.md.",
+      "next_gap": "Rev149 provides GPS-wait/autostart UI and post-Stop RSSI-extrema CSV compaction. Wait/cancel/layout are user-confirmed, and a later read-only console capture confirms RUNNING with valid rows and no reported service error. Verify the finalized compacted file, moving capture/Stop latency, sustained coexistence and expansion hardware. Uploads stay manual; provider acknowledgement does not establish completed account-side processing. GPX is an optional independent local record in rev150.",
       "external_reference": "docs/WARDRIVE_RECENT_SOURCE_CONTRACT.md"
     }
   ],

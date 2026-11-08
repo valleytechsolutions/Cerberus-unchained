@@ -92,5 +92,9 @@ than fit in its working memory. Real-file tests inject allocation, read,
 write, seek, flush, sync, close and publication failures.
 
 The 100,000-row host sample retained 36,248 rows from 19,189 identities. Host
-timing is not a measurement of Cerberus SD performance. Physical GPS gating,
-Stop latency and a new compacted recording/upload still require device checks.
+timing is not a measurement of Cerberus SD performance. On rev149 the user
+confirmed GPS waiting, Stop cancellation and the revised layout. A later
+read-only console capture showed a live located recording with over 75,000
+valid observations and no reported service error. That sampled RUNNING state
+does not establish the exact automatic-start transition, finalization latency,
+or correctness of the new compacted file; those checks remain open.

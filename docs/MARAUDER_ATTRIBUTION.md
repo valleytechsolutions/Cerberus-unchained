@@ -105,3 +105,9 @@ specification; [rev143](DUAL_RADIO_REV143.md) records the behavior and limits.
 
 The [pull request template](../.github/pull_request_template.md) includes an
 attribution prompt to help carry these details forward.
+
+Rev150 uses the same develop revision as a behavioral reference for GPS tracks
+and POIs (`WiFiScan.cpp`, `MenuFunctions.cpp`, `CommandLine.cpp` and
+`GpsTrackerStats.cpp`). The shared GPS consumer, bounded recorder, GPX formatter,
+SD lifecycle and UI are Cerberus implementations. No upstream source file was
+copied. See [GPS recording](GPS_RECORDING.md) for provenance and validation.

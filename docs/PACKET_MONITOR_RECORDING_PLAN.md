@@ -5,7 +5,7 @@ Marauder `develop` was checked on November 7, 2026 and still resolves to
 [RunPacketMonitor](https://github.com/justcallmekoko/ESP32Marauder/blob/79cc6bcba1db6679baee1dab2b0c1ad5010e6363/esp32_marauder/WiFiScan.cpp#L5062)
 opens a `packet_monitor` capture, and its receive callback appends frames.
 Cerberus's installed Packet Monitor has channel controls and three graphs.
-The rev148 source candidate adds the recording path described below. Packet
+The rev148 implementation adds the recording path described below. Packet
 Count and selected-BSSID capture remain separate tools with different scopes.
 
 ## Stop correction
@@ -65,8 +65,10 @@ The matched development package is
 `cerberus-unchained-0.1.0-dev.rev146-20261107T172248Z`. Its S3, C5 and recovery
 bridge all report rev146, and all 22 package checksums verify.
 
-Rev146 was not installed. The connected device now runs rev147's upload fixes;
-it does not yet contain these monitor changes.
+Rev146 was not installed. The later paired rev148 and rev149 packages were
+installed with verified backups and image readback; rev149 is the current
+installed baseline for the rev150 work. These packages include the monitor
+changes, but physical PCAP readback and sustained recording remain unaccepted.
 
 ## Recording candidate in rev148
 

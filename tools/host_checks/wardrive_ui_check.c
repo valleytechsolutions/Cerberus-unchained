@@ -3,6 +3,7 @@
 #include "wardrive_log_feedback.h"
 #include "wardrive_gps_uart.h"
 #include "gps_config.h"
+#include "gps_recorder_ui_stub.h"
 #include "ui_widgets.h"
 #include "display.h"
 #include "esp_check.h"

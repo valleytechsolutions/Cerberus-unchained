@@ -275,6 +275,7 @@ static esp_err_t gps_consumer_set(unsigned consumer,bool enabled)
 esp_err_t cerberus_wardrive_gps_uart_start(void){return gps_consumer_set(1U,true);}
 esp_err_t cerberus_wardrive_gps_uart_stop(void){return gps_consumer_set(1U,false);}
 esp_err_t cerberus_wardrive_gps_uart_preview(bool enabled){return gps_consumer_set(2U,enabled);}
+esp_err_t cerberus_wardrive_gps_uart_record(bool enabled){return gps_consumer_set(4U,enabled);}
 
 esp_err_t cerberus_wardrive_gps_uart_recent_time(cerberus_wardrive_gps_time_t *out)
 {

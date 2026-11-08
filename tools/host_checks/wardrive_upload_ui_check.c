@@ -9,6 +9,7 @@
 #include "display.h"
 #include "esp_check.h"
 #include "esp_heap_caps.h"
+#include "gps_recorder_ui_stub.h"
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -23,6 +24,7 @@ static char drawn[8192];
 static bool wardrive_start_pending;
 static uint32_t wardrive_last_draw_ms;
 static esp_err_t wardrive_start_error;
+static char wardrive_blocked_reason[64];
 static cerberus_wardrive_status_t runtime;
 static cerberus_log_manager_status_t manager;
 static cerberus_upload_config_t saved;
@@ -71,6 +73,9 @@ static void paint(const char *prefix,const char *name)
 int main(int argc,char **argv)
 {
     assert(argc==2);runtime.state=CERBERUS_WARDRIVE_RUNNING;wardrive_logs_open();assert(!wardrive_logs_is_open());
+    runtime.state=CERBERUS_WARDRIVE_STOPPED;gps_log_runtime.busy=true;wardrive_logs_open();
+    assert(!wardrive_logs_is_open()&&wardrive_start_error==ESP_ERR_INVALID_STATE&&strstr(wardrive_blocked_reason,"STOP GPX"));
+    gps_log_runtime.busy=false;
     runtime.state=CERBERUS_WARDRIVE_STOPPED;wardrive_logs_open();assert(wardrive_logs_is_open()&&allocs==1);
     paint(argv[1],"list");assert(strstr(drawn,"HOME WI-FI / API SETUP")&&strstr(drawn,"WIGLE005.CSV"));
     wardrive_logs_tap(250,320);paint(argv[1],"page2");assert(strstr(drawn,"WIGLE007.CSV")&&!strstr(drawn,"WIGLE001.CSV"));

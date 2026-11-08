@@ -6,6 +6,7 @@
 #include "display.h"
 #include "esp_check.h"
 #include "s3_ble_host.h"
+#include "gps_recorder_ui_stub.h"
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -125,6 +126,8 @@ static esp_err_t draw_detail_page(void)
 }
 static void reset(void)
 {
+    memset(&gps_log_runtime,0,sizeof(gps_log_runtime));gps_log_starts=gps_log_stops=gps_log_marks=0;gps_log_result=ESP_OK;
+    wardrive_gps_log_mode=CERBERUS_GPX_TRACK;wardrive_gps_log_error=ESP_OK;
     end_error=ESP_OK;wardrive_gps_view_close();memset(&wardrive_gps_view,0,sizeof(wardrive_gps_view));
     memset(&runtime,0,sizeof(runtime));memset(&uart_state,0,sizeof(uart_state));memset(&producer_trace,0,sizeof(producer_trace));
     uart_state.gps.sentence_age_ms=uart_state.gps.fix_age_ms=uart_state.gps.gga_age_ms=uart_state.gps.utc_age_ms=UINT32_MAX;
@@ -145,7 +148,7 @@ static void save(const char *prefix,const char *name)
         if(fwrite(rgb,1,3,f)!=3)abort();}CHECK(fclose(f)==0);
 }
 static void run_reader(void)
-{uart_state.driver_active=uart_state.reader_running=true;uart_state.clock_valid=true;uart_state.receiver_epoch=UINT64_C(0x200000007);runtime.state=CERBERUS_WARDRIVE_RUNNING;runtime.gps_requested=true;producer_trace.capturing=true;producer_trace.receiver_epoch=uart_state.receiver_epoch;}
+{uart_state.config.rx_gpio=1;uart_state.active_baud=115200;uart_state.driver_active=uart_state.reader_running=true;uart_state.clock_valid=true;uart_state.receiver_epoch=UINT64_C(0x200000007);runtime.state=CERBERUS_WARDRIVE_RUNNING;runtime.gps_requested=true;producer_trace.capturing=true;producer_trace.receiver_epoch=uart_state.receiver_epoch;}
 static void line_row(unsigned index,unsigned result,const char *text)
 {
     CHECK(index<8);cerberus_wardrive_gps_trace_row_t *r=&producer_trace.rows[index];memset(r,0,sizeof(*r));
@@ -166,6 +169,10 @@ static void entry_and_data(const char *prefix)
     CHECK(strstr(drawn,"LAST UART ERROR")&&!strstr(drawn,"WARDRIVING OWNS GPS"));save(prefix,"off-prior-error");
     uart_state.historical_error=ESP_OK;
     run_reader();unsigned begins=trace_begins;wardrive_tick(2000,false);CHECK(trace_begins==begins&&!live_token); /* No auto-attach. */
+    uart_state.config.rx_gpio=2;uart_state.active_baud=115200;CHECK(draw_detail_page()==ESP_OK);
+    CHECK(strstr(drawn,"RX GPIO2 / 115200 / RECEIVER ACTIVE")&&!strstr(drawn,"9600"));
+    uart_state.detecting_baud=true;CHECK(draw_detail_page()==ESP_OK);CHECK(strstr(drawn,"115200 / DETECTING"));
+    uart_state.detecting_baud=false;
     actual_tap(80,65);uart_state.gps=(cerberus_wardrive_gps_snapshot_t){.state=CERBERUS_WARDRIVE_GPS_FRESH,
         .sentence_age_ms=2,.fix_age_ms=10,.gga_age_ms=4900,.utc_age_ms=10,.coordinates_valid=true,.latitude=-90,.longitude=180,
         .altitude_valid=true,.altitude_m=-123.4f,.satellites_valid=true,.satellites=255,.hdop_valid=true,.hdop=999.99f,
@@ -254,8 +261,47 @@ static void failures_and_lifecycle(const char *prefix)
     CHECK(wardrive_return_pending&&!launcher_returns&&!service_starts);
     runtime.state=CERBERUS_WARDRIVE_STOPPED;wardrive_tick(25000,true);CHECK(launcher_returns==1&&!wardrive_return_pending);
 }
+static void gpx_controls(const char *prefix)
+{
+    reset();run_reader();actual_tap(80,80);actual_tap(200,65);
+    CHECK(live_token);actual_tap(260,65);
+    CHECK(wardrive_gps_view.logging&&!wardrive_gps_view.nmea&&!live_token&&!gps_log_starts);
+    CHECK(strstr(drawn,"START GPX")&&strstr(drawn,"MODE: TRACK"));save(prefix,"gpx-ready");
+    actual_tap(160,398);CHECK(gps_log_starts==1&&gps_log_runtime.busy&&!service_starts);
+    CHECK(strstr(drawn,"WAITING FOR GPS FIX + UTC")&&strstr(drawn,"STOP GPX"));save(prefix,"gpx-waiting");
+    actual_tap(160,150);CHECK(wardrive_gps_log_mode==CERBERUS_GPX_TRACK); /* Busy mode is fixed. */
+    actual_tap(160,398);CHECK(gps_log_stops==1&&gps_log_runtime.busy&&strstr(drawn,"SAVING"));
+    gps_log_runtime.busy=false;gps_log_runtime.state=CERBERUS_GPS_LOG_STOPPED;
+    CHECK(draw_detail_page()==ESP_OK);actual_tap(160,150);
+    CHECK(wardrive_gps_log_mode==CERBERUS_GPX_POINTS&&strstr(drawn,"MODE: POINTS OF INTEREST"));
+    actual_tap(160,398);gps_log_runtime.fix_ready=true;gps_log_runtime.state=CERBERUS_GPS_LOG_RECORDING;
+    CHECK(draw_detail_page()==ESP_OK);actual_tap(160,278);
+    CHECK(gps_log_marks==1&&gps_log_runtime.queued==1&&!service_starts&&!stop_requests);save(prefix,"gpx-poi");
+    actual_tap(80,450);CHECK(!wardrive_gps_view.opened&&gps_log_runtime.busy&&strstr(drawn,"GPX ACTIVE"));
+    actual_summary_back();CHECK(wardrive_return_pending&&gps_log_stops==2&&!launcher_returns);
+    wardrive_tick(6000,true);CHECK(!launcher_returns&&wardrive_return_pending);
+    gps_log_runtime.busy=false;gps_log_runtime.state=CERBERUS_GPS_LOG_STOPPED;
+    runtime.state=CERBERUS_WARDRIVE_STOPPED;
+    wardrive_tick(7000,true);CHECK(launcher_returns==1&&!wardrive_return_pending);
+    reset();run_reader();actual_tap(80,80);actual_tap(260,65);
+    gps_log_result=ESP_ERR_NO_MEM;actual_tap(160,398);
+    CHECK(!gps_log_runtime.busy&&strstr(drawn,"ESP_ERR_NO_MEM"));save(prefix,"gpx-error");
+    gps_log_result=ESP_OK;actual_tap(160,398);gps_log_runtime.state=CERBERUS_GPS_LOG_RECORDING;
+    gps_log_runtime.fix_ready=true;gps_log_runtime.written=1234;gps_log_runtime.track.distance_m=12345;
+    gps_log_runtime.track.speed_mps=4.5;gps_log_runtime.track.segments=2;
+    CHECK(draw_detail_page()==ESP_OK);save(prefix,"gpx-track");
+    gps_log_runtime.busy=false;gps_log_runtime.state=CERBERUS_GPS_LOG_STOPPED;
+    strcpy(gps_log_runtime.file_name,"GPS-T00001.GPX");CHECK(draw_detail_page()==ESP_OK);
+    CHECK(strstr(drawn,"GPS-T00001.GPX")&&strstr(drawn,"START GPX"));save(prefix,"gpx-saved");
+    gps_log_runtime.written=UINT32_MAX;gps_log_runtime.rejected=gps_log_runtime.discarded=UINT32_MAX;
+    gps_log_runtime.track.segments=UINT32_MAX;CHECK(draw_detail_page()==ESP_OK);save(prefix,"gpx-large-counts");
+    gps_log_runtime.busy=true;current_page=UI_PAGE_BLE;
+    unsigned stopped=gps_log_stops;wardrive_tick(9000,false);
+    CHECK(gps_log_stops==stopped+1&&gps_log_runtime.busy&&gps_log_runtime.state==CERBERUS_GPS_LOG_STOPPING);
+    gps_log_runtime.busy=false;
+}
 int main(int argc,char **argv)
 {
-    CHECK(argc==2);entry_and_data(argv[1]);trace_and_privacy(argv[1]);failures_and_lifecycle(argv[1]);
+    CHECK(argc==2);entry_and_data(argv[1]);trace_and_privacy(argv[1]);failures_and_lifecycle(argv[1]);gpx_controls(argv[1]);
     printf("Wardriving GPS production UI: %u checks; DATA/NMEA no acquisition, masked raw copies, independent ages, PSRAM/OFF failures, tabs/paging, sleep/Back observer cleanup and retained Wardrive STOPPING pass. UI state %zu bytes, optional trace copy %zu bytes.\n",checks,sizeof(wardrive_gps_view_t),sizeof(cerberus_wardrive_gps_trace_snapshot_t));
 }

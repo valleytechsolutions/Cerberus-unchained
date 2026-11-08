@@ -30,6 +30,7 @@
 #include "usb_mass_storage.h"
 #include "system_health.h"
 #include "wardrive_service.h"
+#include "gps_recorder.h"
 #include "wardrive_gps_uart.h"
 #include "wardrive_upload_settings.h"
 #include "wardrive_log_manager.h"
@@ -1470,6 +1471,15 @@ static void print_wardrive_recent(void)
 
 static void print_radio(void)
 {
+    cerberus_gps_recorder_status_t gps_log;
+    cerberus_gps_recorder_status(&gps_log);
+    console_printf("processor=GPS_LOG\r\nstate=%u\r\nactive=%u\r\nmode=%u\r\njob=%llu\r\n"
+        "fix_ready=%u\r\nwritten=%lu\r\nqueued=%lu\r\nrejected=%lu\r\ndiscarded=%lu\r\n"
+        "segments=%lu\r\nbytes=%llu\r\nfile_saved=%u\r\nerror=%ld\r\n",
+        (unsigned)gps_log.state,gps_log.busy,(unsigned)gps_log.mode,(unsigned long long)gps_log.job,
+        gps_log.fix_ready,(unsigned long)gps_log.written,(unsigned long)gps_log.queued,
+        (unsigned long)gps_log.rejected,(unsigned long)gps_log.discarded,(unsigned long)gps_log.track.segments,
+        (unsigned long long)gps_log.bytes,gps_log.file_name[0]!=0,(long)gps_log.error);
     print_wifi_relations();
     print_ble_discovery_live();
     print_mac_monitor();

@@ -264,7 +264,11 @@ static void presets_preview_and_detection(void)
     CHECK(cerberus_gps_config_valid(&test_config));
     CHECK(cerberus_wardrive_gps_uart_preview(true)==ESP_OK&&configured_baud==115200U);
     CHECK(cerberus_wardrive_gps_uart_start()==ESP_OK&&installs==1U);
+    CHECK(cerberus_wardrive_gps_uart_record(true)==ESP_OK&&gps_consumers==7U&&installs==1U);
     CHECK(cerberus_wardrive_gps_uart_preview(false)==ESP_OK&&driver_installed);
+    CHECK(cerberus_wardrive_gps_uart_stop()==ESP_OK&&driver_installed&&gps_consumers==4U);
+    CHECK(cerberus_wardrive_gps_uart_start()==ESP_OK&&gps_consumers==5U&&installs==1U);
+    CHECK(cerberus_wardrive_gps_uart_record(false)==ESP_OK&&driver_installed&&gps_consumers==1U);
     char text[180];size_t size=sentence(text,"GNRMC,120000.000,A,4807.038,N,01131.000,E,0,0,010124","\r\n");
     now_us+=2100000;feed(text,1,1);
     CHECK(configured_baud==9600U&&baud_changes==1U&&detecting_baud);

@@ -12,9 +12,14 @@
 #include "wardrive_core.h"
 #include "wardrive_wigle.h"
 #include "wardrive_compact.h"
+#include "gps_gpx.h"
+#include <errno.h>
 #include <stdlib.h>
 #include <fcntl.h>
 #include <unistd.h>
+#ifdef _WIN32
+#include <direct.h>
+#endif
 
 static bool partial_next_write, fail_next_sync;
 static unsigned write_calls, sync_calls, seek_calls, read_calls, flush_calls, close_calls;
@@ -56,11 +61,14 @@ static int injected_rename(const char *from,const char *to)
 #define MALLOC_CAP_SPIRAM 1U
 #define MALLOC_CAP_8BIT 2U
 static void *heap_caps_malloc(size_t n,unsigned caps){(void)caps;return fail_allocation?NULL:malloc(n);}
+static void *heap_caps_calloc(size_t n,size_t size,unsigned caps){(void)caps;return fail_allocation?NULL:calloc(n,size);}
 static void heap_caps_free(void *p){free(p);}
 static unsigned yield_calls;
 static void vTaskDelay(unsigned n){assert(n==1);++yield_calls;}
 #define ESP_LOGI(...) ((void)0)
-#define CERBERUS_STORAGE_MOUNT_PATH test_root
+#define CERBERUS_STORAGE_MOUNT_PATH "."
+#define CERBERUS_STORAGE_GPS_PATH "/CERBERUS/GPS"
+#define CERBERUS_STORAGE_GPS_NAME_CAPACITY 16U
 #define CERBERUS_STORAGE_WARDRIVE_PATH "/CERBERUS/WARD"
 #define CERBERUS_STORAGE_PATH_MAX 512U
 #define CERBERUS_STORAGE_NAME_MAX 256U
@@ -81,7 +89,7 @@ typedef enum {
     CERBERUS_STORAGE_OWNER_USB,
 } cerberus_storage_owner_t;
 static const char *test_root;
-static bool sd_mounted = true, locked;
+static bool sd_mounted = true, locked, mutex_timeout;
 static cerberus_storage_owner_t storage_owner = CERBERUS_STORAGE_OWNER_FIRMWARE;
 static FILE *sd_wifi_capture_file;
 static void *sd_packet_count; /* Optional PCAP lease admission. */
@@ -95,7 +103,7 @@ static esp_err_t cerberus_storage_mount(void)
     return ESP_OK;
 }
 static esp_err_t take_storage_mutex(void)
-{ assert(!locked); locked = true; return ESP_OK; }
+{ assert(!locked); if(mutex_timeout)return ESP_ERR_TIMEOUT; locked = true; return ESP_OK; }
 static void release_storage_mutex(void)
 { assert(locked); locked = false; }
 static esp_err_t require_firmware_owner_locked(void)
@@ -108,6 +116,12 @@ static int64_t esp_timer_get_time(void) { return test_now_us; }
 
 #include "wardrive_compact.c"
 #include "wardrive_storage_impl.h"
+#ifdef _WIN32
+#define mkdir(path, mode) _mkdir(path)
+#endif
+#include "gps_storage_helpers.h"
+#include "storage_gps_impl.h"
+#include "gps_storage_check.h"
 _Static_assert(sizeof(sd_wardrive_stream) + sizeof(sd_wigle_stream) <
     2U * (CERBERUS_STORAGE_PATH_MAX + CERBERUS_STORAGE_NAME_MAX) +
     CERBERUS_STORAGE_NAME_MAX, "two compact streams cost less than old path buffers");
@@ -122,6 +136,7 @@ int main(int argc, char **argv)
     test_now_us=119999;wardrive_compact_yield();assert(yield_calls==2);
     test_now_us=0;
     test_root = argv[1];
+    assert(chdir(test_root)==0);
     const char header[] = "header\n";
     const char row[] = "row1\n";
     char name[24];
@@ -292,6 +307,7 @@ int main(int argc, char **argv)
         fail_write_at=fail_sync_at=fail_seek_at=fail_read_at=fail_flush_at=fail_close_at=0;
         assert(cerberus_storage_wardrive_session_finish()==ESP_OK);
     }
-    puts("wardrive SD dual streams, USB lease, partial-write/sync failure retention: pass");
+    gps_storage_checks();
+    puts("wardrive and GPX SD streams, USB leases, partial-write/sync failure retention: pass");
     return 0;
 }

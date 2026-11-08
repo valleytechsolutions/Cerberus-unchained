@@ -99,10 +99,23 @@ typedef struct {
 static wardrive_storage_stream_t sd_wardrive_stream, sd_wigle_stream;
 static bool sd_wardrive_session_active;
 static uint64_t sd_ward_log_lease, sd_ward_log_sequence;
-static bool wardrive_storage_busy(void)
+typedef struct {
+    FILE *file;
+    uint64_t job, bytes;
+    int64_t synced_us;
+    cerberus_gpx_mode_t mode;
+    esp_err_t error;
+    char temp[128], final[128], name[CERBERUS_STORAGE_GPS_NAME_CAPACITY];
+} gps_storage_t;
+static gps_storage_t *sd_gps;
+static bool wardrive_files_busy(void)
 {
     return sd_ward_log_lease || sd_wardrive_session_active || sd_wardrive_stream.file != NULL ||
         sd_wigle_stream.file != NULL;
+}
+static bool wardrive_storage_busy(void)
+{
+    return sd_gps != NULL || wardrive_files_busy();
 }
 
 #define SD_RECON_SESSION_LIMIT 99999U
@@ -160,7 +173,7 @@ static bool recon_path_protected(const char *path)
 {
     /* A log manager owns a fixed reviewed catalog. Exclude all File Tools
      * mutations until it releases the card, including alias/ancestor paths. */
-    if (sd_ward_log_lease) return true;
+    if (sd_ward_log_lease || sd_gps) return true;
     if (!sd_recon.active && !sd_packet_count) return false;
     /* During begin, before a session directory exists, conservatively protect
      * the Recon root and its ancestors. The same mutex excludes other callers. */
@@ -1346,7 +1359,7 @@ esp_err_t cerberus_storage_wardrive_session_begin(void)
         ESP_RETURN_ON_ERROR(cerberus_storage_mount(), TAG, "SD mount for Wardriving failed");
     ESP_RETURN_ON_ERROR(take_storage_mutex(), TAG, "storage lock failed");
     esp_err_t error = ESP_OK;
-    if (require_firmware_owner_locked() != ESP_OK || wardrive_storage_busy() ||
+    if (require_firmware_owner_locked() != ESP_OK || wardrive_files_busy() ||
         sd_wifi_capture_file != NULL || sd_recon.active || sd_packet_count) error = ESP_ERR_INVALID_STATE;
     else sd_wardrive_session_active = true;
     release_storage_mutex();
@@ -3370,4 +3383,5 @@ esp_err_t cerberus_storage_ssid_text_load(const char *relative_path,
 { return wifi_interchange_storage_load(relative_path, file_name, data, capacity, length, true); }
 
 #include "storage_packet_count_impl.h"
+#include "storage_gps_impl.h"
 #include "storage_wardrive_logs_impl.h"

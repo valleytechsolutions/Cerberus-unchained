@@ -93,3 +93,9 @@ git -C ../integration/marauder-develop-2026-10-29 diff --name-status refs/remote
 ```
 
 The two tree IDs must match and the last command must print no paths for this snapshot. The source inventory's SHA-256 values give a second byte-level check of the five parser inputs.
+
+## November 8, 2026 recheck
+
+The GitHub develop ref still resolves to `79cc6bcba1db6679baee1dab2b0c1ad5010e6363`.
+The rev150 GPS track/POI source audit and remaining acceptance limits are in
+[GPS recording](GPS_RECORDING.md). This recheck does not establish full parity.

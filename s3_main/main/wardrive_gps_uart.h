@@ -81,6 +81,8 @@ esp_err_t cerberus_wardrive_gps_uart_stop(void);
 /* UI attaches once on entry and releases on leave; session ownership keeps
  * the same receiver/fix alive across Start/Stop. Retry NOT_FINISHED releases. */
 esp_err_t cerberus_wardrive_gps_uart_preview(bool enabled);
+/* The GPX recorder has a separate consumer from Wardriving and UI preview. */
+esp_err_t cerberus_wardrive_gps_uart_record(bool enabled);
 void cerberus_wardrive_gps_uart_snapshot(
     cerberus_wardrive_gps_snapshot_t *out, esp_err_t *uart_error);
 

@@ -2,6 +2,7 @@
  * explicitly attaches to an already-running reader and copies its bounded
  * history into optional PSRAM; no raw bank is placed on the main task stack. */
 #include "wardrive_gps_uart.h"
+#include "wardrive_gps_log_ui.h"
 
 typedef struct {
     cerberus_wardrive_gps_trace_snapshot_t *trace;
@@ -10,7 +11,7 @@ typedef struct {
     uint32_t last_detach_ms;
     esp_err_t error;
     uint8_t page, pages;
-    bool opened, nmea, hidden, paint_valid, paused, copy_clock_valid, detach_pending;
+    bool opened, nmea, logging, hidden, paint_valid, paused, copy_clock_valid, detach_pending;
 } wardrive_gps_view_t;
 
 static wardrive_gps_view_t wardrive_gps_view;
@@ -42,7 +43,7 @@ static bool wardrive_gps_view_detach(void)
 
 static void wardrive_gps_view_close(void)
 {
-    wardrive_gps_view.opened = wardrive_gps_view.nmea = false;
+    wardrive_gps_view.opened = wardrive_gps_view.nmea = wardrive_gps_view.logging = false;
     wardrive_gps_view.hidden = true;
     wardrive_gps_view.paint_valid = false;
     wardrive_gps_view.paused = wardrive_gps_view.copy_clock_valid = false;
@@ -55,7 +56,7 @@ static void wardrive_gps_view_release_if_hidden(uint32_t now_ms, bool asleep)
 {
     bool closing = asleep || current_page != UI_PAGE_WARDRIVE || !wardrive_gps_view.opened;
     if (closing) {
-        wardrive_gps_view.opened = wardrive_gps_view.nmea = wardrive_gps_view.paint_valid = false;
+        wardrive_gps_view.opened = wardrive_gps_view.nmea = wardrive_gps_view.logging = wardrive_gps_view.paint_valid = false;
         wardrive_gps_view.hidden = true;
         wardrive_gps_view.paused = wardrive_gps_view.copy_clock_valid = false;
         wardrive_gps_view.page = wardrive_gps_view.pages = 0U;
@@ -258,7 +259,7 @@ static esp_err_t wardrive_gps_view_nmea(bool clock_valid)
             snprintf(line, sizeof(line), "VIEW: %.40s", esp_err_to_name(wardrive_gps_view.error));
             ESP_RETURN_ON_ERROR(draw_centered(276, line, UI_BAD, 1), TAG, "NMEA view error");
         }
-        ESP_RETURN_ON_ERROR(draw_centered(306, "USE THE WARDRIVING GPS ON/OFF CONTROL", UI_MUTED, 1), TAG, "NMEA config route");
+        ESP_RETURN_ON_ERROR(draw_centered(306, "GPS LISTENS WHILE WARDRIVING IS OPEN", UI_MUTED, 1), TAG, "NMEA config route");
     }
     ESP_RETURN_ON_ERROR(draw_small_button(8, 382, 88, 36, "PREV"), TAG, "NMEA previous");
     ESP_RETURN_ON_ERROR(draw_small_button(104, 382, 112, 36,
@@ -274,11 +275,13 @@ static esp_err_t wardrive_gps_view_draw(void)
     cerberus_wardrive_recent_status_t status;
     cerberus_wardrive_get_recent_status(&status);
     ESP_RETURN_ON_ERROR(cerberus_display_fill_rect(0, 0, 320, 480, UI_BACKGROUND), TAG, "GPS clear");
-    ESP_RETURN_ON_ERROR(draw_header("GPS DATA / NMEA"), TAG, "GPS header");
-    ESP_RETURN_ON_ERROR(draw_small_button(8, 54, 148, 32,
-        wardrive_gps_view.nmea ? "DATA" : "[ DATA ]"), TAG, "GPS data tab");
-    ESP_RETURN_ON_ERROR(draw_small_button(164, 54, 148, 32,
+    ESP_RETURN_ON_ERROR(draw_header("GPS"), TAG, "GPS header");
+    ESP_RETURN_ON_ERROR(draw_small_button(8, 54, 96, 32,
+        wardrive_gps_view.nmea || wardrive_gps_view.logging ? "DATA" : "[ DATA ]"), TAG, "GPS data tab");
+    ESP_RETURN_ON_ERROR(draw_small_button(112, 54, 96, 32,
         wardrive_gps_view.nmea ? "[ NMEA ]" : "NMEA"), TAG, "GPS NMEA tab");
+    ESP_RETURN_ON_ERROR(draw_small_button(216, 54, 96, 32,
+        wardrive_gps_view.logging ? "[ GPX ]" : "GPX"), TAG, "GPS log tab");
     const char *transport = error != ESP_OK ? "S3 GPS STATE UNAVAILABLE" :
         state.stopping ? "S3 GPS UART STOPPING" : state.starting ? "S3 GPS UART STARTING" :
         state.reader_running ? "S3 GPS UART LISTENING" : state.driver_active ?
@@ -289,11 +292,14 @@ static esp_err_t wardrive_gps_view_draw(void)
         snprintf(line, sizeof(line), "UART: %.40s", esp_err_to_name(error != ESP_OK ? error : state.error));
     else if (state.historical_error != ESP_OK && !state.driver_active && !state.reader_running && !state.starting)
         snprintf(line, sizeof(line), "LAST UART ERROR: %.34s", esp_err_to_name(state.historical_error));
-    else snprintf(line, sizeof(line), "RX GPIO1 / 9600 / %s",
+    else snprintf(line, sizeof(line), "RX GPIO%u / %lu / %s",
+        state.config.rx_gpio, (unsigned long)state.active_baud,
         status.state == CERBERUS_WARDRIVE_STOPPING ? "WARDRIVE STOPPING" :
-        state.driver_active || state.reader_running || state.starting ? "WARDRIVING OWNS GPS" : "GPS OFF");
+        state.detecting_baud ? "DETECTING" :
+        state.driver_active || state.reader_running || state.starting ? "RECEIVER ACTIVE" : "GPS OFF");
     ESP_RETURN_ON_ERROR(draw_centered(116, line, error != ESP_OK || state.error != ESP_OK ? UI_BAD : UI_MUTED, 1), TAG, "GPS ownership");
-    if (wardrive_gps_view.nmea) ESP_RETURN_ON_ERROR(wardrive_gps_view_nmea(error == ESP_OK && state.clock_valid), TAG, "NMEA body");
+    if (wardrive_gps_view.logging) ESP_RETURN_ON_ERROR(wardrive_gps_log_draw(), TAG, "GPX body");
+    else if (wardrive_gps_view.nmea) ESP_RETURN_ON_ERROR(wardrive_gps_view_nmea(error == ESP_OK && state.clock_valid), TAG, "NMEA body");
     else if (error == ESP_OK) ESP_RETURN_ON_ERROR(wardrive_gps_view_data(&state.gps), TAG, "GPS data body");
     ESP_RETURN_ON_ERROR(draw_small_button(8, 430, 148, 40, "BACK TO SUMMARY"), TAG, "GPS back");
     bool active = wardrive_recent_active(status.state);
@@ -316,12 +322,14 @@ static void wardrive_gps_view_handle_tap(uint16_t x, uint16_t y)
         } else return;
     } else if (!wardrive_gps_view.paint_valid) return;
     else if (y >= 54U && y < 86U) {
-        if (x >= 8U && x < 156U) {
+        if ((x >= 8U && x < 104U) || (x >= 216U && x < 312U)) {
             wardrive_gps_view.nmea = false;
+            wardrive_gps_view.logging = x >= 216U;
             wardrive_gps_view.paused = false;
             (void)wardrive_gps_view_detach();
-        } else if (x >= 164U && x < 312U) {
+        } else if (x >= 112U && x < 208U) {
             wardrive_gps_view.nmea = true;
+            wardrive_gps_view.logging = false;
             if (wardrive_gps_view.error == ESP_ERR_NOT_FOUND || wardrive_gps_view.detach_pending) {
                 (void)wardrive_gps_view_detach();
                 wardrive_gps_view.paused = false;
@@ -329,6 +337,8 @@ static void wardrive_gps_view_handle_tap(uint16_t x, uint16_t y)
             if (!wardrive_gps_view.token)
                 wardrive_gps_view_attach();
         } else return;
+    } else if (wardrive_gps_view.logging) {
+        if (!wardrive_gps_log_tap(x, y)) return;
     } else if (wardrive_gps_view.nmea && y >= 148U && y < 166U &&
         x >= 8U && x < 312U && wardrive_gps_view.trace && wardrive_gps_view.error == ESP_OK) {
         wardrive_gps_view.paused = !wardrive_gps_view.paused;

@@ -5,6 +5,7 @@
 #include "field_menu.h"
 #include "wardrive_service.h"
 #include "wardrive_log_feedback.h"
+#include "gps_recorder.h"
 #include "wifi_target_view.h"
 #include "wifi_packet_monitor_scan.h"
 #include "wifi_packet_monitor_record.h"
@@ -8015,7 +8016,8 @@ static esp_err_t draw_wardrive(void)
     for (uint8_t mask = status.expansion_present_mask; mask != 0U; mask >>= 1U)
         expansion_count += mask & 1U;
 
-    ESP_RETURN_ON_ERROR(draw_centered(60, "CONTINUOUS SCAN / STOP TO SAVE", UI_MUTED, 1), TAG, "wardrive mode");
+    ESP_RETURN_ON_ERROR(draw_centered(60, cerberus_gps_recorder_busy() ?
+        "GPX ACTIVE / TAP GPS DATA FOR CONTROLS" : "CONTINUOUS SCAN / STOP TO SAVE", UI_MUTED, 1), TAG, "wardrive mode");
     if (wardrive_start_pending && !active)
         status = (cerberus_wardrive_status_t){.gps_requested = true, .mode = wardrive_mode};
     cerberus_wardrive_gps_uart_state_t receiver={0};
@@ -11811,11 +11813,16 @@ static void wardrive_tick(uint32_t now_ms, bool asleep)
     wardrive_logs_tick(asleep);
     wardrive_gps_view_release_if_hidden(now_ms, asleep);
     gps_preview_poll(now_ms,asleep);
-    if (current_page != UI_PAGE_WARDRIVE) return;
+    if (current_page != UI_PAGE_WARDRIVE) {
+        cerberus_gps_recorder_status_t gps_log;
+        cerberus_gps_recorder_status(&gps_log);
+        if (gps_log.busy) (void)cerberus_gps_recorder_stop(gps_log.job);
+        return;
+    }
     cerberus_wardrive_status_t status;
     cerberus_wardrive_get_status(&status);
     if (wardrive_return_pending) {
-        if (status.state != CERBERUS_WARDRIVE_STARTING &&
+        if (!cerberus_gps_recorder_busy() && status.state != CERBERUS_WARDRIVE_STARTING &&
             status.state != CERBERUS_WARDRIVE_RUNNING &&
             status.state != CERBERUS_WARDRIVE_STOPPING) {
             wardrive_return_pending = false;
@@ -12183,7 +12190,10 @@ static void handle_tap(uint16_t x, uint16_t y)
                 wardrive_waiting_for_gps = false;
                 cerberus_wardrive_status_t status;
                 cerberus_wardrive_get_status(&status);
-                if (status.state == CERBERUS_WARDRIVE_STARTING ||
+                cerberus_gps_recorder_status_t gps_log;
+                cerberus_gps_recorder_status(&gps_log);
+                if (gps_log.busy) (void)cerberus_gps_recorder_stop(gps_log.job);
+                if (gps_log.busy || status.state == CERBERUS_WARDRIVE_STARTING ||
                     status.state == CERBERUS_WARDRIVE_RUNNING ||
                     status.state == CERBERUS_WARDRIVE_STOPPING) {
                     wardrive_return_pending = true;
@@ -12611,6 +12621,7 @@ void cerberus_ui_run(const cerberus_ui_config_t *config)
             ui_screen_timeout_seconds > 0U &&
             !watch_keeps_awake() &&
             !wardrive_logs_is_open() &&
+            !cerberus_gps_recorder_busy() &&
             !remote_id_keeps_awake() &&
             !mac_monitor_keeps_awake() &&
             !ble_discovery_keeps_awake() &&

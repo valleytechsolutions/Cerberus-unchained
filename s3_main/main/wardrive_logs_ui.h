@@ -3,6 +3,7 @@
 #include "wardrive_log_manager.h"
 #include "wardrive_upload_settings.h"
 #include "wardrive_log_feedback.h"
+#include "gps_recorder.h"
 typedef enum { WD_LOG_LIST,WD_LOG_DETAIL,WD_LOG_SETUP,WD_LOG_INPUT,
     WD_LOG_CONFIRM_UPLOAD,WD_LOG_CONFIRM_DELETE,WD_LOG_CONFIRM_FORGET,WD_LOG_CONFIRM_IMPORT,
     WD_LOG_CONFIRM_RETRY } wd_log_page_t;
@@ -25,8 +26,15 @@ static bool wardrive_logs_is_open(void){return wd_log_ui&&current_page==UI_PAGE_
 static void wardrive_logs_open(void)
 {
     cerberus_wardrive_status_t status;cerberus_wardrive_get_status(&status);
+    if(cerberus_gps_recorder_busy()){
+        wardrive_start_error=ESP_ERR_INVALID_STATE;
+        snprintf(wardrive_blocked_reason,sizeof(wardrive_blocked_reason),"STOP GPX IN GPS DATA BEFORE OPENING LOGS");
+        wardrive_last_draw_ms=0;
+        return;
+    }
     if(wardrive_start_pending||status.state==CERBERUS_WARDRIVE_RUNNING||
         status.state==CERBERUS_WARDRIVE_STARTING||status.state==CERBERUS_WARDRIVE_STOPPING)return;
+    wardrive_start_error=ESP_OK;wardrive_blocked_reason[0]='\0';
     wardrive_gps_view_close();wardrive_recent_close();
     if(!wd_log_ui)wd_log_ui=heap_caps_calloc(1,sizeof(*wd_log_ui),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
     if(!wd_log_ui){wardrive_start_error=ESP_ERR_NO_MEM;return;}

@@ -31,6 +31,7 @@ static const char *test_root;
 static const char *test_recon_root; /* Inactive here; active lease has its own fault suite. */
 static bool sd_mounted=true, locked, fail_mutex_create, fail_mutex_take;
 static uint64_t sd_ward_log_lease;
+static void *sd_gps;
 static cerberus_storage_owner_t storage_owner=CERBERUS_STORAGE_OWNER_FIRMWARE;
 static unsigned lock_attempts, releases, open_streams, yields;
 static FILE *source_stream,*temp_stream;
@@ -224,6 +225,7 @@ static void seed(size_t length)
     lock_attempts=releases=yields=0;storage_mutex=NULL;
     fail_mutex_create=fail_mutex_take=false;sd_mounted=true;storage_owner=CERBERUS_STORAGE_OWNER_FIRMWARE;
     sd_ward_log_lease=0;
+    sd_gps=NULL;
     injected_source_error=zero_without_eof=read_error_with_progress=false;
     source_close_failed=temp_close_failed=temp_flushed=temp_synced=false;
     source_stream=temp_stream=NULL;short_read_limit=0;payload_size=length;
@@ -336,6 +338,9 @@ static void admission(void)
     CHECK(copy()==ESP_ERR_INVALID_STATE);released();
     CHECK(!sequence_count && !exists(destination_file) && !exists(temp_file));
     sd_ward_log_lease=0;
+    seed(37);sd_gps=(void *)1;
+    CHECK(copy()==ESP_ERR_INVALID_STATE);released();
+    CHECK(!sequence_count&&!exists(destination_file)&&!exists(temp_file));sd_gps=NULL;
     for(unsigned state=0;state<3;++state){
         seed(37);sd_mounted=state!=0;storage_owner=state==1?CERBERUS_STORAGE_OWNER_USB:CERBERUS_STORAGE_OWNER_NONE;
         CHECK(copy()==ESP_ERR_INVALID_STATE && !locked && releases==1 && !sequence_count);
