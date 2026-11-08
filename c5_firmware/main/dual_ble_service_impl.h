@@ -162,20 +162,24 @@ static bool dual_snapshot_command(uint8_t command, const void *request,
             bool retry = begin.request_id && begin.request_id == dual_snapshot.request_id &&
                 dual_snapshot_matches_locked(&binding.binding, dual_snapshot.handle);
             if (!retry) {
+                int64_t freeze_us = -1;
                 if (!begin.request_id || dual_snapshot.request_id == UINT64_MAX ||
                     begin.request_id != dual_snapshot.request_id + 1U ||
                     dual_snapshot.counter == UINT64_MAX ||
-                    (dual_mode != CERBERUS_DUAL_BLE_DISCOVERY && !cerberus_dual_ble_family_mode(dual_mode) && !cerberus_dual_ble_response_mode(dual_mode)) ||
+                    !cerberus_dual_ble_snapshot_mode(dual_mode) ||
                     (scan_status.state != CERBERUS_BLE_SCAN_RUNNING &&
                      scan_status.state != CERBERUS_BLE_SCAN_COMPLETE)) error = ESP_ERR_INVALID_STATE;
                 else if (scan_status.stored_count > CERBERUS_DUAL_BLE_CAPACITY) error = ESP_ERR_INVALID_RESPONSE;
+                if (!error) freeze_us = esp_timer_get_time();
+                if (!error && dual_mode == CERBERUS_DUAL_BLE_REACQUIRE &&
+                    (scan_status.stored_count > 4U || !scan_inventory.clock_valid ||
+                     freeze_us < scan_inventory.clock_highwater_us)) error = ESP_ERR_INVALID_STATE;
                 for (uint8_t i = 0U; !error && i < scan_status.stored_count; ++i) {
                     const cerberus_ble_record_t *r = &scan_results[i];
                     if (r->name_length > 32U || r->uuid_length > 16U || r->advertisement_length > 31U)
                         error = ESP_ERR_INVALID_RESPONSE;
                 }
                 if (!error) {
-                    const int64_t freeze_us = esp_timer_get_time();
                     const uint32_t freeze_ms = (uint32_t)((uint64_t)freeze_us / 1000U);
                     memset(dual_snapshot.rows, 0, sizeof(dual_snapshot.rows));
                     memset(dual_snapshot.receive, 0, sizeof(dual_snapshot.receive));

@@ -25,6 +25,7 @@ static bool airtag_json_is_open(void) { return airtag_json_opened; }
 
 static void airtag_json_dispose(void)
 {
+    if (saved_ble_lookup_holds_files()) return;
     if (airtag_json_view) {
         if (airtag_json_view->job_pending) {
             cerberus_ble_archive_io_cancel(airtag_json_view->job_id);
@@ -67,6 +68,7 @@ static void airtag_json_accept(esp_err_t error, uint64_t job)
 
 static void airtag_json_open_file(const char *path, const char *name)
 {
+    if (saved_ble_lookup_holds_files()) return;
     if (!airtag_json_is_file(name)) return;
     airtag_json_enter(false);
     if (airtag_json_view) {
@@ -92,6 +94,7 @@ static esp_err_t airtag_json_draw(void)
 static void airtag_json_tap(uint16_t x, uint16_t y)
 {
     const airtag_json_ui_action_t action = airtag_json_ui_tap(airtag_json_view, x, y);
+    if (action == AIRTAG_JSON_FIND_LIVE) { saved_ble_lookup_open(true); return; }
     if (action == AIRTAG_JSON_BACK) { airtag_json_close(true); return; }
     if (action == AIRTAG_JSON_SAVE || action == AIRTAG_JSON_EXPORT) {
         uint64_t job = 0U;

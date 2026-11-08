@@ -23,12 +23,15 @@ static bool discovery_meta_at_locked(cerberus_s3_ble_discovery_meta_t *meta, uin
         .family = snapshot->family,
         .replacements = snapshot->inventory_replacements,
         .binding_overflows = snapshot->bindings ? snapshot->bindings->overflows : 0U,
+        .reacquiring = discovery_reacquiring,
         .attached = true,
         .owned = snapshot->status.state == CERBERUS_BLE_SCAN_RUNNING ||
             discovery_pending_locked() || discovery_owns_host_locked(),
         .stopping = cancel_requested || (stop_event_pending && stop_epoch == discovery_scan_epoch) ||
             (snapshot->status.state != CERBERUS_BLE_SCAN_RUNNING && discovery_pending_locked()),
     };
+    if (discovery_reacquiring)
+        memcpy(meta->target_address, discovery_target_address, sizeof(meta->target_address));
     return true;
 }
 
@@ -58,6 +61,20 @@ esp_err_t cerberus_s3_ble_scanner_start_discovery(cerberus_s3_ble_filter_t famil
     if (!meta || (unsigned)family >= CERBERUS_S3_BLE_FILTER_COUNT) return ESP_ERR_INVALID_ARG;
     cerberus_ble_scan_status_payload_t status;
     return start_scan_mode(true, NULL, &status, true, family, expected_previous_epoch, meta);
+}
+
+esp_err_t cerberus_s3_ble_scanner_start_reacquire(const uint8_t address[6],
+    uint64_t expected_previous_epoch, cerberus_s3_ble_discovery_meta_t *meta)
+{
+    uint8_t target[6] = {0};
+    if (address) memcpy(target, address, sizeof(target));
+    if (meta) memset(meta, 0, sizeof(*meta));
+    uint8_t any = 0U, all = 0xffU;
+    for (size_t i = 0U; i < sizeof(target); ++i) { any |= target[i]; all &= target[i]; }
+    if (!address || !meta || !any || all == 0xffU) return ESP_ERR_INVALID_ARG;
+    cerberus_ble_scan_status_payload_t status;
+    return start_scan_mode_owned(false, NULL, &status, true, CERBERUS_S3_BLE_FILTER_ALL,
+        expected_previous_epoch, meta, false, false, target);
 }
 
 esp_err_t cerberus_s3_ble_scanner_discovery_status(uint64_t expected_epoch,
@@ -135,6 +152,46 @@ static void discovery_copy_row(const cerberus_s3_ble_record_t *record,
     out->index = index;
 }
 
+static bool discovery_copy_valid_locked(cerberus_s3_ble_discovery_meta_t *meta,
+    size_t capacity, bool require_reacquire)
+{
+    if ((snapshot->status.state != CERBERUS_BLE_SCAN_RUNNING &&
+         snapshot->status.state != CERBERUS_BLE_SCAN_COMPLETE) ||
+        snapshot->status.stored_count > capacity || !discovery_meta_locked(meta) ||
+        meta->source_now_ms - meta->started_ms > UINT32_MAX ||
+        (require_reacquire && !meta->reacquiring)) return false;
+    if (meta->reacquiring && (meta->family != CERBERUS_S3_BLE_FILTER_ALL ||
+        snapshot->status.stored_count > CERBERUS_S3_BLE_REACQUIRE_CAPACITY)) return false;
+    unsigned types = 0U;
+    for (size_t i = 0U; i < snapshot->status.stored_count; ++i) {
+        const cerberus_s3_ble_record_t *record = &snapshot->records[i];
+        if (!discovery_row_valid(record, meta)) return false;
+        if (meta->reacquiring) {
+            const cerberus_s3_ble_discovery_evidence_t *source = &record->focus.discovery;
+            unsigned bit = 1U << record->address_type;
+            if ((types & bit) || memcmp(record->address, meta->target_address, 6U) ||
+                record->advertisement_event_type > 3U ||
+                (record->advertisement_flags & ~(CERBERUS_BLE_ADVERTISEMENT_TRUNCATED |
+                    CERBERUS_BLE_ADVERTISEMENT_MALFORMED)) ||
+                (source->flags & ~0x3fU) ||
+                !(source->flags & CERBERUS_S3_BLE_EVIDENCE_ADV_COMPLETE) ||
+                (source->flags & (CERBERUS_S3_BLE_EVIDENCE_RESPONSE_VALID |
+                    CERBERUS_S3_BLE_EVIDENCE_SID_INVALID)) ||
+                ((source->flags & CERBERUS_S3_BLE_EVIDENCE_SID_VALID) && source->sid > 15U) ||
+                source->raw_advertisement_sequence != source->advertisement_sequence ||
+                source->advertisement_observed_ms != record->last_advertisement_ms ||
+                ((source->flags & CERBERUS_S3_BLE_EVIDENCE_RAW_COMPLETE) != 0U) ==
+                    ((record->advertisement_flags & CERBERUS_BLE_ADVERTISEMENT_TRUNCATED) != 0U) ||
+                ((record->advertisement_flags & CERBERUS_BLE_ADVERTISEMENT_TRUNCATED) &&
+                    record->advertisement_length != CERBERUS_BLE_ADVERTISEMENT_MAX_LENGTH) ||
+                ((record->advertisement_flags & CERBERUS_BLE_ADVERTISEMENT_MALFORMED) &&
+                    (source->flags & CERBERUS_S3_BLE_EVIDENCE_ADV_VALID))) return false;
+            types |= bit;
+        }
+    }
+    return true;
+}
+
 esp_err_t cerberus_s3_ble_scanner_copy_discovery(uint64_t expected_epoch,
     cerberus_s3_ble_discovery_bank_t *bank)
 {
@@ -142,18 +199,30 @@ esp_err_t cerberus_s3_ble_scanner_copy_discovery(uint64_t expected_epoch,
     if (!bank) return ESP_ERR_INVALID_ARG;
     esp_err_t error = discovery_lock(expected_epoch);
     if (error != ESP_OK) return error;
-    bool valid = (snapshot->status.state == CERBERUS_BLE_SCAN_RUNNING ||
-        snapshot->status.state == CERBERUS_BLE_SCAN_COMPLETE) &&
-        snapshot->status.stored_count <= CERBERUS_BLE_SCAN_MAX_RESULTS;
-    if (valid) valid = discovery_meta_locked(&bank->meta);
-    if (valid) valid = bank->meta.source_now_ms - bank->meta.started_ms <= UINT32_MAX;
-    for (size_t i = 0U; valid && i < snapshot->status.stored_count; ++i)
-        valid = discovery_row_valid(&snapshot->records[i], &bank->meta);
+    bool valid = discovery_copy_valid_locked(&bank->meta, CERBERUS_BLE_SCAN_MAX_RESULTS, false);
     for (size_t i = 0U; valid && i < snapshot->status.stored_count; ++i)
         discovery_copy_row(&snapshot->records[i], snapshot->status.generation, (uint8_t)i,
             &bank->records[i]);
     xSemaphoreGive(scan_mutex);
     if (!valid) memset(bank, 0, sizeof(*bank));
+    return valid ? ESP_OK : ESP_ERR_INVALID_STATE;
+}
+
+esp_err_t cerberus_s3_ble_scanner_copy_reacquire(uint64_t expected_epoch,
+    cerberus_s3_ble_discovery_record_t records[CERBERUS_S3_BLE_REACQUIRE_CAPACITY],
+    cerberus_s3_ble_discovery_meta_t *meta)
+{
+    const size_t bytes = CERBERUS_S3_BLE_REACQUIRE_CAPACITY * sizeof(*records);
+    if (records) memset(records, 0, bytes);
+    if (meta) memset(meta, 0, sizeof(*meta));
+    if (!records || !meta) return ESP_ERR_INVALID_ARG;
+    esp_err_t error = discovery_lock(expected_epoch);
+    if (error != ESP_OK) return error;
+    bool valid = discovery_copy_valid_locked(meta, CERBERUS_S3_BLE_REACQUIRE_CAPACITY, true);
+    for (size_t i = 0U; valid && i < snapshot->status.stored_count; ++i)
+        discovery_copy_row(&snapshot->records[i], snapshot->status.generation, (uint8_t)i, &records[i]);
+    xSemaphoreGive(scan_mutex);
+    if (!valid) { memset(records, 0, bytes); memset(meta, 0, sizeof(*meta)); }
     return valid ? ESP_OK : ESP_ERR_INVALID_STATE;
 }
 
@@ -198,6 +267,8 @@ esp_err_t cerberus_s3_ble_scanner_release_discovery(uint64_t expected_epoch)
     discovery_bindings = NULL;
     snapshot->bindings = NULL;
     discovery_attached = false;
+    discovery_reacquiring = false;
+    memset(discovery_target_address, 0, sizeof(discovery_target_address));
     xSemaphoreGive(scan_mutex);
     heap_caps_free(released);
     return ESP_OK;

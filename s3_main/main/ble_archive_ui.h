@@ -18,7 +18,7 @@ typedef enum {
 } ble_archive_ui_view_t;
 typedef enum {
     BLE_ARCHIVE_UI_NONE, BLE_ARCHIVE_UI_REDRAW,
-    BLE_ARCHIVE_UI_BACK, BLE_ARCHIVE_UI_CANCEL, BLE_ARCHIVE_UI_EXPORT,
+    BLE_ARCHIVE_UI_BACK, BLE_ARCHIVE_UI_CANCEL, BLE_ARCHIVE_UI_EXPORT, BLE_ARCHIVE_UI_FIND_LIVE,
 } ble_archive_ui_action_t;
 typedef struct {
     cerberus_ble_archive_t document, incoming;
@@ -288,8 +288,8 @@ static inline esp_err_t ble_archive_ui_detail(ble_archive_ui_store_t *store)
             "NO MATCHED RESPONSE RETAINED" : "RESPONSE BYTES / CORRELATION UNAVAILABLE");
     }
     ESP_RETURN_ON_ERROR(draw_centered(356, line, UI_MUTED, 1), TAG, "archive response evidence");
-    ESP_RETURN_ON_ERROR(draw_button(64, 374, 192, 44,
-        row->receiver == CERBERUS_BLE_ARCHIVE_RECEIVER_C5 ? "RAW / RX INFO / HINTS" : "RAW ADV / RESPONSE"), TAG, "archive raw button");
+    ESP_RETURN_ON_ERROR(draw_button(8, 374, 148, 44, "RAW DATA"), TAG, "archive raw button");
+    ESP_RETURN_ON_ERROR(draw_button(164, 374, 148, 44, "FIND LIVE"), TAG, "archive find live");
     return ble_archive_ui_back("BACK TO SNAPSHOT");
 }
 
@@ -602,7 +602,10 @@ static inline ble_archive_ui_action_t ble_archive_ui_tap(ble_archive_ui_store_t 
             return BLE_ARCHIVE_UI_REDRAW;
         }
     } else if (store->view == BLE_ARCHIVE_UI_DETAIL && store->selected_valid &&
-        x >= 64U && x < 256U && y >= 374U && y < 418U) {
+        x >= 164U && x < 312U && y >= 374U && y < 418U) {
+        return BLE_ARCHIVE_UI_FIND_LIVE;
+    } else if (store->view == BLE_ARCHIVE_UI_DETAIL && store->selected_valid &&
+        x >= 8U && x < 156U && y >= 374U && y < 418U) {
         store->view = BLE_ARCHIVE_UI_RAW; store->raw_page = 0U;
         store->raw_response = store->raw_hints = false; store->c5_response = false; store->hint_page = store->hint_pages = 0U;
         return BLE_ARCHIVE_UI_REDRAW;

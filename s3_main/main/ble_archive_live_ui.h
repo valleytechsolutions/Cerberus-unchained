@@ -35,6 +35,7 @@ static bool ble_archive_acquire(void)
 
 static void ble_archive_dispose(void)
 {
+    if (saved_ble_lookup_holds_files()) return;
     if (ble_archive_view) {
         if (ble_archive_view->job_id) {
             cerberus_ble_archive_io_cancel(ble_archive_view->job_id);
@@ -67,6 +68,7 @@ static void ble_archive_return(void)
 
 static void ble_archive_open_menu(void)
 {
+    if (saved_ble_lookup_holds_files()) return;
     ble_archive_enter();
     ble_archive_menu = ble_archive_view != NULL;
     ESP_ERROR_CHECK(draw_detail_page());
@@ -185,6 +187,7 @@ static void ble_archive_save_c5(bool selected)
 
 static void ble_archive_open_file(const char *path, const char *name)
 {
+    if (saved_ble_lookup_holds_files()) return;
     ble_archive_enter();
     uint64_t job = 0U;
     esp_err_t error = ble_archive_view ? cerberus_ble_archive_io_load(path, name, &job) : ESP_ERR_NO_MEM;
@@ -202,6 +205,7 @@ static void ble_archive_open_file(const char *path, const char *name)
 
 static esp_err_t ble_archive_draw(void)
 {
+    if (saved_ble_lookup_is_open()) return saved_ble_lookup_draw();
     if (airtag_json_is_open()) return airtag_json_draw();
     if (!ble_archive_menu || !ble_archive_view)
         return ble_archive_ui_draw(ble_archive_view, ble_archive_open_error);
@@ -219,6 +223,7 @@ static esp_err_t ble_archive_draw(void)
 
 static void ble_archive_tap(uint16_t x, uint16_t y)
 {
+    if (saved_ble_lookup_is_open()) { saved_ble_lookup_tap(x, y); return; }
     if (airtag_json_is_open()) { airtag_json_tap(x, y); return; }
     if (ble_archive_menu && ble_archive_view) {
         if (x >= 24U && x < 296U) {
@@ -238,11 +243,13 @@ static void ble_archive_tap(uint16_t x, uint16_t y)
     ble_archive_ui_action_t action = ble_archive_ui_tap(ble_archive_view, x, y);
     if (action == BLE_ARCHIVE_UI_BACK || action == BLE_ARCHIVE_UI_CANCEL) ble_archive_return();
     else if (action == BLE_ARCHIVE_UI_EXPORT) airtag_json_open_export();
+    else if (action == BLE_ARCHIVE_UI_FIND_LIVE) saved_ble_lookup_open(false);
     else if (action == BLE_ARCHIVE_UI_REDRAW) ESP_ERROR_CHECK(draw_detail_page());
 }
 
 static void ble_archive_tick(bool asleep)
 {
+    if (saved_ble_lookup_tick(asleep)) return;
     if (airtag_json_tick(asleep)) return;
     if (current_page != UI_PAGE_BLE_ARCHIVE) { ble_archive_dispose(); return; }
     if (ble_archive_view && ble_archive_view->release_pending) {

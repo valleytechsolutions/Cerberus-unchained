@@ -61,6 +61,10 @@ typedef struct {
     cerberus_s3_ble_filter_t family;
     uint16_t replacements;
     uint16_t binding_overflows;
+    /* A passive saved-address attachment. The selector has no implied type,
+     * payload identity or current device identity. Ordinary lists keep zero. */
+    uint8_t target_address[6];
+    bool reacquiring;
     bool attached;
     bool owned;
     bool stopping;
@@ -88,6 +92,13 @@ typedef struct {
 esp_err_t cerberus_s3_ble_scanner_start_discovery(cerberus_s3_ble_filter_t family,
     uint64_t expected_previous_epoch, cerberus_s3_ble_discovery_meta_t *meta);
 
+/* Passive originals from this exact six-byte selector, retaining separately
+ * observed types 0..3. Rearm requires the same selector and attachment mode;
+ * no saved metadata enters the receive bank or the Fox Hunt tracker. */
+#define CERBERUS_S3_BLE_REACQUIRE_CAPACITY 4U
+esp_err_t cerberus_s3_ble_scanner_start_reacquire(const uint8_t address[6],
+    uint64_t expected_previous_epoch, cerberus_s3_ble_discovery_meta_t *meta);
+
 /* Scoped read/Stop/release return NOT_FOUND only for authoritative absence of
  * this exact attachment. TIMEOUT means ownership is unknown and must be kept.
  * All outputs clear on failure. Reads never initialize, allocate, or start RF.
@@ -98,6 +109,11 @@ esp_err_t cerberus_s3_ble_scanner_discovery_status(uint64_t expected_epoch,
     cerberus_s3_ble_discovery_meta_t *meta);
 esp_err_t cerberus_s3_ble_scanner_copy_discovery(uint64_t expected_epoch,
     cerberus_s3_ble_discovery_bank_t *bank);
+/* Compact atomic copy for a targeted attachment only. The caller supplies
+ * four records. Failure clears all four records and meta. */
+esp_err_t cerberus_s3_ble_scanner_copy_reacquire(uint64_t expected_epoch,
+    cerberus_s3_ble_discovery_record_t records[CERBERUS_S3_BLE_REACQUIRE_CAPACITY],
+    cerberus_s3_ble_discovery_meta_t *meta);
 esp_err_t cerberus_s3_ble_scanner_stop_discovery(uint64_t expected_epoch,
     cerberus_s3_ble_discovery_meta_t *meta);
 esp_err_t cerberus_s3_ble_scanner_release_discovery(uint64_t expected_epoch);

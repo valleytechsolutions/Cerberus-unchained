@@ -16,17 +16,24 @@
 #define CERBERUS_DUAL_BLE_FAMILY_MIN_FIRMWARE 66U
 #define CERBERUS_DUAL_BLE_RESPONSE_MIN_FIRMWARE 67U
 #define CERBERUS_DUAL_BLE_COMPACT_RESPONSE_MIN_FIRMWARE 68U
+#define CERBERUS_DUAL_BLE_REACQUIRE_MIN_FIRMWARE 84U
+#define CERBERUS_DUAL_BLE_ANY_OBSERVED_TYPE 0xffU
 #define CERBERUS_DUAL_BLE_CAPACITY 32U
 #define CERBERUS_DUAL_BLE_RAW_BYTES 31U
 #define CERBERUS_DUAL_BLE_STALE_MS 5000U
 #define CERBERUS_DUAL_BLE_ORPHAN_MS 12000U
 enum { CERBERUS_DUAL_BLE_DISCOVERY, CERBERUS_DUAL_BLE_TRACK, CERBERUS_DUAL_BLE_ANALYZER, CERBERUS_DUAL_BLE_FAMILY,
-       CERBERUS_DUAL_BLE_RESPONSE_DISCOVERY, CERBERUS_DUAL_BLE_RESPONSE_FAMILY };
+       CERBERUS_DUAL_BLE_RESPONSE_DISCOVERY, CERBERUS_DUAL_BLE_RESPONSE_FAMILY,
+       CERBERUS_DUAL_BLE_REACQUIRE };
 
 static inline bool cerberus_dual_ble_response_mode(uint8_t mode)
 { return mode == CERBERUS_DUAL_BLE_RESPONSE_DISCOVERY || mode == CERBERUS_DUAL_BLE_RESPONSE_FAMILY; }
 static inline bool cerberus_dual_ble_family_mode(uint8_t mode)
 { return mode == CERBERUS_DUAL_BLE_FAMILY || mode == CERBERUS_DUAL_BLE_RESPONSE_FAMILY; }
+static inline bool cerberus_dual_ble_snapshot_mode(uint8_t mode)
+{ return mode == CERBERUS_DUAL_BLE_DISCOVERY || cerberus_dual_ble_family_mode(mode) ||
+    cerberus_dual_ble_response_mode(mode) || mode == CERBERUS_DUAL_BLE_REACQUIRE; }
+
 enum { CERBERUS_DUAL_BLE_ATTACHED = 1U, CERBERUS_DUAL_BLE_OWNED = 2U,
        CERBERUS_DUAL_BLE_EXTENDED = 4U, CERBERUS_DUAL_BLE_READY = 8U,
        CERBERUS_DUAL_BLE_SNAPSHOTS = 16U };
@@ -104,6 +111,9 @@ typedef struct __attribute__((packed)) {
 typedef struct __attribute__((packed)) {
     uint64_t boot_id;
     uint32_t job_id;
+    /* REACQUIRE is passive address-only admission. ANY_OBSERVED_TYPE requests
+     * separately observed types0..3; it is never a connection address type.
+     * Saved payloads/types grant no current identity or action permission. */
     uint8_t address[6], address_type, mode, version, reserved; /* FAMILY: selected code1..6; other modes:0. */
 } cerberus_dual_ble_start_t;
 typedef struct __attribute__((packed)) {
@@ -341,10 +351,16 @@ static inline bool cerberus_dual_ble_start_valid(const cerberus_dual_ble_start_t
 {
     if (!r || !r->boot_id || !r->job_id ||
         (r->version != CERBERUS_DUAL_BLE_VERSION && r->version != CERBERUS_DUAL_BLE_LEGACY_VERSION) ||
-        r->mode > CERBERUS_DUAL_BLE_RESPONSE_FAMILY || r->address_type > 3U ||
+        r->mode > CERBERUS_DUAL_BLE_REACQUIRE ||
+        (r->mode == CERBERUS_DUAL_BLE_REACQUIRE ?
+            r->address_type != CERBERUS_DUAL_BLE_ANY_OBSERVED_TYPE : r->address_type > 3U) ||
         (cerberus_dual_ble_family_mode(r->mode) ? (r->reserved < 1U || r->reserved > 6U) : r->reserved != 0U) ||
         (r->mode >= CERBERUS_DUAL_BLE_ANALYZER && r->version != CERBERUS_DUAL_BLE_VERSION)) return false;
-    if (r->mode != CERBERUS_DUAL_BLE_TRACK) {
+    if (r->mode == CERBERUS_DUAL_BLE_REACQUIRE) {
+        uint8_t any = 0U, all = 0xffU;
+        for (size_t i = 0; i < 6U; ++i) { any |= r->address[i]; all &= r->address[i]; }
+        if (!any || all == 0xffU) return false;
+    } else if (r->mode != CERBERUS_DUAL_BLE_TRACK) {
         if (r->address_type) return false;
         for (size_t i = 0; i < 6U; ++i) if (r->address[i]) return false;
     }

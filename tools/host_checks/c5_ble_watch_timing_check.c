@@ -382,9 +382,28 @@ static void response_actual_lifecycle(void)
         dual_attached=false;response_free_locked();CHECK(!dual_response);
     }
 }
+static void reacquire_actual_lifecycle(void)
+{
+    dual_attached=true;dual_mode=CERBERUS_DUAL_BLE_REACQUIRE;dual_family=0;dual_version=2;
+    memcpy(dual_address,(uint8_t[]){1,2,3,4,5,6},6);dual_address_type=CERBERUS_DUAL_BLE_ANY_OBSERVED_TYPE;
+    scan_callback_epoch=100;dual_radio_active=false;dual_error=0;
+    scan_status.state=CERBERUS_BLE_SCAN_IDLE;clock_us=30000000;
+    CHECK(!dual_response && start_scan(true)==ESP_OK && scan_inventory.enabled);
+    start_scan_event(&start_event);CHECK(dual_radio_active && !dual_response);
+    /* The actual SDK stub above verifies passive 1M/coded parameters; the
+     * actual callback excludes unrelated traffic before parser/accounting. */
+    uint8_t data[]={2,1,6};
+    struct ble_gap_event unrelated={.type=BLE_GAP_EVENT_DISC,.disc={
+        .addr={.type=1,.val={9,2,3,4,5,6}},.rssi=-40,.event_type=0,.length_data=3,.data=data}};
+    unsigned parsed_before=parse_calls;
+    CHECK(gap_event(&unrelated,rf_arg)==0 && parse_calls==parsed_before && !scan_status.stored_count);
+    complete();CHECK(!dual_radio_active && !dual_response);
+    dual_attached=false;
+}
+
 int main(void)
 {
-    entry_clock_and_qualification();stale_delivery_and_saturation();extended_admission();motion_wire();ordinary_dispatch_once();analyzer_actual_lifecycle();family_actual_lifecycle();response_actual_lifecycle();
+    entry_clock_and_qualification();stale_delivery_and_saturation();extended_admission();motion_wire();ordinary_dispatch_once();analyzer_actual_lifecycle();family_actual_lifecycle();response_actual_lifecycle();reacquire_actual_lifecycle();
     CHECK(!locked);printf("C5 BLE timing (%s): %u checks; actual passive start/GAP/getters, atomic motion and own Location age, partial/response/malformed exclusion, stale callback/completion, zero/negative/full-width time, replacement and epoch saturation passed.\n",TEST_EXTENDED?"extended":"legacy",checks);
     return 0;
 }

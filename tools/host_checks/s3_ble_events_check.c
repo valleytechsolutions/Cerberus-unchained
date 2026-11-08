@@ -675,6 +675,7 @@ static void check_watch_timing_callbacks(void)
 
 #include "s3_ble_mac_monitor_check.h"
 #include "s3_ble_discovery_native_check.h"
+#include "s3_ble_reacquire_check.h"
 
 #include "s3_ble_analyzer_binding_check.h"
 #include "s3_ble_track_binding_check.h"
@@ -995,6 +996,7 @@ int main(void)
     check_watch_timing_callbacks();
     check_mac_monitor();
     check_discovery_native();
+    check_reacquire_native();
     check_analyzer_binding();
     check_track_binding();
     check_passive_binding();

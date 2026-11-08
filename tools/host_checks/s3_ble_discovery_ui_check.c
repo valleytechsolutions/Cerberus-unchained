@@ -131,6 +131,7 @@ static bool mesh_ui_busy(void){return false;}
 static bool wifi_packet_count_ui_busy(void){return false;}
 static bool channel_analyzer_ui_busy(void){return false;}
 static bool wifi_fox_hunt_ui_busy(void){return false;}
+static bool saved_ble_lookup_ui_busy(void){return false;}
 static bool live_wifi_capture_tick(uint32_t now,bool allowed,cerberus_wifi_readout_cancel_reason_t reason)
 {(void)now;(void)allowed;(void)reason;return false;}
 static void live_wifi_capture_reset_as(cerberus_wifi_readout_cancel_reason_t reason)
@@ -304,7 +305,8 @@ static void ble_archive_save_c5(bool selected)
 {++archive_save_calls;archive_save_selected=selected;archive_saved_c5=dual_ble_ui_selected;
  archive_saved_provenance=dual_ble_ui_selected_provenance;}
 static esp_err_t draw_ble(void){return ESP_OK;}
-static void ble_fox_hunt_open_peer(const cerberus_c5_ble_result_t *,bool);
+static bool ble_fox_hunt_open_peer(const cerberus_c5_ble_result_t *,bool);
+static bool saved_ble_lookup_fox_return(bool asleep){(void)asleep;return false;}
 static bool dual_ble_live_prepare_fox(uint32_t,bool);
 static void ble_fox_hunt_finish_exit(bool,bool);
 static bool ble_fox_hunt_s3_retryable(void);

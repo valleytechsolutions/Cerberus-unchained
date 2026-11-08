@@ -80,7 +80,7 @@ static esp_err_t start_scan(bool companion)
     memset(scan_results,0,sizeof(scan_results));
     cerberus_ble_inventory_admission_begin(&scan_inventory,
         dual_version==CERBERUS_DUAL_BLE_VERSION&&
-            (dual_mode==CERBERUS_DUAL_BLE_DISCOVERY||cerberus_dual_ble_family_mode(dual_mode)||cerberus_dual_ble_response_mode(dual_mode)),
+            cerberus_dual_ble_snapshot_mode(dual_mode),
         esp_timer_get_time());
     cerberus_ble_analyzer_counter_reset(&dual_analyzer);
     if(dual_mode==CERBERUS_DUAL_BLE_ANALYZER){

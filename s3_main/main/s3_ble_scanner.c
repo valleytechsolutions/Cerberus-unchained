@@ -62,6 +62,9 @@ static uint32_t mac_monitor_job;
 static bool discovery_attached;
 static uint64_t discovery_epoch, discovery_started_ms;
 static uint32_t discovery_scan_epoch;
+static bool discovery_reacquiring;
+static uint8_t discovery_target_address[6];
+static int64_t discovery_started_us, discovery_callback_us;
 static cerberus_s3_ble_binding_cache_t *discovery_bindings;
 /* NimBLE callbacks run in a task, not an ISR. The bounded inventory can live
  * in PSRAM, preserving internal heap for the controller and Wi-Fi receiver. */
@@ -341,6 +344,24 @@ static void analyze_report_locked(const cerberus_s3_ble_report_t *report,
     (void)cerberus_ble_analyzer_observe(analyzer, &event, observed_ms);
 }
 
+/* Saved-address acquisition filters before activity accounting and bounded
+ * admission. Its source time is callback entry, never a later mutex wait. */
+static bool discovery_admit_report_locked(const cerberus_s3_ble_report_t *report,
+    int64_t callback_us, size_t maximum_length)
+{
+    if (!discovery_attached || !discovery_reacquiring) return true;
+    if (cancel_requested || active_scan || discovery_scan_epoch != scan_epoch ||
+        report->scan_response || report->event_type > 3U || report->address_type > 3U ||
+        memcmp(report->address, discovery_target_address, sizeof(discovery_target_address)) ||
+        !report->complete || report->sid_invalid || (report->sid_valid && report->sid > 15U) ||
+        report->length > maximum_length || (report->length && !report->data) ||
+        callback_us < discovery_started_us || callback_us < discovery_callback_us) return false;
+    int64_t now = esp_timer_get_time();
+    if (callback_us < 0 || now < callback_us) return false;
+    discovery_callback_us = callback_us;
+    return true;
+}
+
 static int gap_event(struct ble_gap_event *event, void *arg)
 {
     const int64_t callback_us = esp_timer_get_time();
@@ -367,8 +388,10 @@ static int gap_event(struct ble_gap_event *event, void *arg)
         xSemaphoreTake(scan_mutex, portMAX_DELAY);
         reconcile_host_locked();
         if (scan_owns_host_locked() && snapshot->status.state == CERBERUS_BLE_SCAN_RUNNING &&
-            scan_epoch == (uint32_t)(uintptr_t)arg) {
-            uint32_t observed_ms = now_ms();
+            scan_epoch == (uint32_t)(uintptr_t)arg &&
+            discovery_admit_report_locked(&report, callback_us, 31U)) {
+            uint32_t observed_ms = discovery_attached && discovery_reacquiring ?
+                (uint32_t)((uint64_t)callback_us / 1000U) : now_ms();
             mac_report_locked(&report, (uint32_t)(uintptr_t)arg, callback_us, 31U, true);
             track_report_locked(&report, observed_ms);
             analyze_report_locked(&report, observed_ms);
@@ -402,8 +425,11 @@ static int gap_event(struct ble_gap_event *event, void *arg)
         xSemaphoreTake(scan_mutex, portMAX_DELAY);
         reconcile_host_locked();
         if (scan_owns_host_locked() && snapshot->status.state == CERBERUS_BLE_SCAN_RUNNING &&
-            scan_epoch == (uint32_t)(uintptr_t)arg) {
-            uint32_t observed_ms = now_ms();
+            scan_epoch == (uint32_t)(uintptr_t)arg &&
+            discovery_admit_report_locked(&report, callback_us,
+                (disc->props & BLE_HCI_ADV_LEGACY_MASK) ? 31U : 255U)) {
+            uint32_t observed_ms = discovery_attached && discovery_reacquiring ?
+                (uint32_t)((uint64_t)callback_us / 1000U) : now_ms();
             mac_report_locked(&report, (uint32_t)(uintptr_t)arg, callback_us,
                 (disc->props & BLE_HCI_ADV_LEGACY_MASK) ? 31U : 255U, disc->data_status <= 2U);
             track_report_locked(&report, observed_ms);
@@ -523,12 +549,14 @@ static esp_err_t ensure_mutex(void)
 }
 
 static bool discovery_start_allowed(bool discovery, cerberus_s3_ble_filter_t family,
-    uint64_t previous)
+    uint64_t previous, const uint8_t reacquire_address[6])
 {
     if (!discovery) return !discovery_attached;
     if (tracker.enabled || (analyzer && analyzer->active)) return false;
     if (!previous) return !discovery_attached;
     return discovery_attached && discovery_epoch == previous && snapshot->family == family &&
+        discovery_reacquiring == (reacquire_address != NULL) &&
+        (!reacquire_address || !memcmp(discovery_target_address, reacquire_address, 6U)) &&
         snapshot->status.state == CERBERUS_BLE_SCAN_COMPLETE;
 }
 
@@ -739,7 +767,8 @@ static esp_err_t scan_acquisition_failed(cerberus_s3_ble_binding_cache_t *alloca
 static esp_err_t start_scan_mode_owned(bool active, cerberus_s3_ble_mac_monitor_t *monitor,
     cerberus_ble_scan_status_payload_t *status, bool discovery,
     cerberus_s3_ble_filter_t family, uint64_t previous,
-    cerberus_s3_ble_discovery_meta_t *meta, bool analyzing, bool tracking)
+    cerberus_s3_ble_discovery_meta_t *meta, bool analyzing, bool tracking,
+    const uint8_t reacquire_address[6])
 {
     if (!status) return ESP_ERR_INVALID_ARG;
     if (cerberus_s3_wifi_owner() == CERBERUS_S3_WIFI_RECEIVER) return ESP_ERR_INVALID_STATE;
@@ -751,7 +780,7 @@ static esp_err_t start_scan_mode_owned(bool active, cerberus_s3_ble_mac_monitor_
         snapshot->status.state == CERBERUS_BLE_SCAN_RUNNING || stop_event_pending || start_event_pending ||
         watch_epoch == UINT64_MAX || scan_epoch == UINT32_MAX || (mac_monitor && monitor != mac_monitor) ||
         (monitor && (monitor != mac_monitor || !monitor->owned || monitor->stopping)) ||
-        !discovery_start_allowed(discovery, family, previous) || !analyzer_start_allowed_locked(analyzing) ||
+        !discovery_start_allowed(discovery, family, previous, reacquire_address) || !analyzer_start_allowed_locked(analyzing) ||
         !track_start_allowed_locked(tracking) || passive_state.attached;
     bool need_bindings = discovery && family != CERBERUS_S3_BLE_FILTER_ALL && !discovery_bindings;
     if (!running) scan_host_acquiring = true;
@@ -775,7 +804,7 @@ static esp_err_t start_scan_mode_owned(bool active, cerberus_s3_ble_mac_monitor_
         snapshot->status.state == CERBERUS_BLE_SCAN_RUNNING || stop_event_pending || start_event_pending ||
         watch_epoch == UINT64_MAX || scan_epoch == UINT32_MAX || (mac_monitor && monitor != mac_monitor) ||
         (monitor && (monitor != mac_monitor || !monitor->owned || monitor->stopping)) ||
-        !discovery_start_allowed(discovery, family, previous) || !analyzer_start_allowed_locked(analyzing) ||
+        !discovery_start_allowed(discovery, family, previous, reacquire_address) || !analyzer_start_allowed_locked(analyzing) ||
         !track_start_allowed_locked(tracking) || passive_state.attached || started_us < 0) {
         xSemaphoreGive(scan_mutex);
         return scan_acquisition_failed(allocated, ESP_ERR_INVALID_STATE);
@@ -819,6 +848,10 @@ static esp_err_t start_scan_mode_owned(bool active, cerberus_s3_ble_mac_monitor_
         discovery_epoch = watch_epoch;
         discovery_scan_epoch = scan_epoch;
         discovery_started_ms = started_ms;
+        discovery_started_us = discovery_callback_us = started_us;
+        discovery_reacquiring = reacquire_address != NULL;
+        memset(discovery_target_address, 0, sizeof(discovery_target_address));
+        if (reacquire_address) memcpy(discovery_target_address, reacquire_address, sizeof(discovery_target_address));
     } else {
         cerberus_s3_ble_snapshot_begin_with_epoch(snapshot, generation, (uint32_t)started_ms,
             MYNEWT_VAL(BLE_EXT_ADV) != 0, watch_epoch);
@@ -835,7 +868,7 @@ static esp_err_t start_scan_mode(bool active, cerberus_s3_ble_mac_monitor_t *mon
     cerberus_ble_scan_status_payload_t *status, bool discovery,
     cerberus_s3_ble_filter_t family, uint64_t previous, cerberus_s3_ble_discovery_meta_t *meta)
 {
-    return start_scan_mode_owned(active, monitor, status, discovery, family, previous, meta, false, false);
+    return start_scan_mode_owned(active, monitor, status, discovery, family, previous, meta, false, false, NULL);
 }
 
 static esp_err_t start_scan(bool active, cerberus_s3_ble_mac_monitor_t *monitor,
@@ -1231,7 +1264,7 @@ esp_err_t cerberus_s3_ble_scanner_track_start(cerberus_s3_ble_track_state_t *sta
     if (!allowed) return ESP_ERR_INVALID_STATE;
     cerberus_ble_scan_status_payload_t status = {0};
     esp_err_t error = start_scan_mode_owned(false, NULL, &status, false,
-        CERBERUS_S3_BLE_FILTER_ALL, 0U, NULL, false, true);
+        CERBERUS_S3_BLE_FILTER_ALL, 0U, NULL, false, true, NULL);
     (void)cerberus_s3_ble_scanner_track_get_state(state);
     return error;
 }
@@ -1347,7 +1380,7 @@ esp_err_t cerberus_s3_ble_scanner_analyzer_start(cerberus_s3_ble_analyzer_state_
     if (!allowed) return ESP_ERR_INVALID_STATE;
     cerberus_ble_scan_status_payload_t status = {0};
     esp_err_t error = start_scan_mode_owned(false, NULL, &status, false,
-        CERBERUS_S3_BLE_FILTER_ALL, 0U, NULL, true, false);
+        CERBERUS_S3_BLE_FILTER_ALL, 0U, NULL, true, false, NULL);
     (void)cerberus_s3_ble_scanner_analyzer_get_state(state);
     return error;
 }
@@ -1615,6 +1648,22 @@ esp_err_t cerberus_s3_ble_scanner_start_discovery(cerberus_s3_ble_filter_t famil
 {
     (void)family;
     (void)previous;
+    if (meta) memset(meta, 0, sizeof(*meta));
+    return ESP_ERR_NOT_SUPPORTED;
+}
+esp_err_t cerberus_s3_ble_scanner_start_reacquire(const uint8_t address[6],
+    uint64_t previous, cerberus_s3_ble_discovery_meta_t *meta)
+{
+    (void)address; (void)previous;
+    if (meta) memset(meta, 0, sizeof(*meta));
+    return ESP_ERR_NOT_SUPPORTED;
+}
+esp_err_t cerberus_s3_ble_scanner_copy_reacquire(uint64_t epoch,
+    cerberus_s3_ble_discovery_record_t records[CERBERUS_S3_BLE_REACQUIRE_CAPACITY],
+    cerberus_s3_ble_discovery_meta_t *meta)
+{
+    (void)epoch;
+    if (records) memset(records, 0, CERBERUS_S3_BLE_REACQUIRE_CAPACITY * sizeof(*records));
     if (meta) memset(meta, 0, sizeof(*meta));
     return ESP_ERR_NOT_SUPPORTED;
 }

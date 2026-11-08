@@ -89,6 +89,7 @@ idf_component_register(
         "wifi_packet_monitor_scan.c"
         "wifi_channel_analyzer_scan.c"
         "wifi_fox_hunt_scan.c"
+        "saved_ble_lookup.c"
         "wifi_packet_count_record.c"
         "wifi_packet_count_diagnostics.c"
         "../../shared/wifi_packet_count.c"

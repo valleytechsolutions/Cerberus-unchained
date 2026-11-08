@@ -236,6 +236,22 @@ int main(void)
     reset();peer_firmware_version=68;corrupt=true;expected_command=compact;
     assert(c5_spi_link_dual_ble_exchange(compact,&metadata_request,sizeof(metadata_request),
         &metadata,sizeof(metadata))==ESP_ERR_INVALID_RESPONSE&&!probes&&commands==1&&zero(&metadata,sizeof(metadata)));
+    /* Saved-address discovery must never downgrade into an unfiltered scan. */
+    cerberus_dual_ble_start_t reacquire={.boot_id=123,.job_id=1,.version=2,
+        .mode=CERBERUS_DUAL_BLE_REACQUIRE,.address={1,2,3,4,5,6},
+        .address_type=CERBERUS_DUAL_BLE_ANY_OBSERVED_TYPE};
+    for (unsigned cached=0;cached<2;++cached) for (unsigned version=83;version<=84;++version) {
+        reset();reported_version=version;peer_firmware_version=cached?version:0;
+        expected_command=CERBERUS_SPI_COMMAND_DUAL_BLE_START;
+        esp_err_t error=c5_spi_link_dual_ble_exchange(expected_command,&reacquire,sizeof(reacquire),&out,sizeof(out));
+        assert(error==(version==84?ESP_OK:ESP_ERR_NOT_SUPPORTED));
+        assert(commands==(version==84?1U:0U) && probes==(cached?0U:1U));
+        if (version==83) assert(zero(&out,sizeof(out)));
+    }
+    reset();reported_version=84;probe_error=ESP_ERR_TIMEOUT;expected_command=CERBERUS_SPI_COMMAND_DUAL_BLE_START;
+    assert(c5_spi_link_dual_ble_exchange(expected_command,&reacquire,sizeof(reacquire),&out,sizeof(out))==ESP_ERR_TIMEOUT && !commands);
+    reset();peer_firmware_version=84;reacquire.address_type=1;
+    assert(c5_spi_link_dual_ble_exchange(CERBERUS_SPI_COMMAND_DUAL_BLE_START,&reacquire,sizeof(reacquire),&out,sizeof(out))==ESP_ERR_INVALID_ARG && !commands && !probes);
     puts("Production firmware-cache recovery passed: Analyzer/Family/Response START and read gates, optional compact68/full67 compatibility, transient recovery and shared deadline");
     return 0;
 }

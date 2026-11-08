@@ -147,6 +147,13 @@ int main(void)
     memset(&discovery, 0xa5, sizeof(discovery));
     if(cerberus_s3_ble_scanner_discovery_diagnostics(&discovery)!=ESP_OK ||
         memcmp(&discovery,&empty_discovery,sizeof(discovery))) return 11;
+    cerberus_s3_ble_discovery_record_t reacquire[4], empty_reacquire[4] = {0};
+    memset(&discovery,0xa5,sizeof(discovery));
+    if(cerberus_s3_ble_scanner_start_reacquire((uint8_t[6]){1},0,&discovery)!=ESP_ERR_NOT_SUPPORTED ||
+        memcmp(&discovery,&empty_discovery,sizeof(discovery))) return 30;
+    memset(reacquire,0xa5,sizeof(reacquire));
+    if(cerberus_s3_ble_scanner_copy_reacquire(1,reacquire,&discovery)!=ESP_ERR_NOT_SUPPORTED ||
+        memcmp(reacquire,empty_reacquire,sizeof(reacquire)) || memcmp(&discovery,&empty_discovery,sizeof(discovery))) return 31;
     cerberus_s3_ble_analyzer_state_t analyzer, empty_analyzer={0};
     memset(&analyzer,0xa5,sizeof(analyzer));
     if(cerberus_s3_ble_scanner_analyzer_start(&analyzer)!=ESP_ERR_NOT_SUPPORTED ||

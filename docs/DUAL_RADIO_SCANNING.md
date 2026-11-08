@@ -2,6 +2,11 @@
 
 ## Current installed checkpoint
 
+The next source milestone is [rev163 saved Bluetooth lookup](SAVED_BLE_LOOKUP.md):
+saved `.BLE` and Find My JSON details can explicitly reacquire an address on
+both receivers before entering Fox Hunt. It is under validation; rev162
+remains the installed baseline.
+
 The latest installed checkpoint is [rev162](WIFI_FOX_HUNT.md), adding a
 selected-transmitter Wi-Fi Fox Hunt with passive C5 reception/search and
 bounded S3 signal history. Direct AP/client/PineScan/MultiSSID entry and

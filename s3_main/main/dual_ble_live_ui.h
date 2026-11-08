@@ -28,12 +28,12 @@ static bool dual_ble_live_discovery_released(void)
         cerberus_ble_discovery_session_released(&ble_discovery_live->session);
 }
 
-static void ble_fox_hunt_open_peer(const cerberus_c5_ble_result_t *peer, bool from_c5)
+static bool ble_fox_hunt_open_peer(const cerberus_c5_ble_result_t *peer, bool from_c5)
 {
     /* Navigation cannot choose a second target while this page owns a sweep
      * or is draining one. Preserve the original target and stop permission. */
     if (!peer || ble_mode == UI_BLE_MODE_FOX_HUNT || ble_fox_hunt_exit_pending ||
-        ble_fox_hunt_s3_attached || ble_fox_hunt_s3_started) return;
+        ble_fox_hunt_s3_attached || ble_fox_hunt_s3_started) return false;
     /* A tracking target is only an immutable typed address, never permission
      * to use another receiver's raw packet for a GATT or sound operation. */
     ble_fox_hunt_target = *peer;
@@ -54,6 +54,7 @@ static void ble_fox_hunt_open_peer(const cerberus_c5_ble_result_t *peer, bool fr
     ble_discovery_leave();
     dual_ble_ui_sync(-1, NULL, 0U, (uint64_t)esp_timer_get_time() / 1000U);
     ble_mode = UI_BLE_MODE_FOX_HUNT;
+    return true;
 }
 
 static bool dual_ble_live_prepare_fox(uint32_t now, bool asleep)

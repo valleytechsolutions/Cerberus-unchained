@@ -15,6 +15,9 @@ static ble_archive_ui_store_t *ble_archive_view;
 static bool ble_archive_menu;
 static unsigned native_disposes, allocations, frees, loads, saves, exports, copies, releases, cancels, draws;
 static bool oom;
+static unsigned lookup_entries;
+static bool saved_ble_lookup_holds_files(void) { return false; }
+static void saved_ble_lookup_open(bool json) { CHECK(json); ++lookup_entries; }
 static void *allocated;
 static void *heap_caps_calloc(size_t count,size_t size,unsigned caps)
 { CHECK(caps==(MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT));CHECK(!allocated);++allocations;

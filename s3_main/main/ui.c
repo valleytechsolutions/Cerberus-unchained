@@ -416,6 +416,14 @@ static void airtag_json_open_export(void);
 static esp_err_t airtag_json_draw(void);
 static void airtag_json_tap(uint16_t x, uint16_t y);
 static bool airtag_json_tick(bool asleep);
+static bool saved_ble_lookup_is_open(void);
+static bool saved_ble_lookup_holds_files(void);
+static bool saved_ble_lookup_ui_busy(void);
+static void saved_ble_lookup_open(bool json);
+static esp_err_t saved_ble_lookup_draw(void);
+static void saved_ble_lookup_tap(uint16_t x, uint16_t y);
+static bool saved_ble_lookup_tick(bool asleep);
+static bool saved_ble_lookup_fox_return(bool asleep);
 static void ble_archive_tap(uint16_t x, uint16_t y);
 static void ble_archive_tick(bool asleep);
 static void ble_archive_open_menu(void);
@@ -465,7 +473,7 @@ static bool dual_ble_live_c5_retryable(void);
 static void ble_discovery_leave(void);
 static bool dual_ble_live_discovery_released(void);
 static void dual_ble_live_tap(uint16_t x, uint16_t y);
-static void ble_fox_hunt_open_peer(const cerberus_c5_ble_result_t *peer, bool from_c5);
+static bool ble_fox_hunt_open_peer(const cerberus_c5_ble_result_t *peer, bool from_c5);
 static bool dual_ble_live_prepare_fox(uint32_t now, bool asleep);
 static bool ble_fox_hunt_s3_retryable(void);
 static bool ble_fox_hunt_c5_retryable(void);
@@ -10120,6 +10128,7 @@ static void ble_fox_hunt_finish_exit(bool asleep, bool host_held)
     ble_fox_hunt_error = ESP_OK;
     ble_fox_hunt_barrier_error = ESP_OK;
     ble_fox_hunt_start_pending = false;
+    if (saved_ble_lookup_fox_return(asleep)) return;
     /* Hidden cleanup must not navigate away from a newer page. */
     if (current_page != UI_PAGE_BLE || ble_mode != UI_BLE_MODE_FOX_HUNT) return;
     ble_mode = ble_fox_hunt_from_c5 ? UI_BLE_MODE_C5 : UI_BLE_MODE_DETAIL;
@@ -11589,6 +11598,7 @@ static void handle_scripts_tap(uint16_t x, uint16_t y)
 #include "s3_findmy_monitor_ui.h"
 #include "ble_archive_live_ui.h"
 #include "airtag_json_live_ui.h"
+#include "saved_ble_lookup_ui.h"
 #include "wardrive_recent_live_ui.h"
 #include "wardrive_gps_live_ui.h"
 #include "wardrive_logs_ui.h"

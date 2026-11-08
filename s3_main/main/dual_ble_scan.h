@@ -73,6 +73,8 @@ typedef struct {
     uint8_t phase, count, read_index, retries, published_generation, inventory_retries;
     uint8_t published_family;
     bool published_response;
+    bool published_reacquire;
+    uint8_t published_address[6];
     bool enabled, extended, has_track, stop_requested;
     bool has_first_result, live_updates, discovery_clock_valid, snapshot_anchor_valid, snapshots_capable;
     bool inventory_known, inventory_replacement_enabled, pending_inventory_known, inventory_query_enabled;
@@ -117,6 +119,9 @@ esp_err_t cerberus_dual_ble_begin(cerberus_dual_ble_scan_t *, uint8_t mode,
 /* Family codes 1..6 match the passive S3 family selectors. Unsupported peers
  * fail before START; this never substitutes ordinary discovery admission. */
 esp_err_t cerberus_dual_ble_begin_family(cerberus_dual_ble_scan_t *, uint8_t family);
+/* Address-only passive discovery. Imported address types stay historical;
+ * each fresh observed type is retained separately. Requires firmware84. */
+esp_err_t cerberus_dual_ble_begin_reacquire(cerberus_dual_ble_scan_t *, const uint8_t address[6]);
 /* Explicit response acquisition: active1M/passive-coded. family0 selects
  * ordinary discovery,1..6 focused admission. Unsupported peers fail before
  * START; this never substitutes a passive or older read projection. */
@@ -134,6 +139,11 @@ bool cerberus_dual_ble_row(const cerberus_dual_ble_scan_t *, uint8_t index,
  * them. No transport, clock or allocation. Failed copies clear both outputs. */
 bool cerberus_dual_ble_copy_row(const cerberus_dual_ble_scan_t *, uint8_t index,
     cerberus_dual_ble_row_t *out, cerberus_dual_ble_provenance_t *provenance);
+/* Only a new publication in this reacquisition run, bound to this selector.
+ * Retained rows from an earlier run/mode never satisfy this accessor. */
+bool cerberus_dual_ble_reacquire_row(const cerberus_dual_ble_scan_t *, uint8_t index,
+    const uint8_t address[6], cerberus_dual_ble_row_t *out,
+    cerberus_dual_ble_provenance_t *provenance);
 void cerberus_dual_ble_track_view(const cerberus_dual_ble_scan_t *, uint64_t now_ms,
     cerberus_dual_ble_track_view_t *out);
 bool cerberus_dual_ble_released(const cerberus_dual_ble_scan_t *);

@@ -8,7 +8,7 @@
 typedef enum { AIRTAG_JSON_LIST, AIRTAG_JSON_RAW, AIRTAG_JSON_JOB,
     AIRTAG_JSON_ERROR, AIRTAG_JSON_CONFIRM } airtag_json_ui_page_t;
 typedef enum { AIRTAG_JSON_NONE, AIRTAG_JSON_REDRAW, AIRTAG_JSON_BACK,
-    AIRTAG_JSON_SAVE, AIRTAG_JSON_EXPORT } airtag_json_ui_action_t;
+    AIRTAG_JSON_SAVE, AIRTAG_JSON_EXPORT, AIRTAG_JSON_FIND_LIVE } airtag_json_ui_action_t;
 typedef struct {
     cerberus_airtag_json_t document;
     cerberus_airtag_json_record_t painted[4], selected;
@@ -126,7 +126,7 @@ static inline esp_err_t airtag_json_ui_draw(airtag_json_ui_store_t *s, esp_err_t
         }
         ESP_RETURN_ON_ERROR(draw_button(8, 374, 148, 44, "PREV BYTES"), TAG, "JSON raw prev");
         ESP_RETURN_ON_ERROR(draw_button(164, 374, 148, 44, "NEXT BYTES"), TAG, "JSON raw next");
-        return airtag_json_ui_footer(NULL);
+        return airtag_json_ui_footer("FIND LIVE");
     }
     snprintf(line, sizeof(line), "%.48s", s->file_name);
     ESP_RETURN_ON_ERROR(draw_centered(80, line, UI_TEXT, 1), TAG, "JSON filename");
@@ -174,6 +174,8 @@ static inline airtag_json_ui_action_t airtag_json_ui_tap(airtag_json_ui_store_t 
     if (s->view == AIRTAG_JSON_CONFIRM && x >= 112U && x < 312U && y >= 426U && y < 470U)
         return AIRTAG_JSON_EXPORT;
     if (!s->has_document) return AIRTAG_JSON_NONE;
+    if (s->view == AIRTAG_JSON_RAW && s->selected_valid &&
+        x >= 112U && x < 312U && y >= 426U && y < 470U) return AIRTAG_JSON_FIND_LIVE;
     if (s->view == AIRTAG_JSON_ERROR && x >= 48U && x < 272U && y >= 374U && y < 418U) {
         s->view = AIRTAG_JSON_LIST; return AIRTAG_JSON_REDRAW;
     }

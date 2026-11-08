@@ -380,7 +380,7 @@ static void test_receive_info(const char *directory)
     CHECK(!memcmp(&viewer.selected,&frozen,sizeof(frozen)));
     clear_draw();CHECK(ble_archive_ui_draw(&viewer,ESP_OK)==ESP_OK);
     CHECK(strstr(drawn,"C5 RECEIVE INFO RETAINED")&&strstr(drawn,"C5 RESPONSE BYTES UNAVAILABLE")&&
-        strstr(drawn,"RAW / RX INFO / HINTS")&&!strstr(drawn,"RAW ADV / RESPONSE"));
+        strstr(drawn,"RAW DATA")&&strstr(drawn,"FIND LIVE"));
     preview(directory,"archive-c5-receive-detail");
     CHECK(ble_archive_ui_tap(&viewer,64,374)==BLE_ARCHIVE_UI_REDRAW&&!viewer.raw_response);
     clear_draw();CHECK(ble_archive_ui_draw(&viewer,ESP_OK)==ESP_OK);

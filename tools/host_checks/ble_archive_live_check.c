@@ -15,6 +15,13 @@ enum { UI_FILE_MODE_LIST };
 static ui_page_t current_page;
 static ui_ble_mode_t ble_mode;
 static bool ui_capability_blocked;
+static unsigned lookup_entries;
+static bool saved_ble_lookup_holds_files(void) { return false; }
+static bool saved_ble_lookup_is_open(void) { return false; }
+static bool saved_ble_lookup_tick(bool asleep) { (void)asleep; return false; }
+static esp_err_t saved_ble_lookup_draw(void) { CHECK(false); return ESP_FAIL; }
+static void saved_ble_lookup_tap(uint16_t x,uint16_t y) { (void)x;(void)y;CHECK(false); }
+static void saved_ble_lookup_open(bool json) { CHECK(!json); ++lookup_entries; }
 enum { UI_BACK_Y=426, UI_BACK_HEIGHT=44 };
 static int file_mode;
 static bool ble_selection_valid, ble_selected_raw_frozen, ble_selected_original_time64_valid;
@@ -484,7 +491,7 @@ static void test_saved_family_reopen(void)
     ble_archive_open_file("/MOVED","family.BLE");complete();
     CHECK(!memcmp(&frozen,&ble_archive_view->document,sizeof(frozen)));
     ble_archive_tap(20,160);CHECK(ble_archive_view->selected_valid);
-    ble_archive_tap(160,390);CHECK(ble_archive_view->view==BLE_ARCHIVE_UI_RAW);
+    ble_archive_tap(64,390);CHECK(ble_archive_view->view==BLE_ARCHIVE_UI_RAW);
     ble_archive_tap(250,65);CHECK(ble_archive_view->raw_hints&&strstr(drawn,"SAVED C5 HINTS"));
     CHECK(strstr(drawn,"HISTORICAL / NO LIVE RADIO")&&strstr(drawn,"AGE AT SAVE: <= 105 ms"));
     CHECK(ble_archive_view->selected.receiver_boot_id==123&&ble_archive_view->selected.scan_epoch==456);
@@ -569,7 +576,7 @@ static void test_saved_c5_response_reopen(void)
         unsigned clocks=clock_reads,stopped=s3_stop_requests,save_count=saves;
         ble_archive_open_file("/MOVED","response.BLE");complete();
         CHECK(!memcmp(&frozen,&ble_archive_view->document,sizeof(frozen)));
-        ble_archive_tap(20,160);ble_archive_tap(160,390);
+        ble_archive_tap(20,160);ble_archive_tap(64,390);
         CHECK(ble_archive_view->view==BLE_ARCHIVE_UI_RAW&&!ble_archive_view->c5_response);
         ble_archive_tap(200,94);CHECK(ble_archive_view->c5_response&&strstr(drawn,"SAVED C5 RESPONSE"));
         CHECK(!memcmp(&ble_archive_view->selected.c5_response,&frozen.rows[0].c5_response,sizeof(frozen.rows[0].c5_response)));
