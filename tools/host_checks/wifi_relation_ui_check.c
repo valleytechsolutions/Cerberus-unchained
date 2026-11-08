@@ -42,6 +42,9 @@ static wifi_packet_count_selection_t packet_count_selection;
 static esp_err_t wifi_packet_count_open_selection(const wifi_packet_count_selection_t *selection,unsigned origin)
 {assert(origin==UI_WIFI_MODE_OBSERVED_CLIENTS);packet_count_selection=*selection;++packet_count_entries;return ESP_OK;}
 static bool dual_wifi_return_to_view;
+/* The retained parent footer can inspect this unrelated, closed view. */
+enum { CHANNEL_ANALYZER_BACK };
+static struct { unsigned action; } *channel_analyzer_ui;
 static char footer_text[32];
 static uint8_t footer_scale;
 static uint16_t footer_x,footer_width;
