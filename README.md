@@ -29,26 +29,23 @@ reference revisions and the distinction between adapted code and independently
 implemented workflows. This acknowledgment does not change any license or
 imply upstream endorsement of Cerberus Unchained.
 
-**Next candidate:** Rev162 adds passive Wi-Fi Fox Hunt from selected AP,
-observed-client, PineScan and MultiSSID details, with C5 transmitter tracking
-and channel search plus S3 signal history and controls. It also keeps radio
-cleanup errors visible on the Channel Analyzer screen. Candidate verification
-and physical acceptance are tracked in [Wi-Fi Fox Hunt](docs/WIFI_FOX_HUNT.md).
+**Local development checkpoint:** `0.1.0-dev.rev162` is installed on the
+development board with onboard C5 capability 83. Passive **Wi-Fi Fox Hunt**
+opens from selected AP, observed-client, PineScan and MultiSSID details. C5
+tracks the transmitter and searches after signal loss; S3 validates the
+readings, retains history and handles the screen. Channel Analyzer cleanup
+errors also remain visible while release is retried.
+[Tracker behavior and installation evidence](docs/WIFI_FOX_HUNT.md)
 
-**Local development checkpoint:** `0.1.0-dev.rev161` is installed on the
-development board with onboard C5 capability 82. **Scan → Wi-Fi → Channel
-Analyzer** now provides fixed-channel total-traffic receive windows, S3
-history and measured rates, channel controls and recent beacon hints. It
-shares the existing C5 worker and uses optional S3 PSRAM for the display.
-[Analyzer behavior and installation evidence](docs/CHANNEL_ANALYZER.md)
-
-All 175 host suites and five firmware targets passed on unchanged inputs.
-Both live build fingerprints match the package. Two idle captures 43 seconds
-apart showed mounted SD, stable free memory and unchanged monitored SPI error
-counters. The saved upload profile loads. Physical Analyzer reception,
-touchscreen navigation and sustained-use checks remain pending.
+All 179 registered host suites and five native targets passed on unchanged
+inputs. All nine image writes verified, and both live build fingerprints
+match the package. Two idle captures 72.9 seconds apart showed mounted SD,
+stable free memory and unchanged monitored SPI error counters. The saved
+upload profile loads. Physical tracking/reacquisition, touchscreen navigation,
+radio handoffs and sustained-use checks remain pending.
 
 The pair also includes the [Channel Activity graph](docs/CHANNEL_ACTIVITY.md),
+[Channel Analyzer](docs/CHANNEL_ANALYZER.md),
 [GPS qualification and radio cleanup retries](docs/GPS_AND_RADIO_RECOVERY.md),
 and [recovery after early S3 Wi-Fi startup failures](docs/SCAN_STARTUP_RECOVERY.md).
 These are specific implemented improvements; complete Marauder parity remains

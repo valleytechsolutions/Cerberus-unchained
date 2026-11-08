@@ -2,11 +2,14 @@
 
 ## Current installed checkpoint
 
-The latest installed checkpoint is [rev161](CHANNEL_ANALYZER.md), adding a
-fixed-channel C5 Analyzer with measured windows, bounded S3 PSRAM history and
-exact-session navigation. All 175 host suites, five native targets and paired
-idle installation checks passed; physical Analyzer acceptance remains open.
-It includes the [rev158 Channel Activity graph](CHANNEL_ACTIVITY.md).
+The latest installed checkpoint is [rev162](WIFI_FOX_HUNT.md), adding a
+selected-transmitter Wi-Fi Fox Hunt with passive C5 reception/search and
+bounded S3 signal history. Direct AP/client/PineScan/MultiSSID entry and
+exact-release Back routes avoid a second target inventory. All 179 host
+suites, five native targets and paired idle installation checks passed.
+Physical tracking and navigation acceptance remains open. It includes the
+[rev161 Channel Analyzer](CHANNEL_ANALYZER.md) and
+[rev158 Channel Activity graph](CHANNEL_ACTIVITY.md).
 
 Rev159 adds S3 Wi-Fi cleanup recovery:
 the existing scan worker retains its owner and retries unfinished teardown
