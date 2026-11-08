@@ -965,7 +965,7 @@ esp_err_t c5_spi_link_wifi_channel_survey_session_result(uint64_t session_id,
         CERBERUS_WIFI_CHANNEL_SURVEY_READ_RESULT, index, (uint8_t *)out);
     if (error == ESP_OK && (out->generation != generation || out->index != index ||
         out->seen > 1U || !out->channel ||
-        out->dwell_ms != CERBERUS_WIFI_CHANNEL_SURVEY_DWELL_MS)) error = ESP_ERR_INVALID_RESPONSE;
+        !out->dwell_ms)) error = ESP_ERR_INVALID_RESPONSE;
     if (error != ESP_OK) memset(out, 0, sizeof(*out));
     return error;
 }

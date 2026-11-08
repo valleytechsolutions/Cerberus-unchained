@@ -37,6 +37,11 @@ passed. Both live build fingerprints match the package; the owner confirmed
 the S3/C5 tabs, Refresh and Back. The post-navigation heap and task counts
 returned to their idle baseline. See [Device Info](docs/DEVICE_INFO.md).
 
+Rev158 development adds a [channel-activity graph](docs/CHANNEL_ACTIVITY.md)
+to the existing Channels page and calculates frame rates from the actual C5
+receive time. Its focused host checks pass; paired build and physical
+acceptance are still pending at this source checkpoint.
+
 The included Wardriving changes continue across private journal segments,
 reduce redundant SD writes and keep one final CSV with strongest/weakest RSSI
 rows. A short rev156 recording saved 151 final rows in 474 ms without a

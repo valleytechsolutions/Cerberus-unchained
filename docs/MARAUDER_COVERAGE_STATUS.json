@@ -1,6 +1,6 @@
 {
   "format": 1,
-  "checkpoint": "rev157-installed-ui",
+  "checkpoint": "rev158-channel-activity-source",
   "scope": "Marauder develop was rechecked on 2026-11-08 UTC at 79cc6bcba1db6679baee1dab2b0c1ad5010e6363. The matched rev156 pair was installed with C5 capability 79; 170 host suites, five native targets, write verification and paired idle boot/SD checks passed (docs/DUAL_RADIO_REV156.md). The owner confirmed rev149 GPS wait/cancel and layout. That earlier long recording reached its 64 MiB journal limit, then reported one closed CSV with 1118 retained rows from 712083 accepted rows; contents still need readback. Rev150 adds GPS track/POI, rev151 reduces redundant journal appends, rev152 corrects Wardriving/Packet Monitor command routing, rev154 integrates persisted geofences, rev155 reduces compaction index traffic, and rev156 continues across private journal segments. The owner confirmed a short rev156 Start/Stop recording; retained counters reported one CSV, 151 final rows from 248 journal rows, 478 avoided appends and 474 ms save time with no radio/GPS/SD error. This does not establish physical rollover or long-session performance. Moving/endurance, final CSV/GPX readback, optional expansion hardware and complete upstream parity remain open. Uploads remain manual; provider acknowledgement is distinct from provider-side processing. Rev157 is installed with C5 capability 80 after 171 host suites, five native targets, recovery backups and verified writes. Both live build descriptors match the package. The owner confirmed S3/C5 tabs, Refresh and Back, and post-navigation memory/task counts returned to baseline with no new listed SPI errors (docs/DEVICE_INFO.md). Active-service coexistence and endurance remain open.",
   "status_definitions": {
     "partial": "A related Cerberus workflow exists, but upstream option/behavior parity or hardware acceptance remains open.",
@@ -1335,10 +1335,10 @@
       "symbol": "WIFI_SCAN_CHAN_ACT",
       "family": "wifi_channel_and_signal",
       "status": "partial",
-      "cerberus_evidence": "docs/FEATURE_PARITY.md",
-      "next_gap": "C5 channel samples and S3 summary exist; add upstream channel-activity graph behavior and live dual-band acceptance.",
-      "s3_role": "S3 schedules, graphs and stores channel/signal history, with 2.4 GHz observations when feasible.",
-      "c5_role": "C5 measures dual-band channel activity and target RSSI.",
+      "cerberus_evidence": "docs/CHANNEL_ACTIVITY.md",
+      "next_gap": "Rev158 adds List/Graph views of per-channel completed receive windows, measured-duration rates, explicit legacy-rate labels and retained/pending/unavailable distinctions. Focused production worker, SPI and UI host checks pass. Full matrix, packaging, installation and live 2.4/5 GHz activity, Stop/Back and following scan acceptance remain open at this source checkpoint. Latest-window rates are not simultaneous channel counts or airtime utilization. Separate Channel Analyzer timelines and complete upstream option parity remain open.",
+      "s3_role": "S3 validates and renders paced channel snapshots; view switches add no receiver or SPI reads.",
+      "c5_role": "C5 samples one 2.4 or 5 GHz channel at a time and publishes counts, RSSI and measured receive durations under its scoped owner.",
       "related_menu_entries": [],
       "related_cli_commands": [],
       "status_detail": "A related Cerberus workflow exists, but upstream option/behavior parity or hardware acceptance remains open."

@@ -271,6 +271,7 @@ static void reset(void)
     wifi_channel_survey_cleanup_polled=false;wifi_channel_survey_claim_generation=wifi_channel_survey_claim_band=0;
     wifi_channel_survey_cleanup_last_poll=wifi_channel_survey_last_poll=0;wifi_channel_survey_error=ESP_ERR_INVALID_STATE;
     wifi_channel_survey_page=0;wifi_mode=UI_WIFI_MODE_CHANNELS_24;current_page=UI_PAGE_WIFI;screen_asleep=false;
+    wifi_channel_survey_graph=false;
     c5_status.firmware_version=CERBERUS_WIFI_CHANNEL_SURVEY_SESSION_MIN_FIRMWARE;
     peer_firmware_version=0;sequence=0;device_queries=scoped_starts=scoped_stops=scoped_statuses=scoped_reads=wire_calls=0;
     reboot_before=reboot_after=corrupt_command=corrupt_part=corrupt_kind=0;wire_cost_us=0;worker_delay_hook=NULL;
@@ -433,6 +434,12 @@ static void projection_atomicity_and_bounds(void)
     CHECK(wifi_channel_survey_rows[5].index==5&&wifi_channel_survey_rows[5].channel==6&&wifi_channel_survey_rows[5].total_packets==22);
     draw_expect("CH 6","STOP");CHECK(strstr(drawn,"CH 5"));
     cerberus_wifi_channel_survey_result_payload_t prior=wifi_channel_survey_rows[0],out;
+    channel_survey_results[0].dwell_ms=120;
+    CHECK(c5_spi_link_wifi_channel_survey_session_result(id,1,0,&out)==ESP_OK&&out.dwell_ms==120);
+    channel_survey_results[0].dwell_ms=0;memset(&out,0xa5,sizeof(out));
+    CHECK(c5_spi_link_wifi_channel_survey_session_result(id,1,0,&out)==ESP_ERR_INVALID_RESPONSE);
+    const uint8_t *empty=(const uint8_t *)&out;for(unsigned i=0;i<sizeof(out);++i)CHECK(!empty[i]);
+    channel_survey_results[0].dwell_ms=100;
     for(unsigned part=0;part<3;++part){
         fail_read_part=(uint8_t)part;memset(&out,0xa5,sizeof(out));
         CHECK(c5_spi_link_wifi_channel_survey_session_result(id,1,0,&out)==ESP_ERR_TIMEOUT);
@@ -498,6 +505,39 @@ static void old_peer_gate(void)
         CHECK(!scoped_starts&&!scoped_stops&&device_queries==1);
     }
 }
+static void view_controls(void)
+{
+    reset();wifi_channel_survey_begin_ui();unsigned before=wire_calls;
+    CHECK(wifi_channel_survey_view_tap(164,78)&&wifi_channel_survey_graph);
+    draw_expect("NOMINAL 100MS", "STOP");
+    CHECK(strstr(drawn,"PENDING")&&!strstr(drawn,"\n0MS\n"));
+    c5_status.firmware_version=CERBERUS_WIFI_CHANNEL_SURVEY_MEASURED_MIN_FIRMWARE;
+    draw_expect("C5 MEASURED RX", "STOP");
+    CHECK(wifi_channel_survey_view_tap(155,115)&&!wifi_channel_survey_graph);
+    CHECK(!wifi_channel_survey_view_tap(156,90)&&!wifi_channel_survey_graph);
+    CHECK(!wifi_channel_survey_view_tap(163,90)&&!wifi_channel_survey_graph);
+    CHECK(!wifi_channel_survey_view_tap(164,77)&&!wifi_channel_survey_graph);
+    CHECK(!wifi_channel_survey_view_tap(164,116)&&!wifi_channel_survey_graph);
+    CHECK(!wifi_channel_survey_view_tap(312,90)&&!wifi_channel_survey_graph);
+    CHECK(wifi_channel_survey_view_tap(311,115)&&wifi_channel_survey_graph);
+    wifi_mode=UI_WIFI_MODE_MENU;
+    CHECK(!wifi_channel_survey_view_tap(8,78)&&wifi_channel_survey_graph);
+    CHECK(wire_calls==before&&scoped_starts==1&&!scoped_stops);
+    wifi_mode=UI_WIFI_MODE_CHANNELS_24;settle_stop();
+}
+static void preview(const char *prefix,const char *name)
+{
+    drawn[0]=0;CHECK(cerberus_display_fill_rect(0,0,320,480,UI_BACKGROUND)==ESP_OK);
+    CHECK(draw_header("CHANNEL SURVEY")==ESP_OK);CHECK(draw_wifi_channel_survey_live()==ESP_OK);
+    CHECK(draw_small_button(8,430,304,42,"BACK")==ESP_OK);
+    char path[1024];snprintf(path,sizeof(path),"%s-%s-%s.ppm",prefix,name,wifi_channel_survey_graph?"graph":"list");
+    FILE *file=fopen(path,"wb");CHECK(file);CHECK(fprintf(file,"P6\n320 480\n255\n")>0);
+    for(unsigned y=0;y<480;++y)for(unsigned x=0;x<320;++x){uint16_t p=pixels[y][x];
+        const uint8_t rgb[]={(uint8_t)(((p>>11)&31)*255/31),(uint8_t)(((p>>5)&63)*255/63),(uint8_t)((p&31)*255/31)};
+        if(fwrite(rgb,1,3,file)!=3)abort();
+    }
+    CHECK(fclose(file)==0);
+}
 static void previews(const char *prefix)
 {
     static const char *names[]={"running","held-error","released","releasing"};
@@ -505,28 +545,37 @@ static void previews(const char *prefix)
     wifi_channel_survey_rows_valid=(uint8_t)((1U<<UI_WIFI_VISIBLE_ROWS)-1U);wifi_channel_survey_status.total_sweeps=7;wifi_channel_survey_status.total_packets=314;
     for(unsigned i=0;i<UI_WIFI_VISIBLE_ROWS;++i)wifi_channel_survey_rows[i]=(cerberus_wifi_channel_survey_result_payload_t){
         .channel=(uint8_t)(1+i*2),.seen=1,.rate_per_sec=(uint16_t)(12+i*4),.average_rssi=-65,
-        .total_packets=70+i,.last_packets=(uint16_t)(4+i),.strongest_rssi=-42};
+        .total_packets=70+i,.last_packets=(uint16_t)(4+i),.strongest_rssi=-42,.dwell_ms=(uint16_t)(100+i)};
+    c5_status.firmware_version=CERBERUS_WIFI_CHANNEL_SURVEY_MEASURED_MIN_FIRMWARE;
     for(unsigned state=0;state<sizeof(names)/sizeof(names[0]);++state){
         if(state==1){wifi_channel_survey_cleanup_requested=true;wifi_channel_survey_error=ESP_FAIL;}
         if(state==2){wifi_channel_survey_claimed=false;wifi_channel_survey_status.state=CERBERUS_WIFI_CHANNEL_SURVEY_IDLE;wifi_channel_survey_error=ESP_OK;}
         if(state==3){wifi_channel_survey_claimed=true;wifi_channel_survey_cleanup_requested=true;
             wifi_channel_survey_status.state=CERBERUS_WIFI_CHANNEL_SURVEY_RUNNING;wifi_channel_survey_error=ESP_ERR_NOT_FINISHED;}
-        drawn[0]=0;CHECK(cerberus_display_fill_rect(0,0,320,480,UI_BACKGROUND)==ESP_OK);
-        CHECK(draw_header("CHANNEL SURVEY")==ESP_OK);CHECK(draw_wifi_channel_survey_live()==ESP_OK);
-        CHECK(draw_small_button(8,430,304,42,"BACK")==ESP_OK);
-        char path[1024];snprintf(path,sizeof(path),"%s-%s.ppm",prefix,names[state]);
-        FILE *file=fopen(path,"wb");CHECK(file);CHECK(fprintf(file,"P6\n320 480\n255\n")>0);
-        for(unsigned y=0;y<480;++y)for(unsigned x=0;x<320;++x){uint16_t p=pixels[y][x];
-            const uint8_t rgb[]={(uint8_t)(((p>>11)&31)*255/31),(uint8_t)(((p>>5)&63)*255/63),(uint8_t)((p&31)*255/31)};
-            if(fwrite(rgb,1,3,file)!=3)abort();
-        }
-        CHECK(fclose(file)==0);
+        for(unsigned view=0;view<2;++view){wifi_channel_survey_graph=view;preview(prefix,names[state]);}
     }
+    wifi_channel_survey_claimed=false;wifi_channel_survey_cleanup_requested=false;
+    wifi_channel_survey_error=ESP_OK;wifi_channel_survey_status.state=CERBERUS_WIFI_CHANNEL_SURVEY_IDLE;
+    wifi_channel_survey_status.total_sweeps=UINT16_MAX;wifi_channel_survey_status.total_packets=UINT32_MAX;
+    wifi_channel_survey_rows[0].total_packets=UINT32_MAX;wifi_channel_survey_rows[0].last_packets=UINT16_MAX;
+    wifi_channel_survey_rows[0].average_rssi=-127;wifi_channel_survey_rows[0].strongest_rssi=-127;
+    wifi_channel_survey_rows[0].rate_per_sec=UINT16_MAX;wifi_channel_survey_rows[0].dwell_ms=UINT16_MAX;
+    wifi_channel_survey_rows[1].seen=false;wifi_channel_survey_rows_valid&=~(1U<<2);
+    wifi_channel_survey_rows[3].rate_per_sec=0;
+    for(unsigned view=0;view<2;++view){wifi_channel_survey_graph=view;preview(prefix,"limits");}
+    CHECK(strstr(drawn,">=65535")&&strstr(drawn,"65535MS")&&strstr(drawn,"N/A")&&strstr(drawn,"PENDING"));
+    CHECK(strstr(drawn,"RECEIVER NOT LIVE"));
+    wifi_mode=UI_WIFI_MODE_CHANNELS_5;wifi_channel_survey_page=wifi_channel_survey_metrics_page=4;
+    wifi_channel_survey_status.result_count=25;wifi_channel_survey_rows_valid=1;
+    wifi_channel_survey_rows[0].channel=165;
+    preview(prefix,"last-page");CHECK(strstr(drawn,"CH 165")&&!strstr(drawn,"CH 3"));
+    wifi_channel_survey_rows[0].dwell_ms=100;c5_status.firmware_version=80;
+    preview(prefix,"legacy");CHECK(strstr(drawn,"NOMINAL 100MS"));
 }
 int main(int argc,char **argv)
 {
     CHECK(argc==2);
-    native_lifecycle();ui_failed_cleanup_and_hidden();ui_uncertain_and_replacement();ui_lost_ack_and_long_cleanup();projection_atomicity_and_bounds();old_peer_gate();
+    native_lifecycle();ui_failed_cleanup_and_hidden();ui_uncertain_and_replacement();ui_lost_ack_and_long_cleanup();projection_atomicity_and_bounds();old_peer_gate();view_controls();
     previews(argv[1]);
     printf("Channel Survey lifecycle: %u checks; actual worker/admission/SPI transport/UI cleanup, queued/dwell/disable failure/retry, uncertain Start, observed replacement, Back/sleep/hidden and reentry passed.\n",checks);
     return 0;

@@ -42,13 +42,19 @@ start = link.index("static esp_err_t wifi_channel_survey_status_command(")
 ui = (root / "s3_main/main/ui.c").read_text()
 start = ui.index("static cerberus_wifi_channel_survey_status_payload_t wifi_channel_survey_status;")
 globals_text = "\n".join(re.search(r"^#define " + name + r" .+$", ui, re.M).group(0)
-    for name in ("UI_WIFI_VISIBLE_ROWS", "UI_WIFI_SURVEY_METRICS_MS", "UI_WIFI_SURVEY_RETRY_MS")) + "\n"
+    for name in ("UI_WIFI_VISIBLE_ROWS", "UI_WIFI_SURVEY_METRICS_MS", "UI_WIFI_SURVEY_RETRY_MS",
+                 "UI_WIFI_SURVEY_LIST_Y", "UI_WIFI_SURVEY_ROW_HEIGHT")) + "\n"
 globals_text += ui[start:ui.index("typedef enum {\n    PACKET_MONITOR_NONE", start)]
 start = ui.index("static bool wifi_channel_survey_matches_claim(")
 helpers = ui[start:ui.index('#include "wifi_packet_monitor_ui.h"', start)]
 (out / "survey_ui.h").write_text(globals_text + function(ui,
     "static uint8_t wifi_channel_survey_band(") + helpers)
-(out / "survey_ui_draw.h").write_text(function(ui, "static esp_err_t draw_wifi_channel_survey_live("))
+(out / "survey_ui_draw.h").write_text(
+    function(ui, "static esp_err_t draw_wifi_channel_survey_graph(") +
+    function(ui, "static esp_err_t draw_wifi_channel_survey_live("))
+tap = function(ui, "static void handle_wifi_tap(")
+assert tap.index("wifi_channel_survey_view_tap(x, y)") < tap.index(
+    "if (y < UI_WIFI_CONTROLS_Y || y >= UI_WIFI_CONTROLS_Y + 42U)")
 layout = "\n".join(re.search(r"^#define " + name + r" .+$", ui, re.M).group(0)
                    for name in ("UI_WIFI_LIST_Y", "UI_WIFI_ROW_HEIGHT", "UI_WIFI_CONTROLS_Y")) + "\n"
 start = ui.index("static const cerberus_ui_widget_theme_t ui_colors =")

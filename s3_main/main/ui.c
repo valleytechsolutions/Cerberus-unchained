@@ -746,7 +746,10 @@ static uint8_t wifi_channel_history_bands[UI_WIFI_HISTORY_SAMPLES];
 static uint8_t wifi_snapshot_band = CERBERUS_WIFI_SCAN_BAND_ALL;
 #define UI_WIFI_SURVEY_METRICS_MS 250U
 #define UI_WIFI_SURVEY_RETRY_MS 700U
+#define UI_WIFI_SURVEY_LIST_Y 122U
+#define UI_WIFI_SURVEY_ROW_HEIGHT 38U
 static cerberus_wifi_channel_survey_status_payload_t wifi_channel_survey_status;
+static bool wifi_channel_survey_graph = true;
 static cerberus_wifi_channel_survey_result_payload_t
     wifi_channel_survey_rows[UI_WIFI_VISIBLE_ROWS];
 static uint8_t wifi_channel_survey_page;
@@ -2100,6 +2103,16 @@ static bool wifi_channel_survey_matches_claim(
             status->generation == wifi_channel_survey_claim_generation);
 }
 
+static bool wifi_channel_survey_view_tap(uint16_t x, uint16_t y)
+{
+    if ((wifi_mode != UI_WIFI_MODE_CHANNELS_24 && wifi_mode != UI_WIFI_MODE_CHANNELS_5) ||
+        y < 78U || y >= 116U) return false;
+    if (x >= 8U && x < 156U) wifi_channel_survey_graph = false;
+    else if (x >= 164U && x < 312U) wifi_channel_survey_graph = true;
+    else return false;
+    return true;
+}
+
 static bool wifi_channel_survey_accept_control(
     const cerberus_wifi_channel_survey_session_status_t *current)
 {
@@ -2419,6 +2432,57 @@ static esp_err_t draw_wifi_packet_monitor(void)
         packet_monitor_from_target ? "BACK AP" : "AP LIST");
 }
 
+static esp_err_t draw_wifi_channel_survey_graph(void)
+{
+    char line[52];
+    uint16_t peak = 1U;
+    bool current = wifi_channel_survey_claimed && !wifi_channel_survey_cleanup_requested &&
+        !wifi_channel_survey_cancelled && wifi_channel_survey_error == ESP_OK &&
+        wifi_channel_survey_status.state == CERBERUS_WIFI_CHANNEL_SURVEY_RUNNING;
+    bool measured = c5_status.firmware_version >= CERBERUS_WIFI_CHANNEL_SURVEY_MEASURED_MIN_FIRMWARE;
+    for (uint8_t i = 0; i < UI_WIFI_VISIBLE_ROWS; ++i)
+        if (wifi_channel_survey_metrics_page == wifi_channel_survey_page &&
+            (wifi_channel_survey_rows_valid & (1U << i)) && wifi_channel_survey_rows[i].seen &&
+            wifi_channel_survey_rows[i].rate_per_sec > peak) peak = wifi_channel_survey_rows[i].rate_per_sec;
+    ESP_RETURN_ON_ERROR(cerberus_display_fill_rect(8, 122, 304, 226, UI_PANEL), TAG, "channel graph panel");
+    snprintf(line, sizeof(line), "SCALE %s%u FRAMES/S / LAST WINDOWS", peak == UINT16_MAX ? ">=" : "", peak);
+    ESP_RETURN_ON_ERROR(cerberus_display_draw_text(14, 128, line, UI_TEXT, UI_PANEL, 1), TAG, "channel graph scale");
+    ESP_RETURN_ON_ERROR(cerberus_display_draw_text(14, 143,
+        current ? "SAMPLED TRAFFIC / NOT AIRTIME UTILIZATION" : "RETAINED VALUES / RECEIVER NOT LIVE",
+        UI_MUTED, UI_PANEL, 1), TAG, "channel graph scope");
+    ESP_RETURN_ON_ERROR(cerberus_display_fill_rect(14, 282, 292, 1, UI_MUTED), TAG, "channel graph baseline");
+    for (uint8_t i = 0; i < UI_WIFI_VISIBLE_ROWS; ++i) {
+        uint8_t index = (uint8_t)(wifi_channel_survey_page * UI_WIFI_VISIBLE_ROWS + i);
+        if (index >= wifi_channel_survey_status.result_count) break;
+        uint16_t x = (uint16_t)(14U + i * 49U);
+        bool valid = wifi_channel_survey_metrics_page == wifi_channel_survey_page &&
+            (wifi_channel_survey_rows_valid & (1U << i));
+        const cerberus_wifi_channel_survey_result_payload_t *row = &wifi_channel_survey_rows[i];
+        if (!valid) {
+            ESP_RETURN_ON_ERROR(cerberus_display_draw_text(x, 288, "PENDING", UI_MUTED, UI_PANEL, 1), TAG, "channel graph pending");
+            continue;
+        }
+        snprintf(line, sizeof(line), "CH %u", row->channel);
+        ESP_RETURN_ON_ERROR(cerberus_display_draw_text(x, 288, line, UI_TEXT, UI_PANEL, 1), TAG, "channel graph channel");
+        if (!row->seen) {
+            ESP_RETURN_ON_ERROR(cerberus_display_draw_text(x, 302,
+                wifi_channel_survey_status.total_sweeps ? "N/A" : "WAIT", UI_MUTED, UI_PANEL, 1), TAG, "channel graph unseen");
+            continue;
+        }
+        uint16_t height = (uint16_t)((uint32_t)row->rate_per_sec * 124U / peak);
+        if (row->rate_per_sec && !height) height = 1U;
+        if (height) ESP_RETURN_ON_ERROR(cerberus_display_fill_rect(x + 8U, 282U - height,
+            28, height, current ? UI_GOOD : UI_MUTED), TAG, "channel graph bar");
+        snprintf(line, sizeof(line), "%s%u", row->rate_per_sec == UINT16_MAX ? ">=" : "", row->rate_per_sec);
+        ESP_RETURN_ON_ERROR(cerberus_display_draw_text(x, 302, line, UI_TEXT, UI_PANEL, 1), TAG, "channel graph rate");
+        snprintf(line, sizeof(line), "%uMS", row->dwell_ms);
+        ESP_RETURN_ON_ERROR(cerberus_display_draw_text(x, 316, line, UI_MUTED, UI_PANEL, 1), TAG, "channel graph window");
+    }
+    return cerberus_display_draw_text(14, 334, measured ?
+        "C5 MEASURED RX / S3 GRAPH / WINDOWS DIFFER" : "C5 LEGACY RATE / NOMINAL 100MS WINDOWS",
+        UI_MUTED, UI_PANEL, 1);
+}
+
 static esp_err_t draw_wifi_channel_survey_live(void)
 {
     char line[72];
@@ -2466,20 +2530,25 @@ static esp_err_t draw_wifi_channel_survey_live(void)
         ESP_RETURN_ON_ERROR(draw_centered(65, "PAUSED / TAP BAND TO RESTART",
             UI_MUTED, 1), TAG, "Wi-Fi live channel paused failed");
     } else {
-        snprintf(line, sizeof(line), "100MS PASSIVE  SWEEPS %u  TOTAL %lu",
+        snprintf(line, sizeof(line), "PASSIVE SAMPLES  SWEEPS %u  TOTAL %lu",
             (unsigned)wifi_channel_survey_status.total_sweeps,
             (unsigned long)wifi_channel_survey_status.total_packets);
         ESP_RETURN_ON_ERROR(draw_centered(65, line, UI_MUTED, 1), TAG,
             "Wi-Fi live channel summary failed");
     }
-    for (uint8_t row = 0U; row < UI_WIFI_VISIBLE_ROWS; ++row) {
+    ESP_RETURN_ON_ERROR(draw_small_button(8, 78, 148, 38, "LIST"), TAG, "channel list tab");
+    ESP_RETURN_ON_ERROR(draw_small_button(164, 78, 148, 38, "GRAPH"), TAG, "channel graph tab");
+    ESP_RETURN_ON_ERROR(cerberus_display_fill_rect(wifi_channel_survey_graph ? 164 : 8, 117, 148, 2, UI_GOOD), TAG, "channel view marker");
+    if (wifi_channel_survey_graph) {
+        ESP_RETURN_ON_ERROR(draw_wifi_channel_survey_graph(), TAG, "channel activity graph");
+    } else for (uint8_t row = 0U; row < UI_WIFI_VISIBLE_ROWS; ++row) {
         uint8_t index = (uint8_t)(wifi_channel_survey_page * UI_WIFI_VISIBLE_ROWS + row);
         if (index >= wifi_channel_survey_status.result_count) break;
-        uint16_t y = UI_WIFI_LIST_Y + (uint16_t)row * UI_WIFI_ROW_HEIGHT;
+        uint16_t y = UI_WIFI_SURVEY_LIST_Y + (uint16_t)row * UI_WIFI_SURVEY_ROW_HEIGHT;
         const cerberus_wifi_channel_survey_result_payload_t *result =
             &wifi_channel_survey_rows[row];
         ESP_RETURN_ON_ERROR(cerberus_display_fill_rect(8, y, 304,
-            UI_WIFI_ROW_HEIGHT - 2U, UI_PANEL), TAG, "Wi-Fi live channel row failed");
+            UI_WIFI_SURVEY_ROW_HEIGHT - 2U, UI_PANEL), TAG, "Wi-Fi live channel row failed");
         if (wifi_channel_survey_metrics_page != wifi_channel_survey_page ||
             !(wifi_channel_survey_rows_valid & (1U << row))) {
             ESP_RETURN_ON_ERROR(cerberus_display_draw_text(14, y + 5U,
@@ -2491,11 +2560,12 @@ static esp_err_t draw_wifi_channel_survey_live(void)
         ESP_RETURN_ON_ERROR(cerberus_display_draw_text(14, y + 5U, line,
             UI_TEXT, UI_PANEL, 1), TAG, "Wi-Fi live channel number failed");
         if (result->seen) {
-            snprintf(line, sizeof(line), "%u PKT/S  AVG %dDB",
-                (unsigned)result->rate_per_sec, result->average_rssi);
+            snprintf(line, sizeof(line), "%s%u/S  RX %uMS  AVG %dDBM",
+                result->rate_per_sec == UINT16_MAX ? ">=" : "",
+                (unsigned)result->rate_per_sec, (unsigned)result->dwell_ms, result->average_rssi);
             ESP_RETURN_ON_ERROR(cerberus_display_draw_text(78, y + 5U, line,
                 UI_GOOD, UI_PANEL, 1), TAG, "Wi-Fi live channel rate failed");
-            snprintf(line, sizeof(line), "TOTAL %lu  LAST %u  BEST %dDB",
+            snprintf(line, sizeof(line), "TOTAL %lu LAST %u PEAK %d",
                 (unsigned long)result->total_packets,
                 (unsigned)result->last_packets, result->strongest_rssi);
         } else {
@@ -9281,6 +9351,10 @@ static void handle_wifi_tap(uint16_t x, uint16_t y)
         return;
     }
 
+    if (wifi_channel_survey_view_tap(x, y)) {
+        ESP_ERROR_CHECK(draw_detail_page());
+        return;
+    }
     if (y < UI_WIFI_CONTROLS_Y || y >= UI_WIFI_CONTROLS_Y + 42U) {
         return;
     }

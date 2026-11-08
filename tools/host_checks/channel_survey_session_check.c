@@ -52,7 +52,8 @@ static int64_t channel_survey_rssi_sum;
 static int8_t channel_survey_strongest_rssi;
 static unsigned notifications,enable_calls,disable_calls,channel_calls,delay_calls,worker_notifications;
 static unsigned cancel_after_delay, cleanup_recover_after, cleanup_delays;
-static bool clock_backwards, expire_during_filter, start_during_preempt;
+static bool clock_backwards, clock_stalled, expire_during_filter, start_during_preempt;
+static unsigned extra_delay_us;
 static esp_err_t nested_start_error;
 static void (*delay_hook)(unsigned);
 static esp_err_t cerberus_wifi_channel_survey_start(uint8_t band);
@@ -89,7 +90,9 @@ static int esp_wifi_set_channel(uint8_t channel,int second)
 {CHECK(channel&&second==0);++channel_calls;return channel_error;}
 static void vTaskDelay(unsigned ms)
 {
-    CHECK(!locked);clock_us+=(int64_t)ms*1000;
+    CHECK(!locked);
+    if (!clock_stalled) clock_us+=(int64_t)ms*1000;
+    if (worker_running && ms==10U) clock_us+=extra_delay_us;
     if (clock_backwards) { clock_backwards=false; clock_us=-1; }
     if (start_during_preempt) { start_during_preempt=false; nested_start_error=cerberus_wifi_channel_survey_start(2); }
     if (ms==250) {
@@ -142,7 +145,8 @@ static void reset(void)
     scanner_ready=true;station_reserved=false;notifications=enable_calls=disable_calls=channel_calls=delay_calls=0;
     filter_error=enable_error=disable_error=channel_error=0;sdk_promiscuous=false;
     cancel_after_delay=0;run_worker_during_wait=true;run_worker_on_notify=false;hold_worker=false;clock_us=1000000;
-    cleanup_recover_after=cleanup_delays=0;clock_backwards=expire_during_filter=start_during_preempt=false;
+    cleanup_recover_after=cleanup_delays=extra_delay_us=0;
+    clock_backwards=clock_stalled=expire_during_filter=start_during_preempt=false;
     delay_hook=NULL;nested_start_error=ESP_OK;channel_survey_session_epoch=100;channel_survey_session_id=0;
     channel_survey_lease_deadline_us=channel_survey_lease_clock_us=0;channel_survey_control_busy=false;
     channel_survey_pin_counter=channel_survey_pin=0;channel_survey_pin_session=0;
@@ -261,6 +265,35 @@ static void lease_expiry_and_cleanup(void)
     q=(cerberus_wifi_channel_survey_session_start_t){101,1};
     CHECK(cerberus_wifi_channel_survey_session_start(&q,&info)==ESP_ERR_INVALID_STATE&&!notifications);
 }
+static void measured_receive_windows(void)
+{
+    /* Two delayed ticks complete a 120 ms window. A cancellation in the next
+     * window must not publish its partial count, even if callbacks arrived. */
+    reset();begin(1);extra_delay_us=50000;cancel_after_delay=3;run_worker();
+    CHECK(channel_survey_results[0].sample_count==1);
+    CHECK(channel_survey_results[0].last_packets==2&&channel_survey_results[0].total_packets==2);
+    CHECK(channel_survey_results[0].rate_per_sec==16&&channel_survey_results[0].dwell_ms==120);
+    CHECK(channel_survey_results[0].average_rssi==-51&&channel_survey_results[0].updated_ms==120);
+    CHECK(!channel_survey_results[1].seen&&!channel_survey_results[1].sample_count);
+    CHECK(channel_survey_status.total_packets==2&&channel_survey_status.error_code==ESP_OK);
+    CHECK(channel_survey_status.dwell_ms==100&&!sdk_promiscuous&&!ble_other_radio_active());
+
+    /* Timer faults release the receiver without publishing plausible rates. */
+    for(unsigned fault=0;fault<2;++fault){
+        reset();begin(1);clock_stalled=fault==0;clock_backwards=fault==1;run_worker();
+        CHECK(channel_survey_status.state==CERBERUS_WIFI_CHANNEL_SURVEY_ERROR);
+        CHECK(channel_survey_status.error_code==ESP_ERR_INVALID_STATE);
+        CHECK(!channel_survey_status.total_packets&&!channel_survey_results[0].seen);
+        CHECK(disable_calls==1&&!sdk_promiscuous&&!ble_other_radio_active());
+    }
+    reset();channel_survey_receiving=true;channel_survey_receive_channel=6;
+    channel_survey_packet_count=UINT32_MAX;channel_survey_rssi_sum=-(int64_t)UINT32_MAX*51;
+    channel_survey_strongest_rssi=-51;
+    wifi_promiscuous_pkt_t packet={.rx_ctrl={.sig_len=24,.channel=6,.rssi=-40}};
+    channel_survey_receive(&packet,0);
+    CHECK(channel_survey_packet_count==UINT32_MAX&&channel_survey_rssi_sum==-(int64_t)UINT32_MAX*51);
+    CHECK(channel_survey_strongest_rssi==-40);channel_survey_receiving=false;
+}
 static void immutable_projection(void)
 {
     reset();cerberus_wifi_channel_survey_session_status_t info=begin(1);uint64_t token=info.session_id;
@@ -366,7 +399,7 @@ int main(void)
     CHECK(cerberus_wifi_channel_survey_start(1)==ESP_ERR_INVALID_STATE&&!notifications);
     atomic_store(&packet_count_radio_reserved,false); }
 
-    replay_reset_and_exclusion();lease_expiry_and_cleanup();immutable_projection();generation_alias_and_native_arbiter();actual_dispatch();
+    replay_reset_and_exclusion();lease_expiry_and_cleanup();measured_receive_windows();immutable_projection();generation_alias_and_native_arbiter();actual_dispatch();
     printf("Scoped Channel Survey: %u assertions passed; actual worker/dispatch, reboot rejection, replay, expiry/failed disable, stale control, immutable metrics and exhaustion.\n",checks);
     return 0;
 }

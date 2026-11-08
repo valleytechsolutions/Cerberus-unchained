@@ -74,8 +74,10 @@ static void channel_survey_receive(const wifi_promiscuous_pkt_t *packet,
     portENTER_CRITICAL(&channel_survey_mux);
     if (channel_survey_receiving &&
         packet->rx_ctrl.channel == channel_survey_receive_channel) {
-        if (channel_survey_packet_count < UINT32_MAX) ++channel_survey_packet_count;
-        channel_survey_rssi_sum += packet->rx_ctrl.rssi;
+        if (channel_survey_packet_count < UINT32_MAX) {
+            ++channel_survey_packet_count;
+            channel_survey_rssi_sum += packet->rx_ctrl.rssi;
+        }
         if (packet->rx_ctrl.rssi > channel_survey_strongest_rssi)
             channel_survey_strongest_rssi = packet->rx_ctrl.rssi;
     }
@@ -150,41 +152,50 @@ static void channel_survey_task(void *arg)
                 channel_survey_packet_count = 0;
                 channel_survey_rssi_sum = 0;
                 channel_survey_strongest_rssi = -127;
-                channel_survey_receiving = true;
+                int64_t opened_us = esp_timer_get_time();
+                channel_survey_receiving = opened_us >= 0;
                 portEXIT_CRITICAL(&channel_survey_mux);
-                uint16_t elapsed = 0;
-                while (elapsed < CERBERUS_WIFI_CHANNEL_SURVEY_DWELL_MS &&
+                if (opened_us < 0) { error = ESP_ERR_INVALID_STATE; break; }
+                int64_t observed_us = opened_us;
+                while (observed_us - opened_us < (int64_t)CERBERUS_WIFI_CHANNEL_SURVEY_DWELL_MS * 1000 &&
                     !atomic_load_explicit(&channel_survey_cancelled, memory_order_acquire)) {
                     vTaskDelay(pdMS_TO_TICKS(10));
-                    elapsed += 10U;
                     channel_survey_check_expiry();
+                    int64_t next_us = esp_timer_get_time();
+                    if (next_us <= observed_us) { error = ESP_ERR_INVALID_STATE; break; }
+                    observed_us = next_us;
                 }
                 uint32_t packets;
                 int64_t rssi_sum;
                 int8_t strongest;
                 portENTER_CRITICAL(&channel_survey_mux);
+                int64_t closed_us = esp_timer_get_time();
                 channel_survey_receiving = false;
                 packets = channel_survey_packet_count;
                 rssi_sum = channel_survey_rssi_sum;
                 strongest = channel_survey_strongest_rssi;
                 portEXIT_CRITICAL(&channel_survey_mux);
-                if (elapsed == CERBERUS_WIFI_CHANNEL_SURVEY_DWELL_MS &&
+                if (closed_us < observed_us) error = ESP_ERR_INVALID_STATE;
+                if (error != ESP_OK) break;
+                if (closed_us - opened_us >= (int64_t)CERBERUS_WIFI_CHANNEL_SURVEY_DWELL_MS * 1000 &&
                     !atomic_load_explicit(&channel_survey_cancelled, memory_order_acquire)) {
                     xSemaphoreTake(scanner_mutex, portMAX_DELAY);
                     cerberus_wifi_channel_survey_result_payload_t *result =
                         &channel_survey_results[index];
                     uint32_t updated_ms = channel_survey_elapsed_locked();
-                    cerberus_wifi_channel_survey_metrics_update(result,
-                        packets, rssi_sum, strongest, updated_ms);
-                    channel_survey_status.completed_count = (uint8_t)(index + 1U);
-                    channel_survey_status.elapsed_ms = result->updated_ms;
-                    channel_survey_status.total_packets =
-                        UINT32_MAX - channel_survey_status.total_packets < packets
-                        ? UINT32_MAX : channel_survey_status.total_packets + packets;
+                    if (cerberus_wifi_channel_survey_metrics_update(result,
+                            packets, rssi_sum, strongest, (uint64_t)(closed_us - opened_us), updated_ms)) {
+                        channel_survey_status.completed_count = (uint8_t)(index + 1U);
+                        channel_survey_status.elapsed_ms = result->updated_ms;
+                        channel_survey_status.total_packets =
+                            UINT32_MAX - channel_survey_status.total_packets < packets
+                            ? UINT32_MAX : channel_survey_status.total_packets + packets;
+                    } else error = ESP_ERR_INVALID_STATE;
                     xSemaphoreGive(scanner_mutex);
+                    if (error != ESP_OK) break;
                 }
             }
-            if (atomic_load_explicit(&channel_survey_cancelled, memory_order_acquire)) break;
+            if (error != ESP_OK || atomic_load_explicit(&channel_survey_cancelled, memory_order_acquire)) break;
             if (successful_channels == 0U) {
                 error = first_channel_error == ESP_OK ? ESP_ERR_NOT_SUPPORTED : first_channel_error;
                 break;

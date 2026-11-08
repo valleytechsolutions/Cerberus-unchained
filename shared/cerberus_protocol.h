@@ -24,7 +24,7 @@ extern "C" {
 
 #define CERBERUS_PROTOCOL_VERSION_V1 1U
 #define CERBERUS_PROTOCOL_VERSION 2U
-#define CERBERUS_C5_FIRMWARE_VERSION 80U
+#define CERBERUS_C5_FIRMWARE_VERSION 81U
 #define CERBERUS_SPI_MAGIC 0x43455242UL
 #define CERBERUS_SPI_TRANSFER_SIZE 32U
 #define CERBERUS_SPI_FRAME_PAYLOAD_SIZE 22U
@@ -737,6 +737,8 @@ typedef struct __attribute__((packed)) {
 #define CERBERUS_WIFI_CHANNEL_SURVEY_MIN_FIRMWARE 46U
 /* Paired UI cleanup requires explicit IDLE acknowledgement after checked Stop. */
 #define CERBERUS_WIFI_CHANNEL_SURVEY_CLEANUP_MIN_FIRMWARE 69U
+/* Per-row dwell is measured (ceil milliseconds), rate uses its microseconds. */
+#define CERBERUS_WIFI_CHANNEL_SURVEY_MEASURED_MIN_FIRMWARE 81U
 
 typedef enum {
     CERBERUS_WIFI_CHANNEL_SURVEY_BAND_24 = 1,
@@ -784,7 +786,7 @@ typedef struct __attribute__((packed)) {
     int8_t strongest_rssi;
     uint16_t sample_count;
     uint32_t updated_ms; /* since survey start; compare with status.elapsed_ms */
-    uint16_t dwell_ms;
+    uint16_t dwell_ms; /* capability 81+: measured ceil(ms); older peers: target */
 } cerberus_wifi_channel_survey_result_payload_t;
 
 /* Scoped survey control (capability 70). The independently seeded 64-bit
