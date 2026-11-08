@@ -29,20 +29,17 @@ reference revisions and the distinction between adapted code and independently
 implemented workflows. This acknowledgment does not change any license or
 imply upstream endorsement of Cerberus Unchained.
 
-**Local development checkpoint:** `0.1.0-dev.rev158` is installed on the
-development board with onboard C5 capability 81. The existing Channels page
-now has List/Graph views and calculates frame rates from measured C5 receive
-time. All 171 host suites and five firmware targets passed; both live build
-fingerprints match the package. Paired idle captures showed stable memory,
-mounted SD and no increase in the listed SPI error counters. The new graph's
-physical 2.4/5 GHz and navigation checks remain pending. See
-[Channel activity](docs/CHANNEL_ACTIVITY.md).
-
-The rev159 development candidate rejects estimated or contradictory GPS fixes
-before Wardriving starts or writes a row. It also lets the existing S3 Wi-Fi
-worker retry failed cleanup so a transient driver error does not strand the
-radio until reset. Focused production-code checks pass; complete builds and
-installation are pending. See [GPS qualification and radio recovery](docs/GPS_AND_RADIO_RECOVERY.md).
+**Local development checkpoint:** `0.1.0-dev.rev159` is installed on the
+development board with onboard C5 capability 81. It includes the
+[Channel Activity graph and measured receive windows](docs/CHANNEL_ACTIVITY.md),
+rejects estimated or contradictory GPS fixes before Wardriving starts or
+writes a row, and lets the existing S3 scan worker retry failed cleanup.
+All 171 host suites and five firmware targets passed; both live build
+fingerprints match the package. Two idle captures 61.6 seconds apart showed
+mounted SD, unchanged free memory and no increase in the listed SPI error
+counters. The saved upload profile loads. Physical graph/navigation, GPS
+recording and repeated radio-transition checks remain pending. See
+[GPS qualification, radio recovery and installation evidence](docs/GPS_AND_RADIO_RECOVERY.md).
 
 **Tools → System health → DEVICE INFO** reports each processor's application
 build, SDK, partition and memory/status information. The owner confirmed

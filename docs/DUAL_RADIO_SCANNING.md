@@ -2,12 +2,14 @@
 
 ## Current installed checkpoint
 
-The latest installed checkpoint is [rev158](CHANNEL_ACTIVITY.md). The
-rev159 candidate adds [S3 Wi-Fi cleanup recovery](GPS_AND_RADIO_RECOVERY.md):
+The latest installed checkpoint is [rev159](GPS_AND_RADIO_RECOVERY.md), including
+the [rev158 Channel Activity graph](CHANNEL_ACTIVITY.md). Rev159 adds S3 Wi-Fi cleanup recovery:
 the existing scan worker retains its owner and retries unfinished teardown
 steps after a driver error. Successful cleanup lets Bluetooth or another Wi-Fi
 scan acquire the S3 again. Persistent errors remain visible and keep ownership
 reserved. This does not add another receiver or change scan dwell times.
+All 171 host suites, five native builds and paired idle boot checks pass;
+physical radio transitions and sustained-load acceptance remain pending.
 The older checkpoints below retain their original acceptance scope.
 
 [Rev123](DUAL_RADIO_REV123.md) implements offline Find My JSON interchange

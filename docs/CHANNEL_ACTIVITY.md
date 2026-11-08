@@ -70,9 +70,9 @@ changes, legacy peers, tab hitboxes and display bounds. Production-rendered
 previews use synthetic traffic and include pending, zero, unavailable,
 saturated and retained rows. These checks passed during development.
 
-## Installed checkpoint
+## Rev158 installation checkpoint
 
-Rev158 is installed from source `b17f62c8f5c0fc0f6e515ee7e0f7ad38414aa5d5`,
+Rev158 was installed from source `b17f62c8f5c0fc0f6e515ee7e0f7ad38414aa5d5`,
 tagged `checkpoint/rev158-channel-activity`. Package:
 `cerberus-unchained-0.1.0-dev.rev158-20261108T061813Z`.
 Manifest SHA-256:
@@ -94,3 +94,7 @@ Physical 2.4/5 GHz graph, Stop/Back, subsequent Wi-Fi scan and sustained-use
 checks remain pending. This is a local checkpoint, not a published release or
 complete upstream parity. The owner-confirmed Device Info check remains
 documented separately under [rev157](DEVICE_INFO.md).
+
+The current installed [rev159 checkpoint](GPS_AND_RADIO_RECOVERY.md) includes
+this graph and measured receive-time implementation. Its installation does
+not change the physical acceptance limits recorded above.
