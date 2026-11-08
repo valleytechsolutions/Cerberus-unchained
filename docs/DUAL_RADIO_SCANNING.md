@@ -2,12 +2,13 @@
 
 ## Current installed checkpoint
 
-The next source milestone is [rev163 saved Bluetooth lookup](SAVED_BLE_LOOKUP.md):
+The latest installed checkpoint is [rev163 saved Bluetooth lookup](SAVED_BLE_LOOKUP.md):
 saved `.BLE` and Find My JSON details can explicitly reacquire an address on
-both receivers before entering Fox Hunt. It is under validation; rev162
-remains the installed baseline.
+both receivers before entering Fox Hunt. All 181 host suites, five native
+targets, verified recovery backups/writes and paired idle boot checks passed.
+Physical reception/navigation and loaded performance remain open.
 
-The latest installed checkpoint is [rev162](WIFI_FOX_HUNT.md), adding a
+The earlier [rev162 checkpoint](WIFI_FOX_HUNT.md) adds a
 selected-transmitter Wi-Fi Fox Hunt with passive C5 reception/search and
 bounded S3 signal history. Direct AP/client/PineScan/MultiSSID entry and
 exact-release Back routes avoid a second target inventory. All 179 host

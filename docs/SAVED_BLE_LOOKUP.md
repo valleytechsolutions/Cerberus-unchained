@@ -68,8 +68,44 @@ crowded unrelated traffic, all four types, stale epochs, malformed reports,
 source age, old firmware, lost replies, independent failure, failed Stop,
 candidate expiry, restart and saved-document retention.
 
-Rev162 remains the installed baseline while rev163 is being validated.
+All 181 registered host suites and five native targets passed on unchanged
+inputs. The separate 21-test CI shard verifier also passed. Real-font previews
+were inspected for empty, S3, C5, privacy and partial-error states.
+
 Physical reception from an owned saved tag, touch navigation, dual-radio
 tracking, sleep/wake, later Wi-Fi/BLE scans and sustained loaded memory/stack
 acceptance remain pending. Host fixtures and firmware builds do not establish
 those results.
+
+## Installed checkpoint
+
+Rev163 is installed from source `20c69fecf9e1a18ac771fd5d203fdad43ebfb45e`, tagged
+`checkpoint/rev163-saved-ble-lookup`. Package:
+`cerberus-unchained-0.1.0-dev.rev163-20261108T094208Z`.
+Manifest SHA-256:
+`d63582f684f36f22d8c3e0611471872a459d9967f832c18e58446f9036ffa2db`.
+
+Fresh rev162 S3/C5 recovery backups were verified against flash and the
+installed baseline. All nine bridge/C5/S3 image writes verified. Both live
+application descriptors match the packaged version, project, SDK, compile
+time and full ELF hash. The card mounted and saved home Wi-Fi, WiGLE and
+WDGWars readiness remained set. No network connection or upload was requested.
+
+Two idle captures 52.7 seconds apart showed advancing uptimes and SPI
+exchanges, one C5 boot, and no additional listed transport errors. The four
+initial READY timeouts/fallbacks did not increase; mutex, READY-fall,
+READY-high and driver errors remained zero. S3 retained 134,196 internal
+free bytes, a 90,112-byte largest internal block, 1,426,140 free PSRAM bytes
+and ten tasks across those captures. C5 retained 53,012 free bytes.
+
+Compared with the captured rev162 baseline, S3 internal free memory is
+48 bytes lower and the largest internal block is 4,096 bytes smaller; PSRAM
+and task counts match. These idle measurements do not establish loaded
+headroom. The console stack low-water changed from 2,084 to 916 bytes after
+diagnostic commands; it is recorded rather than treated as constant or as
+loaded-service acceptance. The lookup's optional workspace was not allocated
+during these idle checks.
+
+Installation and idle checks do not validate physical saved-tag reception,
+source/type selection, Fox Hunt, touchscreen return paths, sleep/wake or
+sustained performance. Those remain open alongside full Marauder parity.
