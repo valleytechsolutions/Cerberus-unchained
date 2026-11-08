@@ -28,6 +28,8 @@ enum { UI_WIFI_MODE_DUAL = 1, UI_WIFI_MODE_LIST, UI_BLE_MODE_LIST, UI_WIFI_MODE_
 enum { CHANNEL_ANALYZER_BACK };
 static void channel_analyzer_request(unsigned action){(void)action;CHECK(false);}
 static void wifi_fox_hunt_back(void){CHECK(false);}
+static bool sae_ui_is_open(void){return false;}
+static void sae_ui_close(bool back){(void)back;CHECK(false);}
 static bool eapol_ui_is_open(void){return false;}
 static void eapol_ui_close(bool back){(void)back;CHECK(false);}
 static unsigned wifi_mode,ble_mode;

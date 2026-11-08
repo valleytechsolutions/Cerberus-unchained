@@ -14,7 +14,7 @@
 #define TAG "eapol-ui"
 #define CHECK(x) do { ++checks; assert(x); } while (0)
 #define ESP_ERROR_CHECK(x) CHECK((x)==ESP_OK)
-static unsigned checks,allocations,freed,starts,stops,releases,old_stops,generic_starts,generic_stops;
+static unsigned checks,allocations,freed,starts,stops,releases,old_stops,generic_starts,generic_stops,ignored_stops;
 static bool oom,masked,hold_stop,prior_live,prior_dual,prior_capture,c5_online=true;
 static esp_err_t start_error,read_error,page_error,release_error;
 static uint32_t now_ms;
@@ -52,7 +52,7 @@ esp_err_t cerberus_s3_eapol_start(uint8_t channel,const uint8_t*bssid,bool save)
  if(start_error)return start_error;model=(cerberus_s3_eapol_status_t){.generation=starts,.channel=channel,
  .capture={.generation=starts,.state=CERBERUS_S3_CAPTURE_RUNNING,.busy=true,.save_pcap=save,.channel=channel}};memcpy(model.bssid,bssid,6);return ESP_OK;}
 void cerberus_s3_eapol_stop(void)
-{++stops;if(model.capture.busy){model.capture.state=CERBERUS_S3_CAPTURE_STOPPING;
+{++stops;if(ignored_stops){--ignored_stops;return;}if(model.capture.busy){model.capture.state=CERBERUS_S3_CAPTURE_STOPPING;
  if(!hold_stop){model.capture.busy=false;model.capture.state=model.capture.save_pcap?CERBERUS_S3_CAPTURE_SAVED:CERBERUS_S3_CAPTURE_COMPLETE;}}}
 esp_err_t cerberus_s3_eapol_status(cerberus_s3_eapol_status_t*out)
 {memset(out,0,sizeof(*out));if(read_error)return read_error;*out=model;return ESP_OK;}
@@ -77,6 +77,18 @@ static void eapol_ui_start(void);
 static esp_err_t eapol_ui_draw(void);
 static void eapol_ui_tap(uint16_t x,uint16_t y);
 static bool eapol_ui_tick(uint32_t now,bool visible);
+/* SAE's production monitor has its own route/render suite. This boundary
+ * verifies EAPOL releases before dispatching the next capture mode. */
+static bool sae_opened;
+static bool sae_ui_is_open(void){return sae_opened;}
+static bool sae_ui_busy(void){return false;}
+static bool sae_ui_pending(void){return false;}
+static void sae_ui_open(bool menu){CHECK(!menu&&!eapol_ui_is_open());sae_opened=true;}
+static void sae_ui_close(bool back){CHECK(back);sae_opened=false;wifi_mode=UI_WIFI_MODE_TARGET;}
+static void sae_ui_start(void){CHECK(false);}
+static esp_err_t sae_ui_draw(void){return ESP_OK;}
+static void sae_ui_tap(uint16_t x,uint16_t y){(void)x;(void)y;CHECK(false);}
+static bool sae_ui_tick(uint32_t now,bool visible){(void)now;(void)visible;return false;}
 #include "wifi_capture_ui.h"
 #include "wifi_eapol_ui.h"
 static esp_err_t draw_detail_page(void);
@@ -90,7 +102,7 @@ static void tick(unsigned n,bool asleep){for(unsigned i=0;i<n;++i){now_ms+=25;ro
 static void reset(void)
 {CHECK(!eapol_ui_is_open()&&!eapol_ui&&!model.capture.busy);memset(&generic,0,sizeof(generic));memset(&model,0,sizeof(model));memset(rows,0,sizeof(rows));
  oom=masked=hold_stop=prior_live=prior_dual=prior_capture=false;c5_online=true;c5_status.firmware_version=85;
- start_error=read_error=page_error=release_error=ESP_OK;starts=stops=releases=old_stops=generic_starts=generic_stops=0;now_ms=1000;fail_after=0;
+ start_error=read_error=page_error=release_error=ESP_OK;starts=stops=releases=old_stops=generic_starts=generic_stops=ignored_stops=0;now_ms=1000;fail_after=0;
  current_page=UI_PAGE_WIFI;wifi_mode=UI_WIFI_MODE_CAPTURE;wifi_selected_result=(cerberus_c5_wifi_result_t){.ssid="Field Kit",.channel=6,.rssi=-35};memcpy(wifi_selected_result.bssid,ap,6);capture_enter();}
 static void enter(void)
 {reset();for(unsigned i=0;i<3;++i)route_tap(100,160);CHECK(eapol_ui_is_open()&&capture_mode_index==3&&!starts&&!old_stops);tick(2,false);}
@@ -110,12 +122,14 @@ static void tests(void)
  hold_stop=false;cerberus_s3_eapol_stop();tick(3,false);CHECK(!eapol_ui_is_open()&&wifi_mode==UI_WIFI_MODE_TARGET);
  enter();start();model.summary.phase[0]=12;route_tap(100,390);tick(2,false);CHECK(!model.capture.busy&&eapol_ui_is_open()&&eapol_ui->status.summary.phase[0]==12);
  CHECK(draw_detail_page()==ESP_OK&&strstr(drawn,"RESULTS RETAINED"));route_tap(100,390);tick(2,false);CHECK(starts==2&&model.capture.busy&&!model.summary.phase[0]);leave();
+ enter();start();ignored_stops=1;route_tap(100,390);CHECK(model.capture.busy&&eapol_ui_pending());tick(2,false);CHECK(!model.capture.busy&&!eapol_ui_pending());leave();
+ enter();start();ignored_stops=2;route_back();tick(1,false);CHECK(model.capture.busy&&eapol_ui_is_open());tick(2,false);CHECK(!model.capture.busy&&!eapol_ui_is_open());
  enter();start();hold_stop=true;current_page=UI_PAGE_OTHER;tick(8,false);CHECK(model.capture.busy&&eapol_ui_is_open());hold_stop=false;tick(3,false);CHECK(!eapol_ui_is_open()&&current_page==UI_PAGE_OTHER);
  current_page=UI_PAGE_WIFI;CHECK(draw_detail_page()==ESP_OK&&eapol_ui_is_open());route_tap(100,390);tick(2,false);CHECK(starts==2&&!generic_starts&&model.capture.busy);leave();
  enter();start();hold_stop=true;tick(4,true);CHECK(model.capture.busy);hold_stop=false;tick(3,true);CHECK(!model.capture.busy&&eapol_ui_is_open());tick(4,false);CHECK(starts==1);leave();
  enter();prior_live=true;route_tap(100,390);tick(2,true);prior_live=false;tick(3,false);CHECK(!starts&&!eapol_ui_pending());leave();
  enter();release_error=ESP_ERR_TIMEOUT;route_tap(100,160);tick(3,false);CHECK(eapol_ui_is_open()&&capture_mode_index==3);route_back();release_error=ESP_OK;tick(2,false);CHECK(!eapol_ui_is_open()&&wifi_mode==UI_WIFI_MODE_TARGET);
- enter();route_tap(100,160);tick(2,false);CHECK(!eapol_ui_is_open()&&capture_mode_index==4);route_tap(100,380);CHECK(generic_starts==1);route_tap(100,380);CHECK(generic_stops==1);route_back();
+ enter();route_tap(100,160);tick(2,false);CHECK(!eapol_ui_is_open()&&capture_mode_index==4&&sae_opened&&!generic_starts);route_back();CHECK(!sae_opened);
  enter();route_tap(50,360);CHECK(eapol_ui->save);route_tap(100,390);tick(2,false);CHECK(model.capture.save_pcap);route_tap(50,360);CHECK(eapol_ui->save);leave();
  enter();c5_status.firmware_version=84;route_tap(100,390);tick(2,false);CHECK(!starts&&eapol_ui->error==ESP_ERR_NOT_SUPPORTED);CHECK(draw_detail_page()==ESP_OK&&strstr(drawn,"CAPABILITY 85"));leave();
  enter();start_error=ESP_ERR_NO_MEM;route_tap(100,390);tick(2,false);CHECK(!model.capture.busy);CHECK(draw_detail_page()==ESP_OK&&strstr(drawn,"ESP_ERR_NO_MEM"));leave();
@@ -123,7 +137,7 @@ static void tests(void)
  enter();const uint16_t misses[][2]={{11,390},{308,390},{12,381},{12,412},{156,360},{163,360}};
  for(unsigned i=0;i<sizeof(misses)/sizeof(misses[0]);++i)route_tap(misses[i][0],misses[i][1]);CHECK(!starts&&!eapol_ui_pending()&&!eapol_ui->save&&!eapol_ui->peers);leave();
  enter();start();route_launcher();tick(3,false);CHECK(!eapol_ui_is_open()&&wifi_mode==UI_WIFI_MODE_TARGET);CHECK(allocations==freed);
- const uint8_t legacy[]={0,1,2,4};for(unsigned i=0;i<sizeof(legacy);++i){reset();capture_mode_index=legacy[i];route_tap(100,380);CHECK(generic_starts==1&&generic.mode_mask==capture_modes[legacy[i]]);route_tap(100,380);CHECK(generic_stops==1);route_back();CHECK(wifi_mode==UI_WIFI_MODE_TARGET);}
+ const uint8_t legacy[]={0,1,2};for(unsigned i=0;i<sizeof(legacy);++i){reset();capture_mode_index=legacy[i];route_tap(100,380);CHECK(generic_starts==1&&generic.mode_mask==capture_modes[legacy[i]]);route_tap(100,380);CHECK(generic_stops==1);route_back();CHECK(wifi_mode==UI_WIFI_MODE_TARGET);}
 }
 static void save(const char*folder,const char*name)
 {char path[1024];snprintf(path,sizeof(path),"%s/%s.ppm",folder,name);FILE*f=fopen(path,"wb");CHECK(f);fprintf(f,"P6\n320 480\n255\n");

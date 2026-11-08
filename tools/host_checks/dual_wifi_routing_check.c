@@ -36,6 +36,7 @@ static void dual_wifi_live_tap(uint16_t x,uint16_t y) { (void)x;(void)y;++tap_co
 static void dual_wifi_ui_leave(void) { ++dual_leaves; pending_start=false; }
 static int sentinel_hub_hit_test(int hub,uint16_t x,uint16_t y) { (void)x;(void)y;assert(hub==SENTINEL_HUB_WIFI);return (int)menu_item; }
 static void open_learning_lesson(int value) { (void)value; }
+static void sae_ui_open(bool from_hub) { assert(from_hub); }
 static void multissid_enter(void) {}
 static void pinescan_enter(void) {}
 static int refresh_wifi_scan_status(void) { ++scan_refreshes; return 0; }

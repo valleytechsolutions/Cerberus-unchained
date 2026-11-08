@@ -17,6 +17,11 @@ owned session. Navigation and memory release wait for the receiver, final
 frame drain and any open capture file to close. An error during cleanup does
 not turn into an idle state. Waking the screen does not restart reception.
 
+Rev165 retries a pending Stop if the service mutex was temporarily busy. A
+missed first request no longer leaves Back waiting indefinitely for release.
+Host cases cover both the Stop button and leaving through Back; physical
+navigation under load remains an acceptance check.
+
 ## What the report establishes
 
 The parser accepts complete, CRC-verified 802.11 frames up to 4,096 bytes from

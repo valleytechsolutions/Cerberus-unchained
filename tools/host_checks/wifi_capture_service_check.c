@@ -130,7 +130,7 @@ int main(void)
     sae[24]=3U;sae[26]=1U;sae[30]=19U;
     for(size_t i=32U;i<sizeof(sae);++i)sae[i]=(uint8_t)i;
     cerberus_wifi_capture_service_receive(sae,sizeof(sae),6,-50,222000,cerberus_wifi_capture_service_admission_token());
-    cerberus_wifi_capture_service_receive(sae,31,36,-50,222001,cerberus_wifi_capture_service_admission_token());
+    cerberus_wifi_capture_service_receive(sae,29,36,-50,222001,cerberus_wifi_capture_service_admission_token());
     sae[25]=1U;
     cerberus_wifi_capture_service_receive(sae,sizeof(sae),36,-50,222002,cerberus_wifi_capture_service_admission_token());
     sae[25]=0U;sae[26]=2U;

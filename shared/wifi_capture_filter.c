@@ -4,11 +4,11 @@
 
 static bool sae_commit_frame(const uint8_t *frame,size_t length)
 {
-    /* Authentication has a 24-byte MAC header, three LE16 fixed fields,
-     * then an SAE group field. Capture this frame family, including status
-     * replies; this does not validate the scalar, element or token body.
+    /* Authentication has a 24-byte MAC header and three LE16 fixed fields.
+     * Failure replies need not contain a group. Capture this frame family,
+     * including short bodies; this does not validate scalar/element/token data.
      * Encrypted/fragmented frames cannot establish these fields here. */
-    if(length<32U||frame[0]!=0xb0U||
+    if(length<30U||frame[0]!=0xb0U||
        (frame[1]&0xc7U)!=0U||(frame[22]&0x0fU)!=0U)return false;
     return frame[24]==3U&&frame[25]==0U&&
         frame[26]==1U&&frame[27]==0U;

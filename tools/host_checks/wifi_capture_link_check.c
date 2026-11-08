@@ -3,6 +3,7 @@
 #endif
 #include "c5_spi_link.h"
 #include "wifi_packet_monitor_core.h"
+#include "wifi_capture_plan.h"
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
@@ -110,6 +111,23 @@ static void gates(void)
     assert(c5_spi_link_wifi_capture_start(&expected_start,&out)==ESP_ERR_TIMEOUT&&exchanges==0);
     reset(50,CERBERUS_WIFI_CAPTURE_MODE_BEACON,true);fail_lock=true;
     assert(c5_spi_link_wifi_capture_start(&expected_start,&out)==ESP_ERR_TIMEOUT&&exchanges==0&&releases==0);
+    for(unsigned version=85;version<=86;++version){
+        reset(version,CERBERUS_WIFI_CAPTURE_MODE_SAE_COMMIT,true);
+        expected_start.flags|=CERBERUS_WIFI_CAPTURE_FLAG_PLAN;
+        assert(c5_spi_link_wifi_capture_start(&expected_start,&out)==
+            (version==86?ESP_OK:ESP_ERR_NOT_SUPPORTED));
+        assert(exchanges==(version==86?1U:0U));
+    }
+    response_status.channel=0;
+    assert(c5_spi_link_wifi_capture_start(&expected_start,&out)==ESP_OK);
+    response_status.channel=177;
+    assert(c5_spi_link_wifi_capture_start(&expected_start,&out)==ESP_OK);
+    response_status.channel=35;
+    assert(c5_spi_link_wifi_capture_start(&expected_start,&out)==ESP_ERR_INVALID_RESPONSE);
+    reset(86,CERBERUS_WIFI_CAPTURE_MODE_SAE_COMMIT,true);
+    assert(c5_spi_link_wifi_capture_start(&expected_start,&out)==ESP_ERR_INVALID_ARG&&!exchanges);
+    expected_start.flags=CERBERUS_WIFI_CAPTURE_FLAG_PLAN;expected_start.channel=6;
+    assert(c5_spi_link_wifi_capture_start(&expected_start,&out)==ESP_ERR_INVALID_ARG&&!exchanges);
 }
 static void status_validation(void)
 {

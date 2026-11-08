@@ -433,6 +433,18 @@ static void eapol_ui_start(void);
 static esp_err_t eapol_ui_draw(void);
 static void eapol_ui_tap(uint16_t x, uint16_t y);
 static bool eapol_ui_tick(uint32_t now, bool visible);
+static bool sae_ui_is_open(void);
+static bool sae_ui_busy(void);
+static bool sae_ui_pending(void);
+static bool sae_ui_selecting;
+static void sae_ui_open(bool menu);
+static void sae_ui_close(bool back);
+static void sae_ui_start(void);
+static void sae_ui_selection_done(void);
+static const char *sae_ui_back_label(void);
+static esp_err_t sae_ui_draw(void);
+static void sae_ui_tap(uint16_t x, uint16_t y);
+static bool sae_ui_tick(uint32_t now, bool visible);
 static void ble_archive_tap(uint16_t x, uint16_t y);
 static void ble_archive_tick(bool asleep);
 static void ble_archive_open_menu(void);
@@ -8431,7 +8443,9 @@ static esp_err_t draw_detail_page(void)
     } else if (current_page == UI_PAGE_WIFI && wifi_mode == UI_WIFI_MODE_PORTAL) {
         back_label = "ATTACKS";
     } else if (current_page == UI_PAGE_WIFI && wifi_mode == UI_WIFI_MODE_CAPTURE) {
-        back_label = "TARGET";
+        back_label = sae_ui_is_open() ? sae_ui_back_label() : "TARGET";
+    } else if (current_page == UI_PAGE_WIFI && wifi_mode == UI_WIFI_MODE_LIST && sae_ui_selecting) {
+        back_label = "SAE MONITOR";
     } else if (current_page == UI_PAGE_WIFI && wifi_mode == UI_WIFI_MODE_MULTISSID) {
         back_label = multissid_ui_exit_pending || multissid_ui_list_pending ? "STOPPING" :
             multissid_ui_detail ? "RESULTS" : "WIFI MENU";
@@ -8696,6 +8710,9 @@ static void open_main_menu(void)
 
 static void return_to_launcher(void)
 {
+    if (current_page == UI_PAGE_WIFI && wifi_mode == UI_WIFI_MODE_CAPTURE && sae_ui_is_open()) {
+        sae_ui_close(true); ESP_ERROR_CHECK(draw_detail_page()); return;
+    }
     if (current_page == UI_PAGE_WIFI && wifi_mode == UI_WIFI_MODE_CAPTURE && eapol_ui_is_open()) {
         eapol_ui_close(true); ESP_ERROR_CHECK(draw_detail_page()); return;
     }
@@ -9237,6 +9254,7 @@ static void handle_wifi_tap(uint16_t x, uint16_t y)
         int item = sentinel_hub_hit_test(SENTINEL_HUB_WIFI, x, y);
         if (item == 6) { open_learning_lesson(0); return; }
         switch (item) {
+        case 12: sae_ui_open(true); break;
         case 11: channel_analyzer_open(); break;
         case 10: probe_sniff_open(); break;
         case 8: multissid_enter(); wifi_mode = UI_WIFI_MODE_MULTISSID; break;
@@ -11601,6 +11619,7 @@ static void handle_scripts_tap(uint16_t x, uint16_t y)
 #include "wifi_packet_count_ui.h"
 #include "wifi_fox_hunt_ui.h"
 #include "wifi_eapol_ui.h"
+#include "wifi_sae_ui.h"
 #include "probe_sniff_ui.h"
 #include "mesh_ui.h"
 #include "mesh_archive_ui.h"
@@ -12516,8 +12535,8 @@ static void handle_tap(uint16_t x, uint16_t y)
                 else wifi_mode = UI_WIFI_MODE_LIST;
                 ESP_ERROR_CHECK(draw_detail_page());
             } else if (current_page == UI_PAGE_WIFI && wifi_mode == UI_WIFI_MODE_LIST && wifi_attack_selecting) {
-                wifi_attack_selecting = false;
-                current_page = UI_PAGE_FIELD_MENU;
+                if (sae_ui_selecting) sae_ui_selection_done();
+                else { wifi_attack_selecting = false; current_page = UI_PAGE_FIELD_MENU; }
                 ESP_ERROR_CHECK(draw_current_page());
             } else if (current_page == UI_PAGE_WIFI && wifi_mode == UI_WIFI_MODE_PROBE_SNIFF) {
                 probe_sniff_back(); ESP_ERROR_CHECK(draw_detail_page());
@@ -12734,6 +12753,8 @@ void cerberus_ui_run(const cerberus_ui_config_t *config)
         bool capture_visible = current_page == UI_PAGE_WIFI &&
             wifi_mode == UI_WIFI_MODE_CAPTURE && !screen_asleep;
         if (eapol_ui_tick((uint32_t)now_ms, capture_visible) && capture_visible)
+            ESP_ERROR_CHECK(draw_detail_page());
+        if (sae_ui_tick((uint32_t)now_ms, capture_visible) && capture_visible)
             ESP_ERROR_CHECK(draw_detail_page());
         if (capture_visible && capture_tick((uint32_t)now_ms))
             ESP_ERROR_CHECK(draw_detail_page());

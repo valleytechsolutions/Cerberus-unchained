@@ -51,6 +51,8 @@ subprocess.run([
     "-I", str(root / "s3_main/main"), "-I", str(root / "shared"),
     str(root / "tools/host_checks/wifi_capture_session_check.c"),
     str(root / "s3_main/main/wifi_capture_session.c"),
+    str(root / "shared/wifi_capture_plan.c"),
+    str(root / "shared/wifi_packet_count.c"),
     str(root / "shared/wifi_pcap.c"), "-o", str(exe),
 ], check=True, env=environment)
 subprocess.run([str(exe)], check=True, timeout=30)

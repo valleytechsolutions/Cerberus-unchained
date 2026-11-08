@@ -11,6 +11,11 @@ static uint8_t capture_previous_channel,capture_hop_index;
 static wifi_second_chan_t capture_previous_second;
 static uint32_t capture_next_hop_ms;
 static esp_err_t capture_terminal_reason;
+static bool capture_planned,capture_plan_dwell_pending;
+static uint8_t capture_plan_next_index;
+static uint64_t capture_plan_mask;
+static esp_err_t capture_plan_first_error;
+static cerberus_wifi_capture_hop_status_payload_t capture_plan_hop;
 
 /* All radio helpers below run under scanner_mutex. Gate admission before
  * disabling RX; callbacks may finish their already admitted copy. No channel
@@ -52,8 +57,58 @@ static esp_err_t capture_hop_restore(void)
     return ESP_OK;
 }
 
+static esp_err_t capture_plan_next(void)
+{
+    /* A one-channel plan receives continuously; finishing its next full dwell
+     * does not require toggling reception or retuning the same channel. */
+    if(capture_plan_dwell_pending&&capture_plan_mask&&
+       !(capture_plan_mask&(capture_plan_mask-1U))){
+        if(capture_plan_hop.completed_sweeps!=UINT16_MAX)++capture_plan_hop.completed_sweeps;
+        capture_next_hop_ms=(uint32_t)(esp_timer_get_time()/1000LL)+CERBERUS_WIFI_CAPTURE_PLAN_DWELL_MS;
+        return ESP_OK;
+    }
+    capture_plan_dwell_pending=false;
+    esp_err_t error=capture_hop_pause();
+    if(error!=ESP_OK)return error;
+    /* At most the remainder of a pass and one new pass. A completed pass is
+     * counted only after every successful channel's full dwell has elapsed. */
+    for(unsigned inspected=0;inspected<=2U*CERBERUS_WIFI_CAPTURE_PLAN_CHANNELS;++inspected){
+        while(capture_plan_next_index<CERBERUS_WIFI_CAPTURE_PLAN_CHANNELS&&
+              !(capture_plan_mask&(UINT64_C(1)<<capture_plan_next_index)))++capture_plan_next_index;
+        if(capture_plan_next_index==CERBERUS_WIFI_CAPTURE_PLAN_CHANNELS){
+            if(!capture_plan_hop.applied_mask)
+                return capture_plan_first_error==ESP_OK?ESP_ERR_NOT_SUPPORTED:capture_plan_first_error;
+            if(capture_plan_hop.completed_sweeps!=UINT16_MAX)++capture_plan_hop.completed_sweeps;
+            capture_plan_next_index=0U;
+            capture_plan_hop.attempted_mask=0U;capture_plan_hop.applied_mask=0U;
+            capture_plan_first_error=ESP_OK;
+            continue;
+        }
+        unsigned index=capture_plan_next_index++;
+        uint64_t bit=UINT64_C(1)<<index;
+        uint8_t channel=cerberus_wifi_capture_plan_channel(index);
+        capture_plan_hop.attempted_mask|=bit;
+        error=esp_wifi_set_band(channel<=14U?WIFI_BAND_2G:WIFI_BAND_5G);
+        if(error==ESP_OK)error=esp_wifi_set_channel(channel,WIFI_SECOND_CHAN_NONE);
+        if(error!=ESP_OK){
+            if(capture_plan_first_error==ESP_OK)capture_plan_first_error=error;
+            continue;
+        }
+        capture_disable_pending=true;
+        error=esp_wifi_set_promiscuous(true);
+        if(error==ESP_OK)error=cerberus_wifi_capture_service_set_channel(channel);
+        if(error!=ESP_OK)return error;
+        capture_plan_hop.applied_mask|=bit;
+        capture_plan_dwell_pending=true;
+        capture_next_hop_ms=(uint32_t)(esp_timer_get_time()/1000LL)+CERBERUS_WIFI_CAPTURE_PLAN_DWELL_MS;
+        return ESP_OK;
+    }
+    return ESP_ERR_INVALID_STATE;
+}
+
 static esp_err_t capture_hop_next(void)
 {
+    if(capture_planned)return capture_plan_next();
     esp_err_t error=capture_hop_pause();
     if(error!=ESP_OK)return error;
     esp_err_t first_error=ESP_OK;
@@ -124,6 +179,12 @@ esp_err_t cerberus_wifi_capture_start(const cerberus_wifi_capture_start_request_
     if(err!=ESP_OK){xSemaphoreGive(scanner_mutex);return err;}
     atomic_store_explicit(&capture_radio_reserved,true,memory_order_release);
     capture_hopping=(request->flags&CERBERUS_WIFI_CAPTURE_FLAG_HOP)!=0U;
+    capture_planned=(request->flags&CERBERUS_WIFI_CAPTURE_FLAG_PLAN)!=0U;
+    capture_plan_dwell_pending=false;capture_plan_next_index=0U;
+    capture_plan_mask=cerberus_wifi_capture_service_plan_mask();
+    capture_plan_first_error=ESP_OK;
+    capture_plan_hop=(cerberus_wifi_capture_hop_status_payload_t){
+        .generation=capture_planned?request->generation:0U};
     capture_terminal_reason=ESP_OK;
     capture_restore_pending=false;
     capture_disable_pending=false;
@@ -242,4 +303,41 @@ void cerberus_wifi_capture_status(cerberus_wifi_capture_status_payload_t *out)
     xSemaphoreTake(scanner_mutex,portMAX_DELAY);
     cerberus_wifi_capture_service_status(out);
     xSemaphoreGive(scanner_mutex);
+}
+
+esp_err_t cerberus_wifi_capture_plan_stage(const cerberus_wifi_capture_plan_request_t *request,
+    cerberus_wifi_capture_plan_status_payload_t *out)
+{
+    if(!out)return ESP_ERR_INVALID_ARG;
+    memset(out,0,sizeof(*out));
+    if(!scanner_mutex){out->error_code=ESP_ERR_INVALID_STATE;return ESP_ERR_INVALID_STATE;}
+    xSemaphoreTake(scanner_mutex,portMAX_DELAY);
+    esp_err_t error=cerberus_wifi_capture_service_plan_stage(request,
+        atomic_load_explicit(&capture_radio_reserved,memory_order_acquire),out);
+    xSemaphoreGive(scanner_mutex);return error;
+}
+
+esp_err_t cerberus_wifi_capture_plan_target(const cerberus_wifi_capture_target_request_t *request,
+    cerberus_wifi_capture_plan_status_payload_t *out)
+{
+    if(!out)return ESP_ERR_INVALID_ARG;
+    memset(out,0,sizeof(*out));
+    if(!scanner_mutex){out->error_code=ESP_ERR_INVALID_STATE;return ESP_ERR_INVALID_STATE;}
+    xSemaphoreTake(scanner_mutex,portMAX_DELAY);
+    esp_err_t error=cerberus_wifi_capture_service_plan_target(request,
+        atomic_load_explicit(&capture_radio_reserved,memory_order_acquire),out);
+    xSemaphoreGive(scanner_mutex);return error;
+}
+
+esp_err_t cerberus_wifi_capture_hop_status(uint32_t generation,
+    cerberus_wifi_capture_hop_status_payload_t *out)
+{
+    if(!out)return ESP_ERR_INVALID_ARG;
+    memset(out,0,sizeof(*out));
+    if(!generation)return ESP_ERR_INVALID_ARG;
+    if(!scanner_mutex)return ESP_ERR_INVALID_STATE;
+    xSemaphoreTake(scanner_mutex,portMAX_DELAY);
+    esp_err_t error=capture_plan_hop.generation==generation?ESP_OK:ESP_ERR_NOT_FOUND;
+    if(error==ESP_OK)*out=capture_plan_hop;
+    xSemaphoreGive(scanner_mutex);return error;
 }

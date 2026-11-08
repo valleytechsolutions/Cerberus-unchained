@@ -23,6 +23,93 @@ static uint32_t last_admission_token;
 /* Written only with admission closed and its callbacks drained. Publishing
  * receive_token makes this arm boundary visible to the RX producer. */
 static int64_t receive_armed_us;
+static cerberus_wifi_capture_plan_t staged_plan;
+static uint32_t staged_generation,staged_present;
+
+static uint32_t plan_target_mask(uint8_t count)
+{return count==32U?UINT32_MAX:(UINT32_C(1)<<count)-1U;}
+
+static void plan_status(cerberus_wifi_capture_plan_status_payload_t *out,esp_err_t error)
+{
+    memset(out,0,sizeof(*out));
+    out->generation=staged_generation;out->channel_mask=staged_plan.channel_mask;
+    out->target_count=staged_plan.target_count;out->target_present_mask=staged_present;
+    out->state=!staged_generation?CERBERUS_WIFI_CAPTURE_PLAN_EMPTY:
+        staged_present==plan_target_mask(staged_plan.target_count)?
+            CERBERUS_WIFI_CAPTURE_PLAN_READY:CERBERUS_WIFI_CAPTURE_PLAN_STAGING;
+    out->error_code=error;
+}
+
+static bool plan_mutable(bool radio_held)
+{
+    if(radio_held||cerberus_wifi_capture_service_active()||
+       cerberus_wifi_capture_service_inflight())return false;
+    if(capture_ring){
+        cerberus_wifi_capture_ring_stats_t stats;
+        cerberus_wifi_capture_ring_stats(capture_ring,&stats);
+        if(stats.pending)return false;
+    }
+    return true;
+}
+
+esp_err_t cerberus_wifi_capture_service_plan_stage(
+    const cerberus_wifi_capture_plan_request_t *request,bool radio_held,
+    cerberus_wifi_capture_plan_status_payload_t *out)
+{
+    if(!out)return ESP_ERR_INVALID_ARG;
+    esp_err_t error=ESP_OK;
+    static const cerberus_wifi_capture_plan_request_t query;
+    if(!request)error=ESP_ERR_INVALID_ARG;
+    else if(!memcmp(request,&query,sizeof(query))){} /* Read-only staging query. */
+    else if(!request->generation||request->reserved||
+        request->dwell_ms!=CERBERUS_WIFI_CAPTURE_PLAN_DWELL_MS||
+        request->target_count>CERBERUS_WIFI_CAPTURE_PLAN_MAX_TARGETS||
+        !cerberus_wifi_capture_plan_mask_valid(request->channel_mask))error=ESP_ERR_INVALID_ARG;
+    else if(request->generation==staged_generation){
+        if(request->channel_mask!=staged_plan.channel_mask||
+           request->dwell_ms!=staged_plan.dwell_ms||
+           request->target_count!=staged_plan.target_count)error=ESP_ERR_INVALID_STATE;
+    }else if(request->generation<=staged_generation||request->generation<=last_generation||
+        !plan_mutable(radio_held))error=ESP_ERR_INVALID_STATE;
+    else{
+        cerberus_wifi_capture_plan_clear(&staged_plan);
+        staged_plan.channel_mask=request->channel_mask;
+        staged_plan.target_count=request->target_count;
+        staged_generation=request->generation;staged_present=0U;
+    }
+    plan_status(out,error);return error;
+}
+
+esp_err_t cerberus_wifi_capture_service_plan_target(
+    const cerberus_wifi_capture_target_request_t *request,bool radio_held,
+    cerberus_wifi_capture_plan_status_payload_t *out)
+{
+    if(!out)return ESP_ERR_INVALID_ARG;
+    esp_err_t error=ESP_OK;
+    uint8_t any=0U;
+    if(request)for(unsigned i=0;i<6U;++i)any|=request->bssid[i];
+    if(!request||!request->generation||!any||(request->bssid[0]&1U)||
+       request->index>=CERBERUS_WIFI_CAPTURE_PLAN_MAX_TARGETS)error=ESP_ERR_INVALID_ARG;
+    else if(request->generation!=staged_generation||request->index>=staged_plan.target_count)
+        error=ESP_ERR_INVALID_STATE;
+    else if(staged_present&(UINT32_C(1)<<request->index)){
+        if(memcmp(staged_plan.bssids[request->index],request->bssid,6U))error=ESP_ERR_INVALID_STATE;
+    }else if(!plan_mutable(radio_held)||staged_generation<=last_generation)error=ESP_ERR_INVALID_STATE;
+    else{
+        for(unsigned i=0;i<staged_plan.target_count;++i)
+            if((staged_present&(UINT32_C(1)<<i))&&!memcmp(staged_plan.bssids[i],request->bssid,6U))
+                error=ESP_ERR_INVALID_ARG;
+        if(error==ESP_OK){
+            memcpy(staged_plan.bssids[request->index],request->bssid,6U);
+            staged_present|=UINT32_C(1)<<request->index;
+        }
+    }
+    plan_status(out,error);return error;
+}
+
+uint64_t cerberus_wifi_capture_service_plan_mask(void)
+{return (current_request.flags&CERBERUS_WIFI_CAPTURE_FLAG_PLAN)&&
+    current_request.generation==staged_generation?staged_plan.channel_mask:0U;}
 
 static bool valid_channel(uint8_t channel)
 {return (channel>=1U&&channel<=14U)||(channel>=32U&&channel<=177U);}
@@ -44,17 +131,23 @@ esp_err_t cerberus_wifi_capture_service_start(
     const cerberus_wifi_capture_start_request_t *request)
 {
     bool hopping=request&&(request->flags&CERBERUS_WIFI_CAPTURE_FLAG_HOP)!=0U;
+    bool planned=request&&(request->flags&CERBERUS_WIFI_CAPTURE_FLAG_PLAN)!=0U;
     if(!request||!request->generation||
        (hopping?(request->channel!=0U||
-           request->mode_mask!=CERBERUS_WIFI_CAPTURE_MODE_BEACON||
-           request->flags!=CERBERUS_WIFI_CAPTURE_FLAG_HOP):!valid_channel(request->channel))||
+           request->mode_mask!=(planned?CERBERUS_WIFI_CAPTURE_MODE_SAE_COMMIT:CERBERUS_WIFI_CAPTURE_MODE_BEACON)||
+           request->flags!=(CERBERUS_WIFI_CAPTURE_FLAG_HOP|(planned?CERBERUS_WIFI_CAPTURE_FLAG_PLAN:0U))):
+           (planned||!valid_channel(request->channel)))||
        !request->mode_mask||(request->mode_mask&~CERBERUS_WIFI_CAPTURE_MODE_ALL)||
-       (request->flags&~(CERBERUS_WIFI_CAPTURE_FLAG_BSSID|CERBERUS_WIFI_CAPTURE_FLAG_HOP))||
+       (request->flags&~(CERBERUS_WIFI_CAPTURE_FLAG_BSSID|CERBERUS_WIFI_CAPTURE_FLAG_HOP|CERBERUS_WIFI_CAPTURE_FLAG_PLAN))||
        ((request->flags&CERBERUS_WIFI_CAPTURE_FLAG_BSSID)&&
         !valid_bssid(request->bssid))||
        request->lease_ms<CERBERUS_WIFI_CAPTURE_LEASE_MIN_MS||
        request->lease_ms>CERBERUS_WIFI_CAPTURE_LEASE_MAX_MS)
         return ESP_ERR_INVALID_ARG;
+    if(planned?(request->generation!=staged_generation||
+        staged_present!=plan_target_mask(staged_plan.target_count)||
+        !cerberus_wifi_capture_plan_valid(&staged_plan)):
+        request->generation<=staged_generation)return ESP_ERR_INVALID_STATE;
     if(atomic_load_explicit(&receiving,memory_order_acquire)||
        atomic_load_explicit(&callback_inflight,memory_order_seq_cst)||
        request->generation<=last_generation)return ESP_ERR_INVALID_STATE;
@@ -170,6 +263,8 @@ void cerberus_wifi_capture_service_receive(const uint8_t *frame,size_t length,
        !cerberus_wifi_capture_filter_match(request->mode_mask,
            (request->flags&CERBERUS_WIFI_CAPTURE_FLAG_BSSID)!=0U,
            request->bssid,frame,length))goto done;
+    if((request->flags&CERBERUS_WIFI_CAPTURE_FLAG_PLAN)&&
+       !cerberus_wifi_capture_plan_matches(&staged_plan,frame+16U,channel))goto done;
     cerberus_wifi_pcap_metadata_t metadata={
         .channel=channel,.rssi_dbm=rssi_dbm,.rssi_known=true,
         .frame_has_fcs=false,.time_kind=CERBERUS_WIFI_PCAP_TIME_MONOTONIC,

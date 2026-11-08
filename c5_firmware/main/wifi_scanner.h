@@ -62,6 +62,12 @@ esp_err_t cerberus_wifi_csi_ack(const cerberus_csi_ack_request_t *, cerberus_csi
 esp_err_t cerberus_wifi_capture_start(const cerberus_wifi_capture_start_request_t *request);
 esp_err_t cerberus_wifi_capture_stop(uint32_t generation);
 void cerberus_wifi_capture_status(cerberus_wifi_capture_status_payload_t *status);
+esp_err_t cerberus_wifi_capture_plan_stage(const cerberus_wifi_capture_plan_request_t *,
+    cerberus_wifi_capture_plan_status_payload_t *);
+esp_err_t cerberus_wifi_capture_plan_target(const cerberus_wifi_capture_target_request_t *,
+    cerberus_wifi_capture_plan_status_payload_t *);
+esp_err_t cerberus_wifi_capture_hop_status(uint32_t generation,
+    cerberus_wifi_capture_hop_status_payload_t *);
 esp_err_t cerberus_wifi_ap_target_valid(const cerberus_wifi_ap_job_t *request);
 esp_err_t cerberus_wifi_ap_target_ssid(const cerberus_wifi_ap_job_t *request,uint8_t ssid[32],uint8_t *length);
 bool cerberus_wifi_station_running(void);

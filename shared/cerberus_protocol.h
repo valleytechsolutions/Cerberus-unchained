@@ -17,6 +17,7 @@
 #include "probe_sniff_protocol.h"
 #include "mesh_observation_protocol.h"
 #include "wifi_packet_count_protocol.h"
+#include "wifi_capture_plan.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -24,7 +25,7 @@ extern "C" {
 
 #define CERBERUS_PROTOCOL_VERSION_V1 1U
 #define CERBERUS_PROTOCOL_VERSION 2U
-#define CERBERUS_C5_FIRMWARE_VERSION 85U
+#define CERBERUS_C5_FIRMWARE_VERSION 86U
 #define CERBERUS_SPI_MAGIC 0x43455242UL
 #define CERBERUS_SPI_TRANSFER_SIZE 32U
 #define CERBERUS_SPI_FRAME_PAYLOAD_SIZE 22U
@@ -234,6 +235,9 @@ typedef enum {
     CERBERUS_SPI_COMMAND_WIFI_FOX_HUNT_STATUS = 200,
     CERBERUS_SPI_COMMAND_WIFI_FOX_HUNT_STOP = 201,
     CERBERUS_SPI_COMMAND_WIFI_FOX_HUNT_SIGNAL = 202,
+    CERBERUS_SPI_COMMAND_WIFI_CAPTURE_PLAN = 203,
+    CERBERUS_SPI_COMMAND_WIFI_CAPTURE_TARGET = 204,
+    CERBERUS_SPI_COMMAND_WIFI_CAPTURE_HOP_STATUS = 205,
 } cerberus_spi_command_t;
 
 typedef enum {
@@ -553,6 +557,8 @@ typedef struct __attribute__((packed)) {
  * padded to 20 bytes; the consumer copies min(20, length-offset) bytes. */
 #define CERBERUS_WIFI_CAPTURE_MIN_FIRMWARE 45U
 #define CERBERUS_WIFI_EAPOL_MIN_FIRMWARE 85U
+#define CERBERUS_WIFI_CAPTURE_PLAN_MIN_FIRMWARE 86U
+#define CERBERUS_WIFI_SAE_MONITOR_MIN_FIRMWARE 86U
 #define CERBERUS_WIFI_CAPTURE_SAE_MIN_FIRMWARE 48U
 #define CERBERUS_WIFI_CAPTURE_BEACON_MIN_FIRMWARE 50U
 #define CERBERUS_WIFI_CAPTURE_HOP_MIN_FIRMWARE 50U
@@ -572,6 +578,8 @@ enum {
     /* v50: channel=0, mode=BEACON only, no BSSID filter. The C5 cycles
      * SDK-supported 2.4/5 GHz channels without restarting generation. */
     CERBERUS_WIFI_CAPTURE_FLAG_HOP = 2U,
+    /* v86: HOP|PLAN, SAE only, channel zero, no single-BSSID flag. */
+    CERBERUS_WIFI_CAPTURE_FLAG_PLAN = 4U,
 };
 enum {
     CERBERUS_WIFI_CAPTURE_IDLE = 0U,
@@ -623,6 +631,45 @@ typedef struct __attribute__((packed)) {
 typedef struct __attribute__((packed)) {
     uint32_t generation;
 } cerberus_wifi_capture_stop_request_t;
+
+/* Planned SAE capture keeps the legacy START/frame-transfer layout. An
+ * all-zero PLAN request queries staging without modifying or owning RF. */
+enum {
+    CERBERUS_WIFI_CAPTURE_PLAN_EMPTY,
+    CERBERUS_WIFI_CAPTURE_PLAN_STAGING,
+    CERBERUS_WIFI_CAPTURE_PLAN_READY,
+};
+typedef struct __attribute__((packed)) {
+    uint32_t generation;
+    uint64_t channel_mask;
+    uint16_t dwell_ms;
+    uint8_t target_count, reserved;
+} cerberus_wifi_capture_plan_request_t;
+typedef struct __attribute__((packed)) {
+    uint32_t generation;
+    uint8_t index, bssid[6];
+} cerberus_wifi_capture_target_request_t;
+typedef struct __attribute__((packed)) {
+    uint32_t generation;
+    uint64_t channel_mask;
+    uint32_t target_present_mask;
+    uint8_t target_count, state;
+    int32_t error_code;
+} cerberus_wifi_capture_plan_status_payload_t;
+typedef struct __attribute__((packed)) {
+    uint32_t generation;
+    uint64_t attempted_mask, applied_mask;
+    uint16_t completed_sweeps;
+} cerberus_wifi_capture_hop_status_payload_t;
+typedef struct __attribute__((packed)) {
+    uint32_t generation;
+    int32_t error_code;
+} cerberus_wifi_capture_hop_error_payload_t;
+_Static_assert(sizeof(cerberus_wifi_capture_plan_request_t) == 16U, "Capture plan request");
+_Static_assert(sizeof(cerberus_wifi_capture_target_request_t) == 11U, "Capture target request");
+_Static_assert(sizeof(cerberus_wifi_capture_plan_status_payload_t) == 22U, "Capture plan status");
+_Static_assert(sizeof(cerberus_wifi_capture_hop_status_payload_t) == 22U, "Capture hop status");
+_Static_assert(sizeof(cerberus_wifi_capture_hop_error_payload_t) == 8U, "Capture hop error");
 
 #define CERBERUS_STATUS_PAYLOAD_LEGACY_SIZE 16U
 

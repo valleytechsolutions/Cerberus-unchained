@@ -17,7 +17,9 @@ subprocess.run([
     "-I", str(root / "c5_firmware/main"), "-I", str(root / "shared"),
     str(root / "tools/host_checks/wifi_capture_radio_check.c"),
     str(root / "shared/wifi_capture_ring.c"),
-    str(root / "shared/wifi_capture_filter.c"), "-o", str(exe),
+    str(root / "shared/wifi_capture_filter.c"),
+    str(root / "shared/wifi_capture_plan.c"),
+    str(root / "shared/wifi_packet_count.c"), "-o", str(exe),
 ], check=True, env=env)
 subprocess.run([str(exe)], check=True, env=env)
 
@@ -42,6 +44,8 @@ subprocess.run([
     str(root / "c5_firmware/main/wifi_capture_service.c"),
     str(root / "shared/wifi_capture_ring.c"),
     str(root / "shared/wifi_capture_filter.c"),
+    str(root / "shared/wifi_capture_plan.c"),
+    str(root / "shared/wifi_packet_count.c"),
     str(root / "shared/cerberus_watch_capture.c"),
     str(root / "shared/sentinel_watch_protocol.c"), "-o", str(exe),
 ], check=True, env=env)

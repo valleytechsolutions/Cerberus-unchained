@@ -158,17 +158,17 @@ static void check_escape(void)
 int main(int argc,char **argv)
 {
     assert(argc==2);check_escape();
-    assert(sentinel_hub_hit_test(SENTINEL_HUB_WIFI,164,364)==8);
-    assert(sentinel_hub_hit_test(SENTINEL_HUB_WIFI,231,405)==8);
-    assert(sentinel_hub_hit_test(SENTINEL_HUB_WIFI,160,380)==-1);
-    assert(sentinel_hub_hit_test(SENTINEL_HUB_WIFI,236,380)==-1);
-    assert(sentinel_hub_hit_test(SENTINEL_HUB_WIFI,240,380)==7);
-    assert(sentinel_hub_hit_test(SENTINEL_HUB_WIFI,79,380)==6);
-    assert(sentinel_hub_hit_test(SENTINEL_HUB_WIFI,88,364)==9);
-    assert(sentinel_hub_hit_test(SENTINEL_HUB_WIFI,155,405)==9);
-    assert(sentinel_hub_hit_test(SENTINEL_HUB_WIFI,84,380)==-1);
+    assert(sentinel_hub_hit_test(SENTINEL_HUB_WIFI,132,364)==8);
+    assert(sentinel_hub_hit_test(SENTINEL_HUB_WIFI,187,405)==8);
+    assert(sentinel_hub_hit_test(SENTINEL_HUB_WIFI,128,380)==-1);
+    assert(sentinel_hub_hit_test(SENTINEL_HUB_WIFI,188,380)==-1);
+    assert(sentinel_hub_hit_test(SENTINEL_HUB_WIFI,192,380)==7);
+    assert(sentinel_hub_hit_test(SENTINEL_HUB_WIFI,67,380)==6);
+    assert(sentinel_hub_hit_test(SENTINEL_HUB_WIFI,72,364)==9);
+    assert(sentinel_hub_hit_test(SENTINEL_HUB_WIFI,127,405)==9);
+    assert(sentinel_hub_hit_test(SENTINEL_HUB_WIFI,68,380)==-1);
     assert(sentinel_hub_draw(SENTINEL_HUB_WIFI,&theme)==ESP_OK);save(argv[1],"menu");
-    actual_menu(196,380);assert(wifi_mode==UI_WIFI_MODE_MULTISSID&&multissid_ui_open&&!multissid_ui_save);
+    actual_menu(160,380);assert(wifi_mode==UI_WIFI_MODE_MULTISSID&&multissid_ui_open&&!multissid_ui_save);
     assert(!starts&&!follows&&!stops&&!allocations);render();save(argv[1],"ready-no-sd");
     assert(strstr(drawn,"NO AP SELECTION REQUIRED")&&strstr(drawn,"NO SD CARD REQUIRED"));
     actual_tap(250,380);assert(!multissid_ui_save); /* No card: cannot enable saving. */
@@ -230,20 +230,20 @@ int main(int argc,char **argv)
     remote.capture.busy=false;release_error=ESP_ERR_INVALID_STATE;poll();assert(wifi_mode==UI_WIFI_MODE_MULTISSID&&!frees);
     release_error=ESP_OK;poll();assert(wifi_mode==UI_WIFI_MODE_MENU&&!multissid_ui_open&&frees==1);
     /* Allocation failure keeps the empty page usable, then recovers in PSRAM. */
-    actual_menu(196,380);assert(multissid_ui_save);seed();allocation_fail=true;poll();assert(!multissid_ui_store&&!multissid_ui_page.copied&&strstr(multissid_ui_message,"NO_MEM"));
+    actual_menu(160,380);assert(multissid_ui_save);seed();allocation_fail=true;poll();assert(!multissid_ui_store&&!multissid_ui_page.copied&&strstr(multissid_ui_message,"NO_MEM"));
     allocation_fail=false;poll();assert(multissid_ui_store&&allocations==2&&!multissid_ui_message[0]);
     /* Sleeping/leaving requests cleanup and cannot queue Follow afterward. */
     now+=500;actual_tick(now,true);assert(multissid_ui_exit_pending&&remote.capture.state==CERBERUS_S3_CAPTURE_STOPPING);
     assert(frees==1);remote.capture.busy=false;now+=500;actual_tick(now,true);assert(frees==2&&!multissid_ui_open&&wifi_mode==UI_WIFI_MODE_MENU);
     /* Status failure must not pretend ownership has ended. */
-    actual_menu(196,380);status_error=ESP_ERR_TIMEOUT;assert(multissid_busy());actual_back();assert(multissid_ui_open);
+    actual_menu(160,380);status_error=ESP_ERR_TIMEOUT;assert(multissid_busy());actual_back();assert(multissid_ui_open);
     status_error=ESP_OK;poll();assert(!multissid_ui_open);
     /* A tap on STOP cancels a queued Follow before it can start. */
-    actual_menu(196,380);seed();poll();actual_tap(20,150);actual_tap(150,380);assert(multissid_ui_follow_pending);
+    actual_menu(160,380);seed();poll();actual_tap(20,150);actual_tap(150,380);assert(multissid_ui_follow_pending);
     actual_tap(250,380);assert(!multissid_ui_follow_pending);remote.capture.busy=false;poll();assert(follows==1);
     current_page=UI_PAGE_MAIN;poll();assert(!multissid_ui_open&&allocations==frees);
     /* Failed Start/Follow remain explicit errors and never alter selection. */
-    current_page=UI_PAGE_WIFI;remote.capture.busy=false;actual_menu(196,380);
+    current_page=UI_PAGE_WIFI;remote.capture.busy=false;actual_menu(160,380);
     start_error=ESP_ERR_INVALID_STATE;actual_tap(100,380);assert(!remote.capture.busy&&strstr(multissid_ui_message,"START:"));start_error=ESP_OK;
     poll();assert(strstr(multissid_ui_message,"START:")); /* Explicit action failure remains. */
     seed();remote.capture.busy=false;poll();actual_tap(20,150);painted=multissid_ui_store->selected;

@@ -17,6 +17,7 @@
 #include "recon_store.h"
 #include "wifi_multissid_session.h"
 #include "wifi_eapol_session.h"
+#include "wifi_sae_session.h"
 #include "web_ui.h"
 
 #include "esp_check.h"
@@ -346,6 +347,8 @@ void app_main(void)
     if (multissid_err != ESP_OK) ESP_LOGW(TAG, "beacon analysis unavailable: %s", esp_err_to_name(multissid_err));
     esp_err_t eapol_err = cerberus_s3_eapol_init();
     if (eapol_err != ESP_OK) ESP_LOGW(TAG, "EAPOL analysis unavailable: %s", esp_err_to_name(eapol_err));
+    esp_err_t sae_err = cerberus_s3_sae_init();
+    if (sae_err != ESP_OK) ESP_LOGW(TAG, "SAE analysis unavailable: %s", esp_err_to_name(sae_err));
     esp_err_t survey_err = field_survey_init();
     if (survey_err != ESP_OK) ESP_LOGW(TAG, "field survey unavailable: %s", esp_err_to_name(survey_err));
 

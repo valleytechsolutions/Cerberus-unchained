@@ -175,11 +175,12 @@ static esp_err_t live_paint(bool full)
 {
     const bool ordinary_wifi = current_page == UI_PAGE_WIFI && wifi_mode == UI_WIFI_MODE_LIST &&
         !wifi_attack_selecting;
-    const bool wifi_bindable = ordinary_wifi && live_wifi_paint_map_current(&live_wifi_built);
+    const bool painted_wifi = ordinary_wifi || (sae_ui_selecting && current_page == UI_PAGE_WIFI && wifi_mode == UI_WIFI_MODE_LIST);
+    const bool wifi_bindable = painted_wifi && live_wifi_paint_map_current(&live_wifi_built);
     if (ble_discovery_presenting()) ble_discovery_live->painted_count = 0U;
     esp_err_t error = full ? sentinel_scan_view_draw(&live_view, live_frame) :
         sentinel_scan_view_update(&live_view, live_frame);
-    if (ordinary_wifi) {
+    if (painted_wifi) {
         /* Partial display writes cannot authorize either old or new row taps.
          * Keep the prior map as inert history; never modify the retained bank. */
         live_wifi_painted.valid = false;
@@ -546,8 +547,10 @@ static void live_make_view(void)
     }
     const bool ordinary_wifi = tool == SENTINEL_SCAN_WIFI && current_page == UI_PAGE_WIFI &&
         wifi_mode == UI_WIFI_MODE_LIST && !wifi_attack_selecting;
+    const bool painted_wifi = ordinary_wifi || (tool == SENTINEL_SCAN_WIFI && sae_ui_selecting &&
+        current_page == UI_PAGE_WIFI && wifi_mode == UI_WIFI_MODE_LIST);
     memset(&live_wifi_built, 0, sizeof(live_wifi_built));
-    if (ordinary_wifi && live_wifi_view_token != UINT64_MAX)
+    if (painted_wifi && live_wifi_view_token != UINT64_MAX)
         live_wifi_built.token = ++live_wifi_view_token;
     /* The owned-only observation deliberately blocks new admission; it is not
      * evidence of another busy radio and must not hide LISTENING or an error. */
@@ -629,7 +632,7 @@ static void live_make_view(void)
             live_view.age_label = live_ble_recent_only ? "WITHIN 30S >" : "ALL AGES >";
     }
     if(tool==SENTINEL_SCAN_WIFI){
-        live_view.tools_label=wifi_attack_selecting?"ATTACKS":"TOOLS";
+        live_view.tools_label=sae_ui_selecting?"DONE":wifi_attack_selecting?"ATTACKS":"TOOLS";
         live_view.tools_disabled=wifi_attack_selecting&&!wifi_target_count;
         live_view.selection_mode=wifi_attack_selecting;live_view.selection_count=wifi_target_count;
     }
@@ -662,6 +665,12 @@ static void live_make_view(void)
             /* The explicit action target selector keeps its original order. */
             live_wifi_filtered_count = cerberus_s3_wifi_observation_indexes(
                 NULL, record->count, false, 0U, live_wifi_indexes, sizeof(live_wifi_indexes));
+            if (sae_ui_selecting) {
+                live_wifi_built.publication = wifi_relation_publication;
+                live_wifi_built.generation = record->saved_generation;
+                live_wifi_built.bank_count = (uint8_t)record->count;
+                live_wifi_built.valid = live_wifi_built.token && record->captured;
+            }
         }
         live_view.total_count = (uint16_t)live_wifi_filtered_count;
         if ((size_t)live_page[tool] * 4U >= live_wifi_filtered_count) live_page[tool] = 0U;
@@ -822,7 +831,7 @@ static void live_make_view(void)
         }
         if (tool == SENTINEL_SCAN_BLE) index = live_ble_indexes[index];
         else if (tool == SENTINEL_SCAN_WIFI) index = live_wifi_indexes[index];
-        if (ordinary_wifi && live_wifi_built.valid)
+        if (painted_wifi && live_wifi_built.valid)
             live_wifi_built.indexes[live_wifi_built.count++] = (uint8_t)index;
         sentinel_scan_row_t *out = &live_view.rows[row];
         live_names[row][0] = live_details[row][0] = live_badges[row][0] = '\0';
@@ -1176,7 +1185,8 @@ static void handle_live_scan_tap(uint16_t x, uint16_t y)
         live_last_poll = 0;
     } else if (action == SENTINEL_VIEW_TOOLS) {
         if (current_page == UI_PAGE_WIFI) {
-            if(wifi_attack_selecting&&wifi_target_count)wifi_target_open_attacks();
+            if(sae_ui_selecting)sae_ui_selection_done();
+            else if(wifi_attack_selecting&&wifi_target_count)wifi_target_open_attacks();
             else wifi_mode=UI_WIFI_MODE_MENU;
         }
         else if (current_page == UI_PAGE_BLE) {
@@ -1203,7 +1213,7 @@ static void handle_live_scan_tap(uint16_t x, uint16_t y)
         if (tool == SENTINEL_SCAN_BLE) {
             if (index >= live_ble_filtered_count) return;
             index = live_ble_indexes[index];
-        } else if (tool == SENTINEL_SCAN_WIFI && !wifi_attack_selecting) {
+        } else if (tool == SENTINEL_SCAN_WIFI && (!wifi_attack_selecting || sae_ui_selecting)) {
             unsigned row = (unsigned)(action - SENTINEL_VIEW_ROW0);
             if (!live_wifi_paint_map_current(&live_wifi_painted) ||
                 live_wifi_painted.token != live_wifi_built.token ||
@@ -1221,7 +1231,7 @@ static void handle_live_scan_tap(uint16_t x, uint16_t y)
                     snprintf(live_hint,sizeof(live_hint),"NO MEMORY / SELECTION LIMIT REACHED");
                     live_view.hint=live_hint;ESP_ERROR_CHECK(sentinel_scan_view_update(&live_view,live_frame));return;
                 }
-                live_make_view();ESP_ERROR_CHECK(sentinel_scan_view_update(&live_view,live_frame));return;
+                live_make_view();ESP_ERROR_CHECK(live_paint(false));return;
             }
             wifi_selected_result = live_store->wifi[index];
             wifi_relation_bind_selection(true);

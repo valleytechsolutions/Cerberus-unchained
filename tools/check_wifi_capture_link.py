@@ -20,6 +20,7 @@ subprocess.run([
     "-I", str(root / "tools/host_checks/stubs"),
     "-I", str(root / "s3_main/main"), "-I", str(root / "shared"),
     str(root / "tools/host_checks/wifi_capture_link_check.c"),
+    str(root / "shared/wifi_capture_plan.c"), str(root / "shared/wifi_packet_count.c"),
     "-o", str(exe),
 ], check=True, env=env)
 subprocess.run([str(exe)], check=True, env=env)

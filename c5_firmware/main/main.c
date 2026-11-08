@@ -341,6 +341,41 @@ static void prepare_v2_response(const cerberus_spi_frame_t *request)
         }
         break;
     }
+    case CERBERUS_SPI_COMMAND_WIFI_CAPTURE_PLAN: {
+        if(request->payload_length!=sizeof(cerberus_wifi_capture_plan_request_t))return;
+        cerberus_wifi_capture_plan_request_t query;
+        cerberus_wifi_capture_plan_status_payload_t payload;
+        memcpy(&query,request->payload,sizeof(query));
+        (void)cerberus_wifi_capture_plan_stage(&query,&payload);
+        prepare_frame_response(CERBERUS_SPI_COMMAND_WIFI_CAPTURE_PLAN,
+            request->sequence,&payload,sizeof(payload));
+        break;
+    }
+    case CERBERUS_SPI_COMMAND_WIFI_CAPTURE_TARGET: {
+        if(request->payload_length!=sizeof(cerberus_wifi_capture_target_request_t))return;
+        cerberus_wifi_capture_target_request_t query;
+        cerberus_wifi_capture_plan_status_payload_t payload;
+        memcpy(&query,request->payload,sizeof(query));
+        (void)cerberus_wifi_capture_plan_target(&query,&payload);
+        prepare_frame_response(CERBERUS_SPI_COMMAND_WIFI_CAPTURE_TARGET,
+            request->sequence,&payload,sizeof(payload));
+        break;
+    }
+    case CERBERUS_SPI_COMMAND_WIFI_CAPTURE_HOP_STATUS: {
+        if(request->payload_length!=sizeof(cerberus_wifi_capture_stop_request_t))return;
+        cerberus_wifi_capture_stop_request_t query;
+        cerberus_wifi_capture_hop_status_payload_t payload;
+        memcpy(&query,request->payload,sizeof(query));
+        esp_err_t error=cerberus_wifi_capture_hop_status(query.generation,&payload);
+        if(error==ESP_OK)prepare_frame_response(CERBERUS_SPI_COMMAND_WIFI_CAPTURE_HOP_STATUS,
+            request->sequence,&payload,sizeof(payload));
+        else{
+            cerberus_wifi_capture_hop_error_payload_t failure={query.generation,error};
+            prepare_frame_response(CERBERUS_SPI_COMMAND_WIFI_CAPTURE_HOP_STATUS,
+                request->sequence,&failure,sizeof(failure));
+        }
+        break;
+    }
     case CERBERUS_SPI_COMMAND_WIFI_CAPTURE_START:
     case CERBERUS_SPI_COMMAND_WIFI_CAPTURE_STATUS:
     case CERBERUS_SPI_COMMAND_WIFI_CAPTURE_STOP: {

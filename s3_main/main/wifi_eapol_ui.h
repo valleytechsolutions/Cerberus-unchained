@@ -16,7 +16,7 @@ typedef struct {
     uint16_t offset;
     esp_err_t error, read_error;
     uint8_t exit;
-    bool save, peers, start_pending, barrier, started, painted;
+    bool save, peers, start_pending, stop_pending, barrier, started, painted;
 } eapol_ui_store_t;
 static eapol_ui_store_t *eapol_ui;
 static bool eapol_ui_opened;
@@ -24,7 +24,7 @@ static bool eapol_ui_opened;
 static bool eapol_ui_is_open(void) { return eapol_ui_opened; }
 static bool eapol_ui_busy(void) { return eapol_ui && eapol_ui->status.capture.busy; }
 static bool eapol_ui_pending(void)
-{ return eapol_ui && (eapol_ui->start_pending || eapol_ui->barrier || eapol_ui->exit); }
+{ return eapol_ui && (eapol_ui->start_pending || eapol_ui->stop_pending || eapol_ui->barrier || eapol_ui->exit); }
 static bool eapol_ui_supported(void)
 { return c5_online && c5_status.firmware_version >= CERBERUS_WIFI_EAPOL_MIN_FIRMWARE; }
 
@@ -53,6 +53,7 @@ static void eapol_ui_stop(void)
 {
     if (!eapol_ui) return;
     eapol_ui->start_pending = false;
+    eapol_ui->stop_pending = true;
     cerberus_s3_eapol_stop();
 }
 
@@ -72,7 +73,7 @@ static void eapol_ui_start(void)
 {
     if (!eapol_ui) eapol_ui_open();
     eapol_ui_store_t *s = eapol_ui;
-    if (!s || s->exit || s->status.capture.busy || s->start_pending) return;
+    if (!s || s->status.capture.busy || eapol_ui_pending()) return;
     if (!eapol_ui_supported()) { s->error = ESP_ERR_NOT_SUPPORTED; return; }
     s->start_pending = s->barrier = true;
     s->error = ESP_OK;
@@ -102,9 +103,15 @@ static bool eapol_ui_tick(uint32_t now, bool visible)
             s->target.channel, s->target.bssid, s->save) : ESP_ERR_NOT_SUPPORTED;
         if (s->error == ESP_OK) { s->started = true; s->offset = 0U; }
     }
+    /* The service lock is bounded, so retry a missed Stop until the exact
+     * session reports released instead of leaving a visible page stuck. */
+    if (s->stop_pending || s->exit) cerberus_s3_eapol_stop();
     cerberus_s3_eapol_status_t status;
     s->read_error = cerberus_s3_eapol_status(&status);
-    if (s->read_error == ESP_OK) s->status = status;
+    if (s->read_error == ESP_OK) {
+        s->status = status;
+        if (!status.capture.busy) s->stop_pending = false;
+    }
     if (s->exit && !s->barrier) {
         esp_err_t error = cerberus_s3_eapol_release();
         if (error == ESP_OK) {
@@ -133,10 +140,10 @@ static void eapol_ui_tap(uint16_t x, uint16_t y)
     eapol_ui_store_t *s = eapol_ui;
     if (s && s->exit) return;
     if (y >= 382U && y < 412U) {
-        if (s && (s->status.capture.busy || s->start_pending || s->barrier)) eapol_ui_stop();
+        if (s && (s->status.capture.busy || eapol_ui_pending())) eapol_ui_stop();
         else eapol_ui_start();
     } else if (s && y >= 350U && y < 374U) {
-        if (x < 156U && !s->status.capture.busy && !s->start_pending && !s->barrier)
+        if (x < 156U && !s->status.capture.busy && !eapol_ui_pending())
             s->save = !s->save;
         else if (x >= 164U) s->peers = !s->peers;
     } else if (s && s->peers && y >= 298U && y < 324U) {
@@ -259,6 +266,6 @@ static esp_err_t eapol_ui_draw(void)
     ESP_RETURN_ON_ERROR(cerberus_ui_widget_draw_button((cerberus_ui_rect_t){164,350,144,24},
         s->peers ? "SUMMARY" : "PEERS", 1, !s->exit, UI_WIDGET_THEME), TAG, "EAPOL peers");
     return cerberus_ui_widget_draw_button((cerberus_ui_rect_t){12,382,296,30},
-        c->busy || s->start_pending || s->barrier ? "STOP" : s->started ? "RESTART" : "START",
-        1, !s->exit && (c->busy || s->start_pending || s->barrier || eapol_ui_supported()), UI_WIDGET_THEME);
+        c->busy || eapol_ui_pending() ? "STOP" : s->started ? "RESTART" : "START",
+        1, !s->exit && (c->busy || eapol_ui_pending() || eapol_ui_supported()), UI_WIDGET_THEME);
 }

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "cerberus_protocol.h"
+#include "wifi_capture_plan.h"
 #include "esp_err.h"
 #include <stdbool.h>
 #include <stddef.h>
@@ -10,6 +11,13 @@
  * Receive is the sole producer and is safe in the promiscuous callback. */
 bool cerberus_wifi_capture_service_same_request(
     const cerberus_wifi_capture_start_request_t *request);
+esp_err_t cerberus_wifi_capture_service_plan_stage(
+    const cerberus_wifi_capture_plan_request_t *,bool radio_held,
+    cerberus_wifi_capture_plan_status_payload_t *);
+esp_err_t cerberus_wifi_capture_service_plan_target(
+    const cerberus_wifi_capture_target_request_t *,bool radio_held,
+    cerberus_wifi_capture_plan_status_payload_t *);
+uint64_t cerberus_wifi_capture_service_plan_mask(void);
 esp_err_t cerberus_wifi_capture_service_start(
     const cerberus_wifi_capture_start_request_t *request);
 void cerberus_wifi_capture_service_stop(esp_err_t reason);

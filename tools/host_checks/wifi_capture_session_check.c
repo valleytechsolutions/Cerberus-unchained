@@ -30,9 +30,22 @@ static bool finish_and_replace_during_create;
 static esp_err_t begin_error, append_error, finish_error;
 static uint8_t last_block[128];
 static size_t last_block_length;
-static void *allocated[2];
-static size_t allocated_size[2];
+static void *allocated[3];
+static size_t allocated_size[3];
 static unsigned cases;
+static bool plan_supported, plan_bad_reply, hop_bad_reply;
+static unsigned plan_stages, plan_targets, stage_failures, target_failures, cancel_target;
+static esp_err_t plan_query_error, hop_error;
+static cerberus_wifi_capture_plan_status_payload_t staged;
+static uint8_t planned_first_channel(void)
+{
+    for(unsigned i=0;i<CERBERUS_WIFI_CAPTURE_PLAN_CHANNELS;++i)
+        if(expected.plan->channel_mask & (UINT64_C(1)<<i))return cerberus_wifi_capture_plan_channel(i);
+    assert(0);return 0;
+}
+static uint32_t all_targets(uint8_t count)
+{return count==32U?UINT32_MAX:(UINT32_C(1)<<count)-1U;}
+
 
 void fake_capture_lock_enter(portMUX_TYPE *lock)
 {(void)lock; assert(lock_depth == 0); ++lock_depth;}
@@ -43,7 +56,7 @@ void *heap_caps_malloc(size_t size,unsigned caps)
 {
     assert(!lock_depth && caps==(MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT));
     if(++allocations==alloc_fail_on)return NULL;
-    for(unsigned i=0;i<2U;++i)if(!allocated[i]){
+    for(unsigned i=0;i<3U;++i)if(!allocated[i]){
         allocated[i]=malloc(size);assert(allocated[i]);
         allocated_size[i]=size;++live_allocations;
         memset(allocated[i],0xa5,size);
@@ -54,7 +67,7 @@ void *heap_caps_malloc(size_t size,unsigned caps)
 void heap_caps_free(void *pointer)
 {
     assert(!lock_depth && pointer && live_allocations);
-    for(unsigned i=0;i<2U;++i)if(allocated[i]==pointer){
+    for(unsigned i=0;i<3U;++i)if(allocated[i]==pointer){
         const uint8_t *bytes=pointer;
         for(size_t j=0;j<allocated_size[i];++j)assert(bytes[j]==0U);
         free(pointer);allocated[i]=NULL;--live_allocations;return;
@@ -107,7 +120,7 @@ esp_err_t cerberus_storage_wifi_capture_append(const uint8_t *block,size_t lengt
 esp_err_t cerberus_storage_wifi_capture_finish(bool keep,
     char *name,size_t capacity,uint64_t *bytes)
 {
-    assert(!lock_depth && storage_open && name && capacity>=17U && live_allocations==2U);
+    assert(!lock_depth && storage_open && name && capacity>=17U && live_allocations==(expected.plan?3U:2U));
     cerberus_s3_capture_status_t state;cerberus_s3_capture_status(&state);
     assert(state.busy && state.state==CERBERUS_S3_CAPTURE_STOPPING);
     ++finishes;
@@ -141,6 +154,46 @@ esp_err_t c5_spi_link_wifi_capture_status(cerberus_wifi_capture_status_payload_t
     }
     *status=remote;return ESP_OK;
 }
+esp_err_t c5_spi_link_wifi_capture_plan_status(cerberus_wifi_capture_plan_status_payload_t *out)
+{
+    assert(out && !lock_depth);memset(out,0,sizeof(*out));
+    if(!plan_supported)return ESP_ERR_NOT_SUPPORTED;
+    if(plan_query_error)return plan_query_error;
+    *out=staged;return ESP_OK;
+}
+esp_err_t c5_spi_link_wifi_capture_plan_stage(const cerberus_wifi_capture_plan_request_t *r,
+    cerberus_wifi_capture_plan_status_payload_t *out)
+{
+    assert(!lock_depth && plan_supported && expected.plan && r && out && !r->reserved);
+    assert(r->channel_mask==expected.plan->channel_mask && r->target_count==expected.plan->target_count);
+    assert(r->dwell_ms==250U);++plan_stages;
+    if(staged.generation!=r->generation)staged=(cerberus_wifi_capture_plan_status_payload_t){
+        .generation=r->generation,.channel_mask=r->channel_mask,.target_count=r->target_count,
+        .state=r->target_count?CERBERUS_WIFI_CAPTURE_PLAN_STAGING:CERBERUS_WIFI_CAPTURE_PLAN_READY};
+    *out=staged;if(plan_bad_reply)out->channel_mask^=1U;
+    if(stage_failures){--stage_failures;return ESP_ERR_TIMEOUT;}return ESP_OK;
+}
+esp_err_t c5_spi_link_wifi_capture_plan_target(const cerberus_wifi_capture_target_request_t *r,
+    cerberus_wifi_capture_plan_status_payload_t *out)
+{
+    assert(!lock_depth && r && out && expected.plan && r->generation==staged.generation);
+    assert(r->index<staged.target_count && !memcmp(r->bssid,expected.plan->bssids[r->index],6U));
+    ++plan_targets;staged.target_present_mask|=UINT32_C(1)<<r->index;
+    if(staged.target_present_mask==all_targets(staged.target_count))staged.state=CERBERUS_WIFI_CAPTURE_PLAN_READY;
+    *out=staged;if(cancel_target && plan_targets==cancel_target)cerberus_s3_capture_stop();
+    if(target_failures){--target_failures;return ESP_ERR_TIMEOUT;}return ESP_OK;
+}
+esp_err_t c5_spi_link_wifi_capture_hop_status(uint32_t generation,
+    cerberus_wifi_capture_hop_status_payload_t *out)
+{
+    assert(!lock_depth && out && expected.plan);memset(out,0,sizeof(*out));
+    if(hop_error)return hop_error;
+    *out=(cerberus_wifi_capture_hop_status_payload_t){.generation=generation,
+        .attempted_mask=expected.plan->channel_mask,.applied_mask=expected.plan->channel_mask,
+        .completed_sweeps=2U};
+    if(hop_bad_reply)out->applied_mask|=UINT64_C(1)<<63U;
+    return ESP_OK;
+}
 esp_err_t c5_spi_link_wifi_capture_start(
     const cerberus_wifi_capture_start_request_t *request,
     cerberus_wifi_capture_status_payload_t *status)
@@ -151,12 +204,13 @@ esp_err_t c5_spi_link_wifi_capture_start(
     assert(request->channel==expected.channel && request->lease_ms==5000U);
     assert(request->mode_mask==expected.mode_mask);
     assert(request->flags==((expected.hopping?CERBERUS_WIFI_CAPTURE_FLAG_HOP:0U)|
-        (expected.filter_bssid?CERBERUS_WIFI_CAPTURE_FLAG_BSSID:0U)));
+        (expected.filter_bssid?CERBERUS_WIFI_CAPTURE_FLAG_BSSID:0U)|
+        (expected.plan?CERBERUS_WIFI_CAPTURE_FLAG_PLAN:0U)));
     if(expected.filter_bssid)assert(!memcmp(request->bssid,expected.bssid,6U));
     ++starts;
     if(start_rejected)return ESP_ERR_INVALID_STATE;
     remote.generation=request->generation;
-    remote.channel=expected.hopping?1U:request->channel;
+    remote.channel=expected.plan?planned_first_channel():expected.hopping?1U:request->channel;
     remote.mode_mask=request->mode_mask;
     remote.state=CERBERUS_WIFI_CAPTURE_RUNNING;
     remote.pending=(uint8_t)(frame_count>2U?2U:frame_count);
@@ -250,6 +304,9 @@ static void reset_case(void)
 {
     assert(!queued_worker && !storage_open && !live_allocations && !lock_depth);
     cerberus_s3_capture_status_t state;cerberus_s3_capture_status(&state);assert(!state.busy);
+    plan_supported=plan_bad_reply=hop_bad_reply=false;
+    plan_stages=plan_targets=stage_failures=target_failures=cancel_target=0U;
+    plan_query_error=hop_error=ESP_OK;memset(&staged,0,sizeof(staged));
     milliseconds=stop_after=lease_at=0U;
     starts=stops=peeks=reads=acks=begins=appends=finishes=saved=discards=0U;
     stop_transport_failures=stop_payload_failures=ack_failures=read_failures=0U;
@@ -282,6 +339,77 @@ static cerberus_s3_capture_status_t start_and_run(void)
     assert(status.hopping==expected.hopping && status.save_pcap==expected.save_pcap);
     assert(cerberus_s3_capture_start_options(&expected)==ESP_ERR_INVALID_STATE);
     return run_capture();
+}
+
+static void planned_options(cerberus_wifi_capture_plan_t *plan)
+{
+    plan_supported=true;expected.channel=0U;expected.hopping=true;
+    expected.mode_mask=CERBERUS_WIFI_CAPTURE_MODE_SAE_COMMIT;expected.plan=plan;
+    stop_after=100U;
+}
+static void plan_cases(void)
+{
+    cerberus_wifi_capture_plan_t plan, frozen;
+    cerberus_s3_capture_status_t state;
+    const uint8_t ap[6]={2,1,2,3,4,5};
+    cerberus_wifi_capture_plan_clear(&plan);
+    assert(cerberus_wifi_capture_plan_add_target(&plan,ap,6U));
+    assert(cerberus_wifi_capture_plan_add_target(&plan,ap,36U));
+    assert(plan.target_count==1U && cerberus_wifi_capture_plan_valid(&plan));
+    reset_case();planned_options(&plan);plan_supported=false;
+    assert(cerberus_s3_capture_start_options(&expected)==ESP_ERR_NOT_SUPPORTED);
+    assert(!allocations && !starts);
+
+    reset_case();planned_options(&plan);frozen=plan;staged.generation=10000U;
+    uint32_t reserved=0U;
+    assert(cerberus_s3_capture_start_options_generation(&expected,&reserved)==ESP_OK && reserved>10000U);
+    memset(&plan,0,sizeof(plan));expected.plan=&frozen;
+    state=run_capture();assert(state.state==CERBERUS_S3_CAPTURE_COMPLETE && state.planned &&
+        state.hop_valid && state.attempted_mask==frozen.channel_mask && state.completed_sweeps==2U);
+    assert(observed==1U && plan_stages==1U && plan_targets==1U && allocations==2U);
+    plan=frozen;
+
+    reset_case();planned_options(&plan);stage_failures=1U;target_failures=1U;
+    expected.save_pcap=true;state=start_and_run();
+    assert(state.state==CERBERUS_S3_CAPTURE_SAVED && plan_stages==2U && plan_targets==2U && observed==1U);
+    assert(saved==1U && allocations==3U);
+
+    reset_case();planned_options(&plan);stage_failures=3U;expected.save_pcap=true;
+    state=start_and_run();assert(state.state==CERBERUS_S3_CAPTURE_ERROR && !starts && !stops && discards==1U);
+    reset_case();planned_options(&plan);plan_bad_reply=true;
+    state=start_and_run();assert(state.state==CERBERUS_S3_CAPTURE_ERROR && state.error_code==ESP_ERR_INVALID_RESPONSE && !starts);
+    reset_case();planned_options(&plan);target_failures=3U;
+    state=start_and_run();assert(state.state==CERBERUS_S3_CAPTURE_ERROR && !starts && plan_targets==3U);
+    reset_case();planned_options(&plan);cancel_target=1U;
+    state=start_and_run();assert(state.state==CERBERUS_S3_CAPTURE_IDLE && !starts && !stops && !observed);
+
+    reset_case();planned_options(&plan);hop_error=ESP_ERR_TIMEOUT;
+    state=start_and_run();assert(state.state==CERBERUS_S3_CAPTURE_COMPLETE && !state.hop_valid && state.hop_error==ESP_ERR_TIMEOUT);
+    reset_case();planned_options(&plan);hop_bad_reply=true;
+    state=start_and_run();assert(state.state==CERBERUS_S3_CAPTURE_COMPLETE && !state.hop_valid && state.hop_error==ESP_ERR_INVALID_RESPONSE);
+
+    reset_case();planned_options(&plan);plan_query_error=ESP_ERR_TIMEOUT;
+    assert(cerberus_s3_capture_start_options(&expected)==ESP_ERR_TIMEOUT && !allocations && !task_creates);
+    for(unsigned fail=1U;fail<=3U;++fail){
+        reset_case();planned_options(&plan);expected.save_pcap=true;alloc_fail_on=fail;
+        assert(cerberus_s3_capture_start_options(&expected)==ESP_ERR_NO_MEM && !live_allocations && !starts);
+    }
+    reset_case();planned_options(&plan);staged.generation=UINT32_MAX;
+    assert(cerberus_s3_capture_start_options(&expected)==ESP_ERR_INVALID_STATE && !allocations);
+
+    /* Abandoned staged IDs also fence a later legacy fixed-channel capture. */
+    reset_case();plan_supported=true;staged.generation=20000U;stop_after=100U;
+    assert(cerberus_s3_capture_start_options_generation(&expected,&reserved)==ESP_OK && reserved>20000U);
+    state=run_capture();assert(state.state==CERBERUS_S3_CAPTURE_COMPLETE && !state.planned && !plan_stages);
+
+    cerberus_wifi_capture_plan_clear(&plan);
+    for(unsigned i=0;i<32U;++i){uint8_t address[6]={2,1,2,3,4,(uint8_t)i};
+        assert(cerberus_wifi_capture_plan_add_target(&plan,address,6U));}
+    reset_case();planned_options(&plan);state=start_and_run();
+    assert(state.state==CERBERUS_S3_CAPTURE_COMPLETE && plan_targets==32U && staged.target_present_mask==UINT32_MAX);
+    cerberus_wifi_capture_plan_clear(&plan);plan.channel_mask=cerberus_wifi_capture_plan_band_mask(0U);
+    reset_case();planned_options(&plan);state=start_and_run();
+    assert(state.state==CERBERUS_S3_CAPTURE_COMPLETE && !plan_targets && state.hop_valid);
 }
 
 int main(void)
@@ -461,6 +589,8 @@ int main(void)
     assert(returned_generation==previous_reserved+1U); /* C5 reset cannot reset S3 floor. */
     assert(!cerberus_s3_capture_stop_generation(previous_reserved));
     state=run_capture();assert(state.state==CERBERUS_S3_CAPTURE_COMPLETE && observed==1U);
+
+    plan_cases();
 
     reset_case();remote.generation=UINT32_MAX;returned_generation=17U;
     assert(cerberus_s3_capture_start_options_generation(&expected,&returned_generation)==ESP_ERR_INVALID_STATE);

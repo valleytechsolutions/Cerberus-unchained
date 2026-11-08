@@ -108,7 +108,7 @@ jobs:
           pattern: cerberus-unchained-host-checks-windows-*-${{ github.run_number }}-attempt-${{ github.run_attempt }}
           path: artifacts/windows-host-shards
           merge-multiple: false
-      - name: Require all 184 Windows suites and matching source bindings
+      - name: Require all 190 Windows suites and matching source bindings
         run: >-
           python tools/verify_host_shards.py artifacts/windows-host-shards
           --expected-head "${{ github.sha }}"

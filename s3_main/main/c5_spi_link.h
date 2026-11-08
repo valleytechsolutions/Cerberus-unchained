@@ -357,6 +357,15 @@ esp_err_t c5_spi_link_wifi_fox_hunt_signal(uint64_t session, cerberus_wifi_fox_h
 esp_err_t c5_spi_link_wifi_capture_start(
     const cerberus_wifi_capture_start_request_t *request,
     cerberus_wifi_capture_status_payload_t *status);
+/* Capability 86 planned SAE capture. Each command is one 20 ms passive exchange
+ * with a fresh capability check. Mutations are not automatically replayed. */
+esp_err_t c5_spi_link_wifi_capture_plan_stage(const cerberus_wifi_capture_plan_request_t *,
+    cerberus_wifi_capture_plan_status_payload_t *);
+esp_err_t c5_spi_link_wifi_capture_plan_status(cerberus_wifi_capture_plan_status_payload_t *);
+esp_err_t c5_spi_link_wifi_capture_plan_target(const cerberus_wifi_capture_target_request_t *,
+    cerberus_wifi_capture_plan_status_payload_t *);
+esp_err_t c5_spi_link_wifi_capture_hop_status(uint32_t generation,
+    cerberus_wifi_capture_hop_status_payload_t *);
 esp_err_t c5_spi_link_wifi_capture_status(cerberus_wifi_capture_status_payload_t *status);
 esp_err_t c5_spi_link_wifi_capture_peek(uint32_t generation,
     cerberus_wifi_capture_peek_payload_t *peek);

@@ -21,6 +21,7 @@ static uint32_t last_reserved_generation;
 /* One worker owns these PSRAM buffers. No capture payload remains allocated
  * while idle, and analysis-only sessions do not allocate a PCAP block. */
 static uint8_t *capture_frame, *capture_block;
+static cerberus_wifi_capture_plan_t *capture_plan;
 
 static uint32_t now_ms(void) { return (uint32_t)(esp_timer_get_time() / 1000); }
 static uint32_t increment(uint32_t value) { return value == UINT32_MAX ? value : value + 1U; }
@@ -65,9 +66,80 @@ static void publish_written(size_t bytes)
 
 static bool status_matches_request(const cerberus_wifi_capture_status_payload_t *status)
 {
+    if (capture_plan && status->channel &&
+        !(capture_plan->channel_mask & cerberus_wifi_capture_plan_channel_bit(status->channel)))
+        return false;
     return status->generation == capture_request.generation &&
         status->mode_mask == capture_request.mode_mask &&
         (capture_options.hopping || status->channel == capture_request.channel);
+}
+
+static uint32_t plan_target_mask(uint8_t count)
+{ return count == 32U ? UINT32_MAX : (UINT32_C(1) << count) - 1U; }
+
+static bool plan_reply_matches(const cerberus_wifi_capture_plan_status_payload_t *reply,
+    const cerberus_wifi_capture_plan_t *plan, uint32_t generation)
+{
+    return reply->generation == generation && reply->channel_mask == plan->channel_mask &&
+        reply->target_count == plan->target_count && reply->error_code == ESP_OK &&
+        !(reply->target_present_mask & ~plan_target_mask(plan->target_count));
+}
+
+/* Staging is idempotent and owns no RF. A canceled or failed stage can be left
+ * behind; later reservation includes the remote staged generation. */
+static esp_err_t stage_plan(void)
+{
+    const cerberus_wifi_capture_plan_t *plan = capture_plan;
+    if (!plan) return ESP_OK;
+    cerberus_wifi_capture_plan_request_t request = {
+        .generation = capture_request.generation, .channel_mask = plan->channel_mask,
+        .dwell_ms = plan->dwell_ms, .target_count = plan->target_count,
+    };
+    cerberus_wifi_capture_plan_status_payload_t reply = {0};
+    esp_err_t error = ESP_FAIL;
+    for (unsigned attempt = 0U; attempt < 3U && !stop_requested(); ++attempt) {
+        error = c5_spi_link_wifi_capture_plan_stage(&request, &reply);
+        if (error == ESP_OK) break;
+        vTaskDelay(pdMS_TO_TICKS(20));
+    }
+    if (stop_requested()) return ESP_OK;
+    if (error != ESP_OK) return error;
+    if (!plan_reply_matches(&reply, plan, request.generation)) return ESP_ERR_INVALID_RESPONSE;
+    for (uint8_t i = 0U; i < plan->target_count; ++i) {
+        cerberus_wifi_capture_target_request_t target = {.generation = request.generation, .index = i};
+        memcpy(target.bssid, plan->bssids[i], 6U);
+        for (unsigned attempt = 0U; attempt < 3U && !stop_requested(); ++attempt) {
+            error = c5_spi_link_wifi_capture_plan_target(&target, &reply);
+            if (error == ESP_OK) break;
+            vTaskDelay(pdMS_TO_TICKS(20));
+        }
+        if (stop_requested()) return ESP_OK;
+        if (error != ESP_OK) return error;
+        if (!plan_reply_matches(&reply, plan, request.generation) ||
+            !(reply.target_present_mask & (UINT32_C(1) << i))) return ESP_ERR_INVALID_RESPONSE;
+    }
+    return reply.state == CERBERUS_WIFI_CAPTURE_PLAN_READY &&
+        reply.target_present_mask == plan_target_mask(plan->target_count) ?
+        ESP_OK : ESP_ERR_INVALID_RESPONSE;
+}
+
+static void publish_hop_status(void)
+{
+    if (!capture_plan) return;
+    cerberus_wifi_capture_hop_status_payload_t hop = {0};
+    esp_err_t error = c5_spi_link_wifi_capture_hop_status(capture_request.generation, &hop);
+    if (error == ESP_OK && (hop.generation != capture_request.generation ||
+        (hop.attempted_mask & ~capture_plan->channel_mask) ||
+        (hop.applied_mask & ~hop.attempted_mask))) error = ESP_ERR_INVALID_RESPONSE;
+    portENTER_CRITICAL(&capture_lock);
+    capture_status.hop_error = error;
+    capture_status.hop_valid = error == ESP_OK;
+    if (error == ESP_OK) {
+        capture_status.attempted_mask = hop.attempted_mask;
+        capture_status.applied_mask = hop.applied_mask;
+        capture_status.completed_sweeps = hop.completed_sweeps;
+    }
+    portEXIT_CRITICAL(&capture_lock);
 }
 
 /* consumed_sequence is independent of SD/ACK success. A lost ACK must never
@@ -76,6 +148,8 @@ static esp_err_t read_record(const cerberus_wifi_capture_peek_payload_t *peek,
     uint32_t *consumed_sequence, bool write_pcap, bool *storage_failed)
 {
     *storage_failed = false;
+    if (capture_plan && !(capture_plan->channel_mask &
+        cerberus_wifi_capture_plan_channel_bit(peek->channel))) return ESP_ERR_INVALID_RESPONSE;
     if (*consumed_sequence == peek->sequence) return ESP_OK;
     esp_err_t error = ESP_FAIL;
     for (unsigned attempt = 0; attempt < 3U; ++attempt) {
@@ -144,6 +218,12 @@ static void consume_record(const cerberus_wifi_capture_peek_payload_t *peek,
 
 static void free_buffers(void)
 {
+    if (capture_plan) {
+        memset(capture_plan, 0, sizeof(*capture_plan));
+        heap_caps_free(capture_plan);
+        capture_plan = NULL;
+    }
+    capture_options.plan = NULL;
     if (capture_frame) {
         memset(capture_frame, 0, CERBERUS_WIFI_PCAP_FRAME_MAX);
         heap_caps_free(capture_frame);
@@ -171,6 +251,7 @@ static void capture_worker(void *unused)
         failure = size ? cerberus_storage_wifi_capture_begin(header, size) : ESP_ERR_INVALID_SIZE;
         file_open = failure == ESP_OK;
     }
+    if (failure == ESP_OK && !stop_requested()) failure = stage_plan();
     if (failure == ESP_OK && !stop_requested()) {
         cerberus_wifi_capture_status_payload_t c5 = {0};
         radio_attempted = true; /* A lost START reply may still own the radio. */
@@ -188,6 +269,7 @@ static void capture_worker(void *unused)
         c5_started = failure == ESP_OK;
         if (c5_started) {
             publish_c5(&c5);
+            publish_hop_status();
             portENTER_CRITICAL(&capture_lock);
             if (!capture_stop_requested) capture_status.state = CERBERUS_S3_CAPTURE_RUNNING;
             portEXIT_CRITICAL(&capture_lock);
@@ -202,6 +284,7 @@ static void capture_worker(void *unused)
             last_status = now_ms();
             if (error == ESP_OK && status_matches_request(&c5)) {
                 publish_c5(&c5);
+                publish_hop_status();
                 if (c5.state != CERBERUS_WIFI_CAPTURE_RUNNING)
                     failure = c5.error_code ? (esp_err_t)c5.error_code : ESP_ERR_TIMEOUT;
             } else if (error == ESP_OK) failure = ESP_ERR_INVALID_RESPONSE;
@@ -260,6 +343,7 @@ static void capture_worker(void *unused)
         } else cleanup_errors = 0U;
         vTaskDelay(pdMS_TO_TICKS(50));
     }
+    if (c5_started) publish_hop_status();
     char name[32] = {0};
     uint64_t final_bytes = 0U;
     if (file_open) {
@@ -300,8 +384,11 @@ esp_err_t cerberus_s3_capture_start_options_generation(
     if (generation_out) *generation_out = 0U;
     if (!options || !options->mode_mask ||
         (options->mode_mask & ~CERBERUS_WIFI_CAPTURE_MODE_ALL) != 0U ||
+        (options->plan && (!options->hopping ||
+            options->mode_mask != CERBERUS_WIFI_CAPTURE_MODE_SAE_COMMIT ||
+            !cerberus_wifi_capture_plan_valid(options->plan))) ||
         (options->hopping ? (options->channel != 0U || options->filter_bssid ||
-            options->mode_mask != CERBERUS_WIFI_CAPTURE_MODE_BEACON) :
+            (!options->plan && options->mode_mask != CERBERUS_WIFI_CAPTURE_MODE_BEACON)) :
             (options->channel == 0U || (options->channel > 14U &&
                 (options->channel < 32U || options->channel > 177U)))) ||
         (options->filter_bssid && ((options->bssid[0] & 1U) != 0U ||
@@ -324,6 +411,7 @@ esp_err_t cerberus_s3_capture_start_options_generation(
         .channel = options->channel, .mode_mask = options->mode_mask,
         .filter_bssid = options->filter_bssid, .busy = true,
         .hopping = options->hopping, .save_pcap = options->save_pcap,
+        .planned = options->plan != NULL,
     };
     portEXIT_CRITICAL(&capture_lock);
     cerberus_wifi_capture_status_payload_t remote = {0};
@@ -331,6 +419,15 @@ esp_err_t cerberus_s3_capture_start_options_generation(
     if (error == ESP_OK && (remote.generation == UINT32_MAX ||
         remote.state == CERBERUS_WIFI_CAPTURE_RUNNING || remote.pending != 0U))
         error = ESP_ERR_INVALID_STATE;
+    cerberus_wifi_capture_plan_status_payload_t staged = {0};
+    if (error == ESP_OK) {
+        error = c5_spi_link_wifi_capture_plan_status(&staged);
+        if (error == ESP_ERR_NOT_SUPPORTED && !options->plan) {
+            memset(&staged, 0, sizeof(staged));
+            error = ESP_OK;
+        }
+        if (error == ESP_OK && staged.generation == UINT32_MAX) error = ESP_ERR_INVALID_STATE;
+    }
     if (error != ESP_OK) {
         portENTER_CRITICAL(&capture_lock);
         capture_worker_active = false;
@@ -343,6 +440,7 @@ esp_err_t cerberus_s3_capture_start_options_generation(
     portENTER_CRITICAL(&capture_lock);
     uint32_t floor = remote.generation > last_reserved_generation ?
         remote.generation : last_reserved_generation;
+    if (staged.generation > floor) floor = staged.generation;
     if (floor == UINT32_MAX) {
         capture_worker_active = false;
         capture_status.busy = false;
@@ -357,18 +455,25 @@ esp_err_t cerberus_s3_capture_start_options_generation(
         .generation = generation, .channel = options->channel,
         .mode_mask = options->mode_mask,
         .flags = (options->filter_bssid ? CERBERUS_WIFI_CAPTURE_FLAG_BSSID : 0U) |
-            (options->hopping ? CERBERUS_WIFI_CAPTURE_FLAG_HOP : 0U),
+            (options->hopping ? CERBERUS_WIFI_CAPTURE_FLAG_HOP : 0U) |
+            (options->plan ? CERBERUS_WIFI_CAPTURE_FLAG_PLAN : 0U),
         .lease_ms = 5000U,
     };
     if (options->filter_bssid) memcpy(capture_request.bssid, options->bssid, 6U);
     capture_status.generation = capture_request.generation;
     portEXIT_CRITICAL(&capture_lock);
+    if (options->plan) {
+        capture_plan = heap_caps_malloc(sizeof(*capture_plan), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (capture_plan) memcpy(capture_plan, options->plan, sizeof(*capture_plan));
+        capture_options.plan = capture_plan;
+    }
     capture_frame = heap_caps_malloc(CERBERUS_WIFI_PCAP_FRAME_MAX,
         MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (capture_frame && options->save_pcap)
         capture_block = heap_caps_malloc(CERBERUS_WIFI_PCAP_RECORD_MAX_SIZE,
             MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!capture_frame || (options->save_pcap && !capture_block) ||
+    if (!capture_frame || (options->plan && !capture_plan) ||
+        (options->save_pcap && !capture_block) ||
         xTaskCreate(capture_worker, "wifi_capture", 6144U, NULL, 3U, NULL) != pdPASS) {
         free_buffers();
         portENTER_CRITICAL(&capture_lock);

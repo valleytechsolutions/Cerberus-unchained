@@ -24,9 +24,14 @@ static void check_sae_commit(void)
     memcpy(frame+4,client,6);memcpy(frame+10,ap,6);
     frame[28]=76U; /* anti-clogging-token required: retain the received reply */
     assert(cerberus_wifi_capture_filter_match(mode,true,ap,frame,sizeof(frame)));
-    for(size_t n=0;n<32U;++n)
+    for(size_t n=0;n<30U;++n)
         assert(!cerberus_wifi_capture_filter_match(mode,false,NULL,frame,n));
-    /* Complete group field is the parser boundary, not cryptographic proof. */
+    /* The fixed header can report a failure without any group/body. Short
+     * commit bodies are retained for the S3's explicit structural report. */
+    frame[28]=1U;
+    assert(cerberus_wifi_capture_filter_match(mode,false,NULL,frame,30U));
+    frame[28]=0U;
+    assert(cerberus_wifi_capture_filter_match(mode,false,NULL,frame,31U));
     assert(cerberus_wifi_capture_filter_match(mode,false,NULL,frame,32U));
     frame[25]=1U;
     assert(!cerberus_wifi_capture_filter_match(mode,false,NULL,frame,sizeof(frame)));

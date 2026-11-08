@@ -17,6 +17,8 @@ subprocess.run([
     str(root / "c5_firmware/main/wifi_capture_service.c"),
     str(root / "shared/wifi_capture_ring.c"),
     str(root / "shared/wifi_capture_filter.c"),
+    str(root / "shared/wifi_capture_plan.c"),
+    str(root / "shared/wifi_packet_count.c"),
     "-o", str(exe),
 ], check=True)
 subprocess.run([str(exe)], check=True)
