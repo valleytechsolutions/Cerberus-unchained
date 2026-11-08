@@ -32,6 +32,30 @@ static void expect_rejected(cerberus_wigle_result_t expected,
     assert(strcmp(row, "UNCHANGED") == 0 && written == 777U);
 }
 
+static void fix_class_rows(const cerberus_wardrive_observation_t *ap)
+{
+    const char *bad[]={
+        "GNRMC,120000.000,A,4807.038,N,01131.000,E,0,0,081126,,,E,V",
+        "GNRMC,120000.000,V,,,,,,,081126,,,N,V",
+        "GNGGA,120000.000,4807.038,N,01131.000,E,6,08,0.9,20,M,,,"};
+    const char *rmc="GNRMC,120000.000,A,4807.038,N,01131.000,E,0,0,081126,,,A,V";
+    const char *gga="GNGGA,120000.000,4807.038,N,01131.000,E,1,08,0.9,20,M,,,";
+    cerberus_wigle_time_provenance_t time={.source=CERBERUS_WIGLE_TIME_RF_CALLBACK,
+        .rf_observed_monotonic_ms=1020,.gps_snapshot_monotonic_ms=1020};
+    for(unsigned i=0;i<3;++i)for(unsigned reverse=0;reverse<2;++reverse){
+        cerberus_wardrive_gps_core_t core;cerberus_wardrive_gps_snapshot_t gps;
+        cerberus_wardrive_gps_core_reset(&core);const char *good=i==2?rmc:gga;
+        feed(&core,reverse?good:bad[i],1000);feed(&core,reverse?bad[i]:good,1020);
+        cerberus_wardrive_gps_core_snapshot(&core,1020,&gps);
+        expect_rejected(CERBERUS_WIGLE_NO_LOCATION,ap,&gps,&time);
+        feed(&core,"GNRMC,120001.000,A,4807.038,N,01131.000,E,0,0,081126,,,A,V",2000);
+        cerberus_wardrive_gps_core_snapshot(&core,2000,&gps);
+        time.rf_observed_monotonic_ms=time.gps_snapshot_monotonic_ms=2000;
+        char row[384];size_t written;
+        assert(cerberus_wardrive_wigle_format_wifi(ap,&gps,&time,row,sizeof(row),&written)==CERBERUS_WIGLE_OK);
+        time.rf_observed_monotonic_ms=time.gps_snapshot_monotonic_ms=1020;
+    }
+}
 int main(int argc, char **argv)
 {
     assert(strncmp(CERBERUS_WIGLE_METADATA_HEADER, "WigleWifi-1.6,", 14U) == 0);
@@ -54,6 +78,7 @@ int main(int argc, char **argv)
     static const char raw_ssid[] = "Cafe, \"Lab\"";
     ap.label_length = (uint8_t)strlen(raw_ssid);
     memcpy(ap.label, raw_ssid, ap.label_length);
+    fix_class_rows(&ap);
     cerberus_wardrive_gps_core_t core;
     cerberus_wardrive_gps_core_reset(&core);
     cerberus_wardrive_gps_snapshot_t gps;

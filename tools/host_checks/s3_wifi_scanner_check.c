@@ -61,6 +61,9 @@ static uint32_t mock_ms;
 static cerberus_s3_ble_host_lease_t test_ble_lease;
 static unsigned alloc_count, alloc_calls, fail_alloc_call, init_calls, start_calls;
 static unsigned stop_calls, scan_stop_calls, clear_calls, deinit_calls, delete_calls;
+static unsigned unregister_calls, cleanup_delays, cleanup_recover_after;
+static bool cancel_during_cleanup;
+static void (*cleanup_hook)(void);
 static unsigned ble_init_calls, ble_wifi_queries;
 static size_t internal_heap = 131072U;
 static bool task_fail, driver_initialized, driver_started, driver_scanning;
@@ -107,6 +110,12 @@ static void vTaskDelete(void *task) { assert(!task); ++delete_calls; }
 static void vTaskDelay(unsigned ticks)
 {
     mock_ms += ticks;
+    if (ticks == CERBERUS_S3_WIFI_SCAN_CLEANUP_RETRY_MS) {
+        assert(++cleanup_delays <= 100);
+        if (cleanup_hook) cleanup_hook();
+        if (cleanup_recover_after && cleanup_delays >= cleanup_recover_after) fail_stage = NULL;
+        return;
+    }
     if (!driver_scanning) return;
     if (cancel_in_wait) {
         cerberus_s3_wifi_scan_status_t status;
@@ -177,7 +186,7 @@ static esp_err_t esp_wifi_scan_get_ap_records(uint16_t *count, wifi_ap_record_t 
     return ESP_OK;
 }
 static esp_err_t esp_wifi_scan_stop(void)
-{ ++scan_stop_calls; driver_scanning = false; return failing("scan_stop") ? ESP_FAIL : ESP_OK; }
+{ ++scan_stop_calls; if(failing("scan_stop"))return ESP_FAIL;driver_scanning = false;return ESP_OK; }
 static esp_err_t esp_wifi_clear_ap_list(void)
 { ++clear_calls; return failing("clear") ? ESP_FAIL : ESP_OK; }
 static esp_err_t esp_wifi_stop(void)
@@ -191,6 +200,7 @@ static esp_err_t esp_event_handler_instance_unregister(esp_event_base_t base, in
     esp_event_handler_instance_t handler)
 {
     assert(base == WIFI_EVENT && id == WIFI_EVENT_SCAN_DONE && handler == (void *)(uintptr_t)1);
+    ++unregister_calls;
     if (failing("unregister")) return ESP_FAIL;
     event_callback = NULL;
     return ESP_OK;
@@ -260,6 +270,8 @@ static void reset_all(void)
     netif_ready = event_ready = false;
     mock_ms = alloc_calls = fail_alloc_call = 0;
     init_calls = start_calls = stop_calls = scan_stop_calls = clear_calls = deinit_calls = delete_calls = 0;
+    unregister_calls = cleanup_delays = cleanup_recover_after = 0;
+    cancel_during_cleanup = false;cleanup_hook = NULL;
     ble_init_calls = ble_wifi_queries = 0;
     claim_count_on_ble_query = 0;
     internal_heap = 131072;
@@ -426,8 +438,29 @@ static void successful_banks_and_cancel(void)
         !current.total_count && !current.dropped_count && !current.truncated);
 }
 
+static void observe_retained_cleanup(void)
+{
+    cerberus_s3_wifi_scan_status_t status,blocked;
+    assert(cerberus_s3_wifi_scanner_get_status(&status)==ESP_OK);
+    assert(status.state==CERBERUS_S3_WIFI_SCAN_STOPPING&&status.cleanup_error==ESP_FAIL&&status.radio_owned);
+    assert(scan_active&&cerberus_s3_wifi_owner()==CERBERUS_S3_WIFI_SCAN);
+    assert(status.generation<status.job_id&&alloc_count==3);
+    assert(cerberus_s3_wifi_scanner_start(&blocked)==ESP_ERR_INVALID_STATE&&!blocked.job_id);
+    assert(cerberus_s3_ble_host_claim(CERBERUS_S3_BLE_OWNER_SCANNER,&test_ble_lease)==ESP_ERR_INVALID_STATE);
+    bool cancelled=scan_cancelled;
+    assert(cerberus_s3_wifi_scanner_stop(status.job_id-1)==ESP_ERR_INVALID_STATE&&scan_cancelled==cancelled);
+    if(cancel_during_cleanup){
+        assert(cerberus_s3_wifi_scanner_stop(status.job_id)==ESP_FAIL&&scan_cancelled);
+    }
+}
 static void failure_and_cleanup(void)
 {
+    reset_all();assert(cerberus_s3_wifi_claim(CERBERUS_S3_WIFI_WEB)==ESP_OK);
+    scan_cleanup_t foreign={.scan_started=true,.clear_needed=true,.wifi_started=true,
+        .registered=true,.initialized=true,.handler=(void *)(uintptr_t)1};
+    assert(scan_cleanup_step(&foreign)==ESP_ERR_INVALID_STATE);
+    assert(!scan_stop_calls&&!clear_calls&&!stop_calls&&!unregister_calls&&!deinit_calls);
+    assert(cerberus_s3_wifi_owner()==CERBERUS_S3_WIFI_WEB);
     const char *setup[] = {"netif", "init", "storage", "mode", "register", "start", "scan", "num", "records"};
     for (unsigned i = 0; i < sizeof(setup) / sizeof(setup[0]); ++i) {
         reset_all();
@@ -454,21 +487,33 @@ static void failure_and_cleanup(void)
     assert(status.error_code == ESP_ERR_TIMEOUT && status.elapsed_ms == CERBERUS_S3_WIFI_SCAN_WAIT_MS &&
         status.generation == generation && scan_stop_calls == 1 && !status.radio_owned);
     const char *cleanup[] = {"clear", "stop", "unregister", "deinit", "scan_stop"};
-    for (unsigned i = 0; i < sizeof(cleanup) / sizeof(cleanup[0]); ++i) {
+    for (unsigned i = 0; i < sizeof(cleanup) / sizeof(cleanup[0]); ++i) for(unsigned cancel=0;cancel<2;++cancel) {
         reset_all();
         start_and_complete();
         generation = scan_retained->generation;
         fail_stage = cleanup[i];
         emitted_done = false;
         cancel_in_wait = !strcmp(cleanup[i], "scan_stop");
+        bool cancelled=cancel||cancel_in_wait;
+        cancel_during_cleanup=cancel;cleanup_recover_after=cancel?12:3;
+        cleanup_hook=observe_retained_cleanup;
         assert(cerberus_s3_wifi_scanner_start(&status) == ESP_OK);
         status = run_worker();
-        assert(status.state == CERBERUS_S3_WIFI_SCAN_ERROR && status.cleanup_error && status.radio_owned &&
-            status.generation == generation && alloc_count == 1);
-        assert(cerberus_s3_wifi_owner() == CERBERUS_S3_WIFI_SCAN);
-        assert(cerberus_s3_wifi_scanner_stop(status.job_id) == status.cleanup_error);
-        assert(cerberus_s3_wifi_scanner_start(&status) == ESP_ERR_INVALID_STATE);
-        assert(cerberus_s3_ble_host_claim(CERBERUS_S3_BLE_OWNER_SCANNER, &test_ble_lease) == ESP_ERR_INVALID_STATE);
+        assert(status.state==(cancelled?CERBERUS_S3_WIFI_SCAN_CANCELLED:CERBERUS_S3_WIFI_SCAN_COMPLETE));
+        assert(!status.error_code&&!status.cleanup_error&&!status.radio_owned&&alloc_count==1);
+        assert(status.generation==(cancelled?generation:status.job_id));
+        assert(cleanup_delays==cleanup_recover_after&&cerberus_s3_wifi_owner()==CERBERUS_S3_WIFI_NONE);
+        /* One prior successful scan plus one call per completed teardown stage.
+         * Only the failing stage is retried; no SDK work runs after deinit. */
+        assert(clear_calls==2+(!strcmp(cleanup[i],"clear")?cleanup_delays:0));
+        assert(stop_calls==2+(!strcmp(cleanup[i],"stop")?cleanup_delays:0));
+        assert(unregister_calls==2+(!strcmp(cleanup[i],"unregister")?cleanup_delays:0));
+        assert(deinit_calls==2+(!strcmp(cleanup[i],"deinit")?cleanup_delays:0));
+        assert(scan_stop_calls==(!strcmp(cleanup[i],"scan_stop")?cleanup_delays+1:0));
+        cleanup_hook=NULL;cancel_during_cleanup=false;
+        assert(cerberus_s3_ble_host_claim(CERBERUS_S3_BLE_OWNER_SCANNER,&test_ble_lease)==ESP_OK);
+        assert(cerberus_s3_ble_host_release(&test_ble_lease)==ESP_OK);
+        emitted_done=false;start_and_complete(); /* Same boot; no forced owner reset. */
     }
     reset_all();
     done_status = 1;

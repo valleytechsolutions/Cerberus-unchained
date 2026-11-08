@@ -227,6 +227,8 @@ static esp_err_t dual_collect_local(void)
         return ESP_ERR_INVALID_STATE;
     }
     store->s3_owned = current.radio_owned;
+    if (current.radio_owned && current.state == CERBERUS_S3_WIFI_SCAN_STOPPING &&
+        current.cleanup_error != ESP_OK) return ESP_OK; /* Retained worker is retrying teardown. */
     if (current.cleanup_error != ESP_OK) return current.cleanup_error;
     if (current.state == CERBERUS_S3_WIFI_SCAN_ERROR || current.state == CERBERUS_S3_WIFI_SCAN_CANCELLED)
         return current.error_code != ESP_OK ? current.error_code : ESP_ERR_INVALID_STATE;
@@ -318,8 +320,10 @@ static void dual_cleanup_step(void)
         cerberus_s3_wifi_scan_status_t local;
         if (cerberus_s3_wifi_scanner_get_status(&local) == ESP_OK) {
             if (local.job_id != store->s3_job || !local.radio_owned) store->s3_owned = false;
-            else if (local.cleanup_error != ESP_OK) store->status.s3_error = local.cleanup_error;
-            else if (store->s3_job) (void)cerberus_s3_wifi_scanner_stop(store->s3_job);
+            else {
+                if (local.cleanup_error != ESP_OK) store->status.s3_error = local.cleanup_error;
+                if (store->s3_job) (void)cerberus_s3_wifi_scanner_stop(store->s3_job);
+            }
         }
     }
     if (store->c5_possible && (uint32_t)(dual_now() - store->poll_ms) >= DUAL_WIFI_POLL_MS) {

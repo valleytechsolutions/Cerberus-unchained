@@ -171,13 +171,18 @@ static void invalidate_fix(cerberus_wardrive_gps_core_t *core)
     core->longitude = 0.0;
     core->altitude_valid = false;
     core->altitude_m = 0.0f;
+    /* A later GGA must not turn a void/estimated RMC's time into FIX + UTC. */
+    core->utc_seen = false;
+    core->utc[0] = '\0';
 }
 
 static bool parse_rmc(cerberus_wardrive_gps_core_t *core, char *fields[],
     size_t count, uint64_t monotonic_ms)
 {
+    core->rmc_time_valid = core->rmc_fix_valid = false;
     if (count < 10U || fields[2][1] != '\0' ||
         (fields[2][0] != 'A' && fields[2][0] != 'V')) {
+        invalidate_fix(core);
         increment(&core->malformed_sentences);
         return false;
     }
@@ -185,6 +190,7 @@ static bool parse_rmc(cerberus_wardrive_gps_core_t *core, char *fields[],
     char second_text[7];
     bool time_valid = utc_time(fields[1], &hour, &minute, &second, &millis, second_text) &&
         utc_date(fields[9], &year, &month, &day);
+    core->rmc_time_valid = time_valid;
     if (time_valid) {
         /* Each parsed field has a fixed width. Avoid a variadic formatter in
          * the GPS reader and keep the 24-byte UTC representation exact. */
@@ -213,7 +219,22 @@ static bool parse_rmc(cerberus_wardrive_gps_core_t *core, char *fields[],
         core->utc_seen = false;
         core->utc[0] = '\0';
     }
-    if (fields[2][0] == 'V') {
+    /* Mode is optional in older RMC formats. The separate navigation-status
+     * field after it is not used: LC29H reports V there even with a valid fix. */
+    bool satellite_mode = true;
+    if (count > 12U && fields[12][0]) {
+        if (fields[12][1] || !strchr("ADFREMNS", fields[12][0])) {
+            invalidate_fix(core);
+            increment(&core->malformed_sentences);
+            return false;
+        }
+        satellite_mode = strchr("ADFR", fields[12][0]) != NULL;
+    }
+    bool gga_disagrees = time_valid && core->gga_seen && core->gga_time_valid &&
+        !core->gga_fix_valid && monotonic_ms >= core->last_gga_ms &&
+        monotonic_ms - core->last_gga_ms <= 1000U && core->gga_millis == millis &&
+        memcmp(core->gga_second, second_text, sizeof(second_text)) == 0;
+    if (fields[2][0] == 'V' || !satellite_mode || gga_disagrees) {
         invalidate_fix(core);
         return time_valid;
     }
@@ -234,6 +255,7 @@ static bool parse_rmc(cerberus_wardrive_gps_core_t *core, char *fields[],
         monotonic_ms>=core->last_gga_ms && monotonic_ms-core->last_gga_ms<=1000U;
     if(!core->altitude_valid)core->altitude_m=0.0f;
     core->fix_live = true;
+    core->rmc_fix_valid = time_valid;
     core->last_fix_ms = monotonic_ms;
     increment(&core->fix_updates);
     return time_valid;
@@ -246,6 +268,7 @@ static bool parse_gga(cerberus_wardrive_gps_core_t *core, char *fields[],
      * independently of whether GGA currently reports a navigation fix. */
     core->gga_seen = true;
     core->gga_time_valid = false;
+    core->gga_fix_valid = false;
     core->last_gga_ms = monotonic_ms;
     core->satellites_valid = false;
     core->hdop_valid = false;
@@ -253,6 +276,7 @@ static bool parse_gga(cerberus_wardrive_gps_core_t *core, char *fields[],
     core->hdop = 0.0f;
     unsigned quality;
     if (count < 10U || !decimal_uint(fields[6], 8U, &quality)) {
+        invalidate_fix(core);
         increment(&core->malformed_sentences);
         return false;
     }
@@ -278,7 +302,12 @@ static bool parse_gga(cerberus_wardrive_gps_core_t *core, char *fields[],
         core->utc_seen = false;
         core->utc[0] = '\0';
     }
-    if (quality == 0U) {
+    /* Qualities 1-5 describe satellite fixes (including differential/PPS/RTK).
+     * Estimated, manually supplied and simulated positions are not a GNSS fix. */
+    bool rmc_disagrees = gga_time_valid && core->rmc_time_valid && !core->rmc_fix_valid &&
+        monotonic_ms >= core->last_utc_ms && monotonic_ms - core->last_utc_ms <= 1000U &&
+        core->utc_millis == millis && memcmp(core->utc_second, second_text, sizeof(second_text)) == 0;
+    if (quality == 0U || quality > 5U || rmc_disagrees) {
         invalidate_fix(core);
         if (!satellites_ok || !hdop_ok) increment(&core->malformed_sentences);
         return gga_time_valid && satellites_ok && hdop_ok;
@@ -310,6 +339,7 @@ static bool parse_gga(cerberus_wardrive_gps_core_t *core, char *fields[],
     core->altitude_valid = altitude_valid;
     core->altitude_m = altitude_valid ? altitude : 0.0f;
     core->fix_live = true;
+    core->gga_fix_valid = gga_time_valid;
     core->last_fix_ms = monotonic_ms;
     increment(&core->fix_updates);
     return gga_time_valid;

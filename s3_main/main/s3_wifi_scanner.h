@@ -9,6 +9,7 @@
 #define CERBERUS_S3_WIFI_SCAN_SOURCE_S3 1U
 #define CERBERUS_S3_WIFI_SCAN_PASSIVE_DWELL_MS 120U
 #define CERBERUS_S3_WIFI_SCAN_WAIT_MS 6000U
+#define CERBERUS_S3_WIFI_SCAN_CLEANUP_RETRY_MS 250U
 
 typedef enum {
     CERBERUS_S3_WIFI_SCAN_IDLE,
@@ -64,8 +65,10 @@ esp_err_t cerberus_s3_wifi_scanner_get_result(uint32_t generation, uint8_t index
 
 /* COMPLETE replaces the retained bank only after successful cleanup. Cancel,
  * timeout and failed replacement preserve its generation/count/receipt time.
- * Cleanup uncertainty keeps the SCAN owner reserved and blocks restart until
- * reset; callers must report cleanup_error rather than pretending it stopped.
+ * Cleanup uncertainty keeps the worker and SCAN owner reserved. The worker
+ * retries only unfinished teardown stages; STOPPING and cleanup_error remain
+ * visible until release. Stop still records cancellation during retries.
+ * A persistent driver fault blocks other radio owners; it is never force-cleared.
  * SDK calls already in flight are not interrupted by the software deadline. */
 
 /* Bounded ASCII/\\xHH display; identity bytes remain untouched. Returns full

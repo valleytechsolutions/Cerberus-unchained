@@ -38,6 +38,12 @@ mounted SD and no increase in the listed SPI error counters. The new graph's
 physical 2.4/5 GHz and navigation checks remain pending. See
 [Channel activity](docs/CHANNEL_ACTIVITY.md).
 
+The rev159 development candidate rejects estimated or contradictory GPS fixes
+before Wardriving starts or writes a row. It also lets the existing S3 Wi-Fi
+worker retry failed cleanup so a transient driver error does not strand the
+radio until reset. Focused production-code checks pass; complete builds and
+installation are pending. See [GPS qualification and radio recovery](docs/GPS_AND_RADIO_RECOVERY.md).
+
 **Tools → System health → DEVICE INFO** reports each processor's application
 build, SDK, partition and memory/status information. The owner confirmed
 the S3/C5 tabs, Refresh and Back on rev157. See [Device Info](docs/DEVICE_INFO.md).

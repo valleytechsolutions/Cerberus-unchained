@@ -398,8 +398,39 @@ static void check_archive_publication(void)
     puts("Archive publication: no-I/O coherent copy, masks, retry/Stop/rebind preservation, fallback, generation exhaustion and empty bank passed.");
 }
 
+static void retrying_local_cleanup(void)
+{
+    reset();assert(cerberus_dual_wifi_scan_start()==ESP_OK);until_phase(DUAL_PHASE_WAIT);
+    local_status.state=CERBERUS_S3_WIFI_SCAN_STOPPING;local_status.cleanup_error=ESP_FAIL;
+    for(unsigned i=0;i<60;++i){
+        tick();assert(status().error==ESP_OK&&status().split&&dual_active());
+        assert(!local_stops&&!remote_stops);
+    }
+    local_status.state=CERBERUS_S3_WIFI_SCAN_COMPLETE;local_status.cleanup_error=ESP_OK;
+    local_status.radio_owned=false;local_status.generation=local_status.job_id;
+    local_status.completed_ms=local_complete_at;drain();
+    assert(status().state==CERBERUS_DUAL_WIFI_COMPLETE&&status().count==64&&!status().fallback);
+
+    for(unsigned expire=0;expire<2;++expire){
+        reset();assert(cerberus_dual_wifi_scan_start()==ESP_OK);until_phase(DUAL_PHASE_WAIT);
+        local_status.state=CERBERUS_S3_WIFI_SCAN_STOPPING;local_status.cleanup_error=ESP_FAIL;
+        fail_local_cleanup=true;
+        if(expire){clock_ms=store->started_ms+DUAL_WIFI_DEADLINE_MS;tick();}
+        else cerberus_dual_wifi_scan_stop();
+        for(unsigned i=0;i<5;++i)tick();
+        assert(local_stops>0&&status().cleanup_pending&&local_status.radio_owned);
+        assert(status().error==(expire?ESP_ERR_TIMEOUT:ESP_OK));
+        assert(cerberus_dual_wifi_scan_start()==ESP_ERR_INVALID_STATE);
+        fail_local_cleanup=false;drain();assert(!status().cleanup_pending&&!local_status.radio_owned);
+        local_status.cleanup_error=ESP_OK;
+        assert(cerberus_dual_wifi_scan_start()==ESP_OK);drain();
+        assert(status().state==CERBERUS_DUAL_WIFI_COMPLETE&&status().split);
+    }
+    puts("S3 cleanup retries: wait without cancelling C5, forward Stop despite cleanup error, retain owner past deadline, recover and rescan passed.");
+}
 int main(void)
 {
+    retrying_local_cleanup();
     reset(); allocation_fails = true;
     assert(cerberus_dual_wifi_scan_start() == ESP_ERR_NO_MEM && !info_reads && !local_starts && !remote_starts);
     reset(); info_error = ESP_ERR_NOT_SUPPORTED;

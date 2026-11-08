@@ -76,12 +76,12 @@ esp_err_t cerberus_s3_wifi_scanner_stop(uint32_t job_id)
     if (!job_id) return ESP_ERR_INVALID_ARG;
     portENTER_CRITICAL(&scan_lock);
     esp_err_t error = job_id == scan_status.job_id ? ESP_OK : ESP_ERR_INVALID_STATE;
-    if (error == ESP_OK && scan_status.cleanup_error != ESP_OK)
-        error = scan_status.cleanup_error;
     if (error == ESP_OK && scan_active) {
         scan_cancelled = true;
         scan_status.state = CERBERUS_S3_WIFI_SCAN_STOPPING;
     }
+    if (error == ESP_OK && scan_status.cleanup_error != ESP_OK)
+        error = scan_status.cleanup_error;
     portEXIT_CRITICAL(&scan_lock);
     return error;
 }
@@ -165,9 +165,41 @@ static void scan_convert_rows(scan_bank_t *bank, const wifi_ap_record_t *rows,
     bank->dropped_count = total > bank->count ? (uint16_t)(total - bank->count) : 0U;
 }
 
-static void scan_keep_first_error(esp_err_t *error, esp_err_t next)
+typedef struct {
+    bool scan_started, clear_needed, wifi_started, registered, initialized;
+    esp_event_handler_instance_t handler;
+} scan_cleanup_t;
+
+static esp_err_t scan_cleanup_step(scan_cleanup_t *cleanup)
 {
-    if (*error == ESP_OK && next != ESP_OK) *error = next;
+    if (cerberus_s3_wifi_owner() != CERBERUS_S3_WIFI_SCAN) return ESP_ERR_INVALID_STATE;
+    esp_err_t error;
+    if (cleanup->scan_started) {
+        error = esp_wifi_scan_stop();
+        if (error != ESP_OK && error != ESP_ERR_WIFI_NOT_STARTED) return error;
+        cleanup->scan_started = false;
+    }
+    if (cleanup->clear_needed) {
+        error = esp_wifi_clear_ap_list();
+        if (error != ESP_OK) return error;
+        cleanup->clear_needed = false;
+    }
+    if (cleanup->wifi_started) {
+        error = esp_wifi_stop();
+        if (error != ESP_OK && error != ESP_ERR_WIFI_NOT_STARTED) return error;
+        cleanup->wifi_started = false;
+    }
+    if (cleanup->registered) {
+        error = esp_event_handler_instance_unregister(WIFI_EVENT, WIFI_EVENT_SCAN_DONE, cleanup->handler);
+        if (error != ESP_OK) return error;
+        cleanup->registered = false;
+    }
+    if (cleanup->initialized) {
+        error = esp_wifi_deinit();
+        if (error != ESP_OK) return error;
+        cleanup->initialized = false;
+    }
+    return cerberus_s3_wifi_release(CERBERUS_S3_WIFI_SCAN);
 }
 
 static void scan_worker(void *unused)
@@ -242,21 +274,19 @@ static void scan_worker(void *unused)
         if (error == ESP_OK) scan_convert_rows(pending, records, count, total, job_id);
     }
 
-    esp_err_t cleanup = ESP_OK, next;
-    if (started_scan && !complete) {
-        next = esp_wifi_scan_stop();
-        if (next != ESP_ERR_WIFI_NOT_STARTED) scan_keep_first_error(&cleanup, next);
+    scan_cleanup_t remaining = {.scan_started = started_scan && !complete,
+        .clear_needed = initialized, .wifi_started = started_wifi,
+        .registered = registered, .initialized = initialized, .handler = handler};
+    esp_err_t cleanup;
+    while ((cleanup = scan_cleanup_step(&remaining)) != ESP_OK) {
+        /* Keep the same worker and owner until teardown is acknowledged.
+         * Successful stages are not repeated against a partly torn-down SDK. */
+        portENTER_CRITICAL(&scan_lock);
+        scan_status.state = CERBERUS_S3_WIFI_SCAN_STOPPING;
+        scan_status.cleanup_error = cleanup;
+        portEXIT_CRITICAL(&scan_lock);
+        vTaskDelay(pdMS_TO_TICKS(CERBERUS_S3_WIFI_SCAN_CLEANUP_RETRY_MS));
     }
-    if (initialized) scan_keep_first_error(&cleanup, esp_wifi_clear_ap_list());
-    if (started_wifi) {
-        next = esp_wifi_stop();
-        if (next != ESP_ERR_WIFI_NOT_STARTED) scan_keep_first_error(&cleanup, next);
-    }
-    if (registered) scan_keep_first_error(&cleanup,
-        esp_event_handler_instance_unregister(WIFI_EVENT, WIFI_EVENT_SCAN_DONE, handler));
-    if (initialized) scan_keep_first_error(&cleanup, esp_wifi_deinit());
-    if (cleanup == ESP_OK) cleanup = cerberus_s3_wifi_release(CERBERUS_S3_WIFI_SCAN);
-    if (error == ESP_OK) error = cleanup;
 
     scan_bank_t *old = NULL;
     portENTER_CRITICAL(&scan_lock);

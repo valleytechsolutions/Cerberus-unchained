@@ -72,6 +72,9 @@ typedef struct {
     char utc_second[7];
     char gga_second[7];
     bool gga_time_valid;
+    bool gga_fix_valid; /* A qualified position from the timed GGA epoch. */
+    bool rmc_time_valid;
+    bool rmc_fix_valid;
     uint16_t gga_millis,utc_millis;
     uint32_t valid_sentences;
     uint32_t bad_checksums;

@@ -39,6 +39,68 @@ static unsigned additional_checks;
 #define CHECK(x) do { ++additional_checks; assert(x); } while (0)
 static const char good_gga[]="GPGGA,123519.25,4807.038,N,01131.000,E,1,08,0.9,545.4,M,46.9,M,,";
 static const char good_rmc[]="GNRMC,123519.25,A,4807.038,N,01131.000,E,0.0,0.0,230394,,";
+static bool qualifies(cerberus_wardrive_gps_core_t *core, uint64_t now)
+{
+    cerberus_wardrive_gps_snapshot_t out;
+    cerberus_wardrive_gps_core_snapshot(core,now,&out);
+    return out.state==CERBERUS_WARDRIVE_GPS_FRESH&&out.coordinates_valid&&out.utc_valid&&out.utc_from_rmc;
+}
+static void satellite_fix_admission(void)
+{
+    cerberus_wardrive_gps_core_t core;
+    char rmc[128],gga[128];
+    /* LC29H's final NavStatus V is unsupported, not an invalid position mode. */
+    const char allowed[]="ADFR";
+    for(unsigned mode=0;mode<sizeof(allowed)-1U;++mode){
+        for(unsigned quality=1;quality<=5;++quality){
+            snprintf(rmc,sizeof(rmc),"GNRMC,123519.25,A,4807.038,N,01131.000,E,0,0,081126,,,%c,V",allowed[mode]);
+            snprintf(gga,sizeof(gga),"GNGGA,123519.25,4807.038,N,01131.000,E,%u,08,0.9,20,M,,,",quality);
+            for(unsigned reverse=0;reverse<2;++reverse){
+                cerberus_wardrive_gps_core_reset(&core);
+                feed(&core,reverse?gga:rmc,1000);feed(&core,reverse?rmc:gga,1020);
+                CHECK(qualifies(&core,1020));
+            }
+        }
+    }
+    const char *rejected[]={"E","N","M","S","X","AA"," "};
+    for(unsigned mode=0;mode<sizeof(rejected)/sizeof(rejected[0]);++mode){
+        snprintf(rmc,sizeof(rmc),"GNRMC,123519.25,A,4807.038,N,01131.000,E,0,0,081126,,,%s,V",rejected[mode]);
+        for(unsigned reverse=0;reverse<2;++reverse){
+            cerberus_wardrive_gps_core_reset(&core);
+            feed(&core,reverse?good_gga:rmc,1000);feed(&core,reverse?rmc:good_gga,1020);
+            CHECK(!qualifies(&core,1020));
+        }
+    }
+    /* A legacy active RMC cannot override a same-epoch non-satellite GGA. */
+    const unsigned rejected_quality[]={0,6,7,8,9};
+    for(unsigned q=0;q<sizeof(rejected_quality)/sizeof(rejected_quality[0]);++q){
+        snprintf(gga,sizeof(gga),"GPGGA,123519.25,4807.038,N,01131.000,E,%u,08,0.9,20,M,,,",rejected_quality[q]);
+        for(unsigned reverse=0;reverse<2;++reverse){
+            cerberus_wardrive_gps_core_reset(&core);
+            feed(&core,reverse?gga:good_rmc,1000);feed(&core,reverse?good_rmc:gga,1020);
+            /* An unparseable quality has no epoch to contradict an independent
+             * later RMC. It still invalidates the previous fix immediately. */
+            CHECK(qualifies(&core,1020)==(rejected_quality[q]==9&&reverse));
+            feed(&core,"GNRMC,123520.25,A,4807.038,N,01131.000,E,0,0,081126,,,A,V",2000);
+            CHECK(qualifies(&core,2000));
+        }
+    }
+    const char *void_rmc="GNRMC,123519.25,V,,,,,,,081126,,,N,V";
+    for(unsigned reverse=0;reverse<2;++reverse){
+        cerberus_wardrive_gps_core_reset(&core);
+        feed(&core,reverse?good_gga:void_rmc,1000);feed(&core,reverse?void_rmc:good_gga,1020);
+        CHECK(!qualifies(&core,1020));
+    }
+    const char *malformed[]={
+        "GNRMC,123519.25,X,4807.038,N,01131.000,E,0,0,081126,,,A,V",
+        "GNRMC,123519.25,A",
+        "GNGGA,123519.25,4807.038,N,01131.000,E,bad,08,0.9,20,M,,,"};
+    for(unsigned i=0;i<sizeof(malformed)/sizeof(malformed[0]);++i){
+        cerberus_wardrive_gps_core_reset(&core);feed(&core,good_rmc,1000);
+        CHECK(qualifies(&core,1000));feed(&core,malformed[i],1020);
+        CHECK(!qualifies(&core,1020));
+    }
+}
 static void sentence_order(void)
 {
     cerberus_wardrive_gps_core_t core;cerberus_wardrive_gps_snapshot_t out;
@@ -311,7 +373,7 @@ int main(void)
     cerberus_wardrive_gps_core_snapshot(&core, 21000U, &status);
     assert(status.valid_sentences == 12U);
 
-    sentence_order();independent_gga_freshness();strict_decimal_fields();observed_assembly();
+    sentence_order();satellite_fix_admission();independent_gga_freshness();strict_decimal_fields();observed_assembly();
     printf("Wardriving GPS core checks passed: existing strict NMEA/UTC tests + %u independent-GGA/decimal/observed-assembly assertions; core=%zu snapshot=%zu bytes.\n",
         additional_checks,sizeof(core),sizeof(status));
     return 0;

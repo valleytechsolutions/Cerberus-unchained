@@ -30,6 +30,13 @@ running with a valid monotonic clock, fresh coordinates and fresh RMC UTC;
 neither sample may be older than five seconds. The upload clock's time holdover
 does not qualify as a position fix.
 
+Rev159 also checks the receiver's fix class. Estimated, simulated and manually
+supplied positions do not qualify. A void RMC and valid GGA for the same recent
+epoch cannot combine into FIX + UTC, regardless of their arrival order.
+A later qualifying satellite fix restores logging. The LC29H's separate,
+unsupported navigation-status field remains compatible; it is not confused
+with RMC's position-status field. See [qualification rules and checks](GPS_AND_RADIO_RECOVERY.md).
+
 With geofences disabled, if the fix disappears during capture, the receivers continue scanning. Rows
 without qualifying position/time are excluded from the CSV and counted on the
 screen. Logging resumes when the fix is usable again. The optional

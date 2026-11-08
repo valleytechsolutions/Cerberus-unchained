@@ -323,9 +323,33 @@ static void recent_time_after_stop(void)
     CHECK(cerberus_wardrive_gps_uart_recent_time(&sample)==ESP_ERR_NOT_FOUND&&!sample.utc[0]);
     stop_clean();
 }
+static void fix_class_start_gate(void)
+{
+    const char *bad[]={
+        "GNRMC,120000.000,A,4807.038,N,01131.000,E,0,0,081126,,,E,V",
+        "GNRMC,120000.000,V,,,,,,,081126,,,N,V",
+        "GNGGA,120000.000,4807.038,N,01131.000,E,6,08,0.9,20,M,,,"};
+    const char *good_rmc="GNRMC,120000.000,A,4807.038,N,01131.000,E,0,0,081126,,,A,V";
+    const char *good_gga="GNGGA,120000.000,4807.038,N,01131.000,E,1,08,0.9,20,M,,,";
+    for(unsigned i=0;i<3;++i)for(unsigned reverse=0;reverse<2;++reverse){
+        reset();CHECK(cerberus_wardrive_gps_uart_start()==ESP_OK);
+        const char *good=i==2?good_rmc:good_gga;
+        char text[180];size_t size=sentence(text,reverse?good:bad[i],"\r\n");feed(text,size,13);
+        size=sentence(text,reverse?bad[i]:good,"\r\n");feed(text,size,13);
+        cerberus_wardrive_gps_uart_state_t state;cerberus_wardrive_gps_time_t sample;
+        CHECK(cerberus_wardrive_gps_uart_get_state(&state)==ESP_OK);
+        CHECK(!cerberus_wardrive_gps_start_ready(true,&state));
+        CHECK(cerberus_wardrive_gps_uart_recent_time(&sample)==ESP_ERR_NOT_FOUND&&!sample.utc[0]);
+        size=sentence(text,"GNRMC,120001.000,A,4807.038,N,01131.000,E,0,0,081126,,,A,V","\r\n");feed(text,size,13);
+        CHECK(cerberus_wardrive_gps_uart_get_state(&state)==ESP_OK);
+        CHECK(cerberus_wardrive_gps_start_ready(true,&state));
+        CHECK(cerberus_wardrive_gps_uart_recent_time(&sample)==ESP_OK);
+        stop_clean();
+    }
+}
 int main(void)
 {
-    off_and_trace();setup_and_cleanup();clocks_and_identity();observer_lock_timeouts();presets_preview_and_detection();recent_time_after_stop();reset();
+    off_and_trace();setup_and_cleanup();clocks_and_identity();observer_lock_timeouts();presets_preview_and_detection();recent_time_after_stop();fix_class_start_gate();reset();
     printf("GPS UART/trace: %u checks; actual reader/parser/lifecycle, optional PSRAM, exact observer identity, privacy and cleanup passed. row=%zu store=%zu snapshot=%zu\n",
         checks,sizeof(cerberus_wardrive_gps_trace_row_t),sizeof(gps_trace_store_t),sizeof(cerberus_wardrive_gps_trace_snapshot_t));
     return 0;
