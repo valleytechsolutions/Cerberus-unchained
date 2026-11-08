@@ -1,6 +1,14 @@
 # Adaptive two-radio scanning
 
-## Current installed checkpoint: rev168
+## Rev169 source checkpoint: Remote ID messages
+
+[Remote ID MESSAGES](REMOTE_ID_MESSAGES.md) uses C5 Wi-Fi and independent S3
+BLE receive paths to retain all six supported message families, each with its
+own age. S3 copies the C5 snapshot incrementally and atomically publishes each
+completed bank. Commands invalidate cached scan state, and Stop cancels a
+partial transfer before cleanup. Physical acceptance remains open.
+
+## Earlier installed checkpoint: rev168
 
 [FRAME CAPTURE](WIFI_CAPTURE_DESIGN.md) extends generic receive/recording with
 RAW, probe and disconnect scopes, live delivered-frame summaries and bounded

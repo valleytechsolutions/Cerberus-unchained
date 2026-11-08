@@ -915,6 +915,94 @@ esp_err_t cerberus_wifi_watch_get_motion_timing(const cerberus_watch_scan_data_r
     return wifi_watch_motion_snapshot(request, &motion, out);
 }
 
+/* A copied image outlives individual SPI requests, but never grants access to
+ * a different completed bank. Projection IDs fail closed on exhaustion. No
+ * capture state, lease, callback admission or radio owner is changed here. */
+static cerberus_watch_profile_projection_t watch_profile_projection;
+static cerberus_watch_profile_begin_request_t watch_profile_identity;
+static uint32_t watch_profile_serial, watch_profile_current;
+
+esp_err_t cerberus_wifi_watch_profile_begin(const cerberus_watch_profile_begin_request_t *request,
+    cerberus_watch_profile_begin_payload_t *out)
+{
+    if(!out)return ESP_ERR_INVALID_ARG;
+    memset(out,0,sizeof(*out));
+    if(!request)return ESP_ERR_INVALID_ARG;
+    out->capture_epoch=request->capture_epoch;
+    out->radio=request->radio;out->generation=request->generation;out->index=request->index;
+    esp_err_t error=ESP_ERR_INVALID_ARG;
+    if(request->radio!=CERBERUS_WATCH_RADIO_WIFI||request->reserved||
+       request->index>=CERBERUS_WATCH_MAX_OBSERVATIONS)goto done;
+    cerberus_watch_profile_projection_t image={0};
+    sentinel_watch_profile_t profile;
+    sentinel_watch_profile_timing_t groups;
+    sentinel_watch_motion_t motion;
+    cerberus_watch_scan_timing_payload_t source_time,motion_time;
+    int64_t now=esp_timer_get_time();
+    portENTER_CRITICAL(&defense_capture_mux);
+    uint64_t epoch=watch_capture.capture_epoch;
+    bool valid=epoch&&(!request->capture_epoch||request->capture_epoch==epoch)&&
+        cerberus_watch_capture_get_profile(&watch_capture,request->radio,request->generation,
+            request->index,now>=0?(uint64_t)now:0U,&profile,&groups)&&
+        cerberus_watch_capture_get_motion(&watch_capture,request->radio,request->generation,
+            request->index,now>=0?(uint64_t)now:0U,&motion,&motion_time)&&
+        cerberus_watch_capture_get_timing(&watch_capture,request->radio,request->generation,
+            request->index,now>=0?(uint64_t)now:0U,&source_time)&&
+        groups.capture_epoch==epoch&&source_time.capture_epoch==epoch&&motion_time.capture_epoch==epoch;
+    error=ESP_ERR_INVALID_STATE;
+    if(valid&&watch_profile_serial!=UINT32_MAX){
+        image.observation=watch_capture.records[request->index];
+        image.motion=motion;image.profile=profile;
+        image.group_valid_mask=now>=0?groups.valid_mask:0U;
+        for(unsigned i=0;i<SENTINEL_WATCH_PROFILE_GROUPS;++i)
+            image.group_age_ms[i]=(image.group_valid_mask&(1U<<i))?groups.age_ms[i]:UINT32_MAX;
+        if(now>=0&&(source_time.flags&CERBERUS_WATCH_TIMING_VALID)){
+            image.timing_flags|=CERBERUS_WATCH_PROFILE_SOURCE_TIMED;
+            image.source_age_ms=source_time.source_age_ms;
+        }
+        if(now>=0&&(motion_time.flags&CERBERUS_WATCH_TIMING_VALID)){
+            image.timing_flags|=CERBERUS_WATCH_PROFILE_MOTION_TIMED;
+            image.motion_age_ms=motion_time.source_age_ms;
+        }
+        watch_profile_projection=image;
+        watch_profile_identity=*request;watch_profile_identity.capture_epoch=epoch;
+        watch_profile_current=++watch_profile_serial;
+        out->capture_epoch=epoch;out->projection=watch_profile_current;
+        out->object_length=sizeof(image);error=ESP_OK;
+    }
+    portEXIT_CRITICAL(&defense_capture_mux);
+done:
+    out->error_code=error;
+    return error;
+}
+
+esp_err_t cerberus_wifi_watch_profile_read(const cerberus_watch_profile_read_request_t *request,
+    cerberus_watch_profile_read_payload_t *out)
+{
+    if(!out)return ESP_ERR_INVALID_ARG;
+    memset(out,0,sizeof(*out));
+    if(!request||!request->projection||!request->capture_epoch||
+       request->radio!=CERBERUS_WATCH_RADIO_WIFI||request->index>=CERBERUS_WATCH_MAX_OBSERVATIONS||
+       (size_t)request->chunk*CERBERUS_WATCH_PROFILE_CHUNK_SIZE>=sizeof(watch_profile_projection))
+        return ESP_ERR_INVALID_ARG;
+    portENTER_CRITICAL(&defense_capture_mux);
+    bool valid=request->projection==watch_profile_current&&
+        request->capture_epoch==watch_profile_identity.capture_epoch&&
+        request->radio==watch_profile_identity.radio&&request->generation==watch_profile_identity.generation&&
+        request->index==watch_profile_identity.index&&watch_capture.capture_epoch==request->capture_epoch&&
+        watch_capture.status.radio==request->radio&&watch_capture.status.generation==request->generation&&
+        watch_capture.status.state==CERBERUS_WATCH_COMPLETE&&request->index<watch_capture.status.stored_count;
+    if(valid){
+        size_t offset=(size_t)request->chunk*CERBERUS_WATCH_PROFILE_CHUNK_SIZE;
+        size_t count=sizeof(watch_profile_projection)-offset;
+        if(count>CERBERUS_WATCH_PROFILE_CHUNK_SIZE)count=CERBERUS_WATCH_PROFILE_CHUNK_SIZE;
+        out->projection=request->projection;out->chunk=request->chunk;out->length=(uint8_t)count;
+        memcpy(out->data,(const uint8_t *)&watch_profile_projection+offset,count);
+    }
+    portEXIT_CRITICAL(&defense_capture_mux);
+    return valid?ESP_OK:ESP_ERR_INVALID_STATE;
+}
+
 esp_err_t cerberus_wifi_scanner_init(void)
 {
     scanner_mutex = xSemaphoreCreateMutex();

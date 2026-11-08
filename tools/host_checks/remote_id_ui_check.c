@@ -452,12 +452,88 @@ static void motion_panel_evidence_and_paint(void)
     view.back_available=false;update(false);action(270,440,CERBERUS_REMOTE_ID_UI_ACTION_NONE);
 }
 
+static void profile_u16(uint8_t *p,uint16_t n){p[0]=(uint8_t)n;p[1]=(uint8_t)(n>>8U);}
+static void profile_u32(uint8_t *p,uint32_t n)
+{for(unsigned i=0;i<4U;++i)p[i]=(uint8_t)(n>>(i*8U));}
+
+static void message_pages_and_privacy(void)
+{
+    reset();cerberus_watch_observation_t r=row(CERBERUS_WATCH_RADIO_WIFI,1);
+    view.selected_source_label="WI-FI-01AB23";
+    publish(CERBERUS_WATCH_RADIO_WIFI,1,1000,&r,1,0);page(0);view.now_ms=1000;update(true);
+    CHECK(cerberus_remote_id_inventory_select(&inventory,&cache.rows[0]));
+    view.selection=inventory.selected;view.detail=true;view.follow_available=true;update(false);
+    action(8,386,CERBERUS_REMOTE_ID_UI_ACTION_MESSAGES);action(311,415,CERBERUS_REMOTE_ID_UI_ACTION_MESSAGES);
+    action(7,400,CERBERUS_REMOTE_ID_UI_ACTION_NONE);action(312,400,CERBERUS_REMOTE_ID_UI_ACTION_NONE);
+    action(8,385,CERBERUS_REMOTE_ID_UI_ACTION_NONE);action(8,416,CERBERUS_REMOTE_ID_UI_ACTION_NONE);
+    cerberus_remote_id_ui_event_t selected=cerberus_remote_id_ui_tap(&cache,100,400);
+    CHECK(!memcmp(&selected.selected,&inventory.selected.frozen,sizeof(selected.selected)));
+    view.message_detail=true;update(false);equals_full_render();
+    CHECK(strstr(drawn,"MESSAGE PROFILE UNAVAILABLE"));save("messages-old-peer");
+    cerberus_watch_profile_evidence_t *e=&view.selection.latest.profile;
+    e->available=true;e->capture_epoch=99;update(false);equals_full_render();
+    CHECK(strstr(drawn,"GROUP NOT RECEIVED"));save("messages-empty-profile");
+    sentinel_watch_profile_t *p=&e->values;p->present=SENTINEL_WATCH_PROFILE_ALL;
+    p->basic[0]=0x32;for(unsigned i=0;i<20U;++i)p->basic[i+1]=(uint8_t)i;
+    p->location[0]=0x26;p->location[1]=179;p->location[2]=255;p->location[3]=0x84;
+    profile_u32(p->location+4,(uint32_t)-900000000);profile_u32(p->location+8,1800000000);
+    profile_u16(p->location+12,1);profile_u16(p->location+14,65535);profile_u16(p->location+16,2000);
+    p->location[18]=0x6C;p->location[19]=0x64;profile_u16(p->location+20,36000);p->location[22]=15;
+    p->auth[0]=0x10;p->auth[1]=1;p->auth[2]=40;profile_u32(p->auth+3,UINT32_MAX);
+    p->self[0]=1;memcpy(p->self+1,"FULL LENGTH DESCRIPTION!",23);
+    p->operator_id[0]=0;memcpy(p->operator_id+1,"OPERATOR-IDENTIFIER-X",20);
+    p->system[0]=6;profile_u32(p->system+1,900000000);profile_u32(p->system+5,(uint32_t)-1800000000);
+    profile_u16(p->system+9,65535);p->system[11]=255;profile_u16(p->system+12,65535);
+    profile_u16(p->system+14,1);p->system[16]=0x3F;profile_u16(p->system+17,65535);
+    profile_u32(p->system+19,UINT32_MAX);
+    CHECK(sentinel_watch_profile_valid(p));
+    for(unsigned i=0;i<6U;++i){p->version[i]=2;e->timing[i]=(cerberus_watch_receive_timing_t){1000000,i*10000U,true};}
+    static const char *names[]={"messages-basic-binary","messages-location","messages-self","messages-operator","messages-auth","messages-system"};
+    for(unsigned i=0;i<6U;++i){
+        view.message_page=(uint8_t)i;update(false);equals_full_render();save(names[i]);
+        action(8,106,CERBERUS_REMOTE_ID_UI_ACTION_MESSAGE_PREV);action(63,133,CERBERUS_REMOTE_ID_UI_ACTION_MESSAGE_PREV);
+        action(256,106,CERBERUS_REMOTE_ID_UI_ACTION_MESSAGE_NEXT);action(311,133,CERBERUS_REMOTE_ID_UI_ACTION_MESSAGE_NEXT);
+        action(64,120,CERBERUS_REMOTE_ID_UI_ACTION_NONE);action(255,120,CERBERUS_REMOTE_ID_UI_ACTION_NONE);
+        action(20,105,CERBERUS_REMOTE_ID_UI_ACTION_NONE);action(20,134,CERBERUS_REMOTE_ID_UI_ACTION_NONE);
+        action(100,400,CERBERUS_REMOTE_ID_UI_ACTION_DETAILS);action(100,440,CERBERUS_REMOTE_ID_UI_ACTION_FOLLOW);
+        action(270,440,CERBERUS_REMOTE_ID_UI_ACTION_MOTION);
+    }
+    view.message_page=0;update(false);CHECK(strstr(drawn,"000102030405060708090A0B0C0D0E0F10111213"));
+    view.message_page=1;update(false);
+    CHECK(strstr(drawn,"63.75")&&strstr(drawn,"-62.0")&&strstr(drawn,"31767.5")&&strstr(drawn,"-999.5"));
+    CHECK(!strcmp(cache.painted.detail[1],"GROUP CALLBACK AGE <=11s"));
+    view.now_ms=5000;e->timing[SENTINEL_WATCH_PROFILE_BASIC]=(cerberus_watch_receive_timing_t){5000000,0,true};
+    update(false);CHECK(!strcmp(cache.painted.detail[1],"GROUP CALLBACK AGE <=15s"));
+    view.message_page=4;update(false);CHECK(strstr(drawn,"UNVERIFIED AUTH")&&strstr(drawn,"DECLARED LENGTH 40"));
+    p->auth[0]=0x11;memset(p->auth+1,0,6);update(false);equals_full_render();
+    CHECK(strstr(drawn,"PAGE 0 LENGTH / TIME NOT AVAILABLE")&&!strstr(drawn,"4294967295"));save("messages-auth-nonzero-page");
+    view.private_values=true;
+    for(unsigned i=0;i<6;++i){view.message_page=(uint8_t)i;update(false);equals_full_render();
+        CHECK(!strstr(drawn,"00010203")&&!strstr(drawn,"FULL LENGTH")&&!strstr(drawn,"OPERATOR-IDENTIFIER")&&
+            !strstr(drawn,"90.0000000")&&!strstr(drawn,"180.0000000"));}
+    save("messages-system-masked");
+    view.message_page=1;update(false);save("messages-location-masked");
+    view.private_values=false;view.selection.present=false;update(false);CHECK(strstr(drawn,"SOURCE ABSENT / RETAINED GROUP"));
+    view.selection.radio_unavailable=true;update(false);CHECK(strstr(drawn,"RADIO UNAVAILABLE / RETAINED GROUP"));
+    e->timing[SENTINEL_WATCH_PROFILE_LOCATION].valid=false;
+    e->timing[SENTINEL_WATCH_PROFILE_LOCATION].request_started_us=e->timing[SENTINEL_WATCH_PROFILE_LOCATION].source_age_ms=0;
+    update(false);CHECK(strstr(drawn,"GROUP CALLBACK AGE UNAVAILABLE"));save("messages-retained-unknown-age");
+    view.selection.latest.observation.address[5]++;update(false);CHECK(strstr(drawn,"MESSAGE PROFILE UNAVAILABLE"));
+    view.selection.latest.observation.address[5]--;
+    view.back_available=false;update(false);action(100,400,CERBERUS_REMOTE_ID_UI_ACTION_NONE);action(20,120,CERBERUS_REMOTE_ID_UI_ACTION_NONE);
+    view.back_available=true;fail_at=calls+2;CHECK(cerberus_remote_id_ui_update(&cache,&view,false)==ESP_FAIL&&!cache.valid);
+    action(100,400,CERBERUS_REMOTE_ID_UI_ACTION_NONE);fail_at=0;update(false);equals_full_render();
+    view.message_detail=false;view.motion_detail=true;update(false);equals_full_render();
+    action(100,400,CERBERUS_REMOTE_ID_UI_ACTION_MESSAGES);save("motion-message-entry");
+}
+
 int main(int argc,char **argv)
 {
     CHECK(argc==2);prefix=argv[1];
     controls();full_pages_and_transitions();frozen_selection_and_details();age_limits_and_paint_failure();qualifying_receive_ages();
     follow_controls_and_frozen_evidence();
     motion_panel_evidence_and_paint();
+    message_pages_and_privacy();
     printf("Remote ID production UI: %u checks; cache=%zu, view=%zu bytes\n",checks,sizeof(cache),sizeof(view));
     return 0;
 }

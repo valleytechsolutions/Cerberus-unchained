@@ -19,13 +19,13 @@ static bool text(const uint8_t *p, size_t n, char *out)
         ++used;
     }
     if (!used || !zero(p + used, n - used)) return false;
-    if (out) { memcpy(out, p, used); out[used] = 0; }
+    if (out) { memset(out, 0, n + 1U); memcpy(out, p, used); }
     return true;
 }
 
 /* Wire offsets are read explicitly; no packed casts, bitfield ABI, floats,
  * cryptographic verification or code from a third-party decoder is used. */
-static bool drone_message(const uint8_t *p, sentinel_watch_protocol_record_t *r)
+static bool drone_message_fields(const uint8_t *p, sentinel_watch_protocol_record_t *r)
 {
     if ((p[0] & 15U) > 2U) return false; /* documented versions 0, 1, 2 */
     switch (p[0] >> 4) {
@@ -82,7 +82,7 @@ static bool drone_message(const uint8_t *p, sentinel_watch_protocol_record_t *r)
         return (p[1] >> 4) <= 5U && ((p[1] & 15U) != 0U ||
             (p[2] < 16U && p[3] != 0U && (unsigned)p[3] <= 17U + 23U * p[2]));
     case 3: return (p[1] <= 2U || p[1] >= 201U) && text(p + 2U, 23U, NULL);
-    case 4: { /* System data: validate location, never expose pilot location. */
+    case 4: { /* System fields are advertised claims, not receiver/pilot identity. */
         int32_t lat = sle32(p + 2U), lon = sle32(p + 6U);
         return !(p[1] & 0xe0U) && (p[1] & 3U) <= 2U &&
             ((p[1] >> 2) & 7U) <= 1U && lat >= -900000000 && lat <= 900000000 &&
@@ -93,6 +93,24 @@ static bool drone_message(const uint8_t *p, sentinel_watch_protocol_record_t *r)
     default: return false;
     }
 }
+static bool drone_message(const uint8_t *p, sentinel_watch_protocol_record_t *r)
+{
+    if (!drone_message_fields(p, r)) return false;
+    unsigned group = p[0] >> 4U;
+    if (group == SENTINEL_WATCH_PROFILE_BASIC && (p[1] >> 4U) > 2U) {
+        r->flags &= (uint8_t)~SENTINEL_WATCH_PROTOCOL_HAS_ID;
+        memset(r->id, 0, sizeof(r->id));
+    }
+    size_t length;
+    uint8_t *bytes = (uint8_t *)sentinel_watch_profile_group(&r->profile, group, &length);
+    if (!bytes) return false;
+    memset(bytes, 0, length);
+    if (group == SENTINEL_WATCH_PROFILE_AUTH && (p[1] & 15U)) bytes[0] = p[1];
+    else memcpy(bytes, p + 1U, length);
+    r->profile.present |= (uint8_t)(1U << group);
+    r->profile.version[group] = p[0] & 15U;
+    return sentinel_watch_profile_valid(&r->profile);
+}
 static bool drone_payload(const uint8_t *p, size_t n, sentinel_watch_protocol_record_t *r)
 {
     if (n == 25U && (p[0] >> 4) != 15U) return drone_message(p, r);
@@ -102,7 +120,7 @@ static bool drone_payload(const uint8_t *p, size_t n, sentinel_watch_protocol_re
     for (size_t i = 0; i < p[2]; ++i) {
         const uint8_t *message = p + 3U + i * 25U;
         if ((message[0] & 15U) != (p[0] & 15U)) return false;
-        if ((message[0] >> 4) == 1U) {
+        if ((message[0] >> 4U) == SENTINEL_WATCH_PROFILE_LOCATION) {
             if (location_seen) return false;
             location_seen = true;
         }

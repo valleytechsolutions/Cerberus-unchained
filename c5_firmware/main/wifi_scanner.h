@@ -96,6 +96,10 @@ void cerberus_wifi_remote_id_start(const cerberus_remote_id_start_request_t *req
 void cerberus_wifi_remote_id_status(uint64_t job_id, cerberus_remote_id_status_payload_t *status);
 void cerberus_wifi_remote_id_stop(uint64_t job_id, cerberus_remote_id_status_payload_t *status);
 void cerberus_wifi_remote_id_renew(uint64_t job_id, cerberus_remote_id_status_payload_t *status);
+esp_err_t cerberus_wifi_watch_profile_begin(const cerberus_watch_profile_begin_request_t *,
+    cerberus_watch_profile_begin_payload_t *);
+esp_err_t cerberus_wifi_watch_profile_read(const cerberus_watch_profile_read_request_t *,
+    cerberus_watch_profile_read_payload_t *);
 esp_err_t cerberus_wifi_watch_get_timing(const cerberus_watch_scan_timing_request_t *request,
     cerberus_watch_scan_timing_payload_t *out);
 esp_err_t cerberus_wifi_watch_get_motion(const cerberus_watch_scan_data_request_t *request,

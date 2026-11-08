@@ -39,7 +39,7 @@ for first, after in (
 source = (root / "c5_firmware/main/main.c").read_text()
 start = source.index("    case CERBERUS_SPI_COMMAND_WATCH_SCAN_MOTION:")
 (out / "c5_watch_motion_dispatch.h").write_text(
-    source[start:source.index("    case CERBERUS_SPI_COMMAND_REMOTE_ID_START:", start)])
+    source[start:source.index("    case CERBERUS_SPI_COMMAND_WATCH_PROFILE_BEGIN:", start)])
 exe = out / ("watch-capture-timing-check.exe" if os.name == "nt" else "watch-capture-timing-check")
 subprocess.run([
     sys.executable, "-m", "ziglang", "cc", "-std=c11", "-O1", "-Wall", "-Wextra", "-Werror",

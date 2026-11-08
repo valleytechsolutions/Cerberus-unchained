@@ -1,4 +1,19 @@
-# Remote ID receive workflow: installed rev72 checkpoint
+# Remote ID receive workflow
+
+## Rev169 source checkpoint: six message families
+
+[MESSAGES](REMOTE_ID_MESSAGES.md) extends the selected-source detail with
+Basic ID, Location, Self ID, Operator ID, Authentication metadata and System
+claims. C5 Wi-Fi and S3 BLE preserve independent group ages and exact capture
+identity. Incremental copying keeps one atomic bank while Stop can cancel an
+unfinished transfer. Old peers explicitly lack profiles. Full parity and
+physical six-family/UI/loaded acceptance remain open.
+
+The following rev72 history describes the earlier motion checkpoint; its
+vertical/status/operator presentation gaps are superseded by rev169 source,
+not by a claim of physical acceptance.
+
+## Earlier installed rev72 checkpoint
 
 Installed 2026-10-30: `candidate-remote-id-motion` adds advertised speed,
 direction and height/reference to **Scan → Remote ID → source → MOTION**,

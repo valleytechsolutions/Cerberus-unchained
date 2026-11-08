@@ -10,6 +10,7 @@ esp_err_t c5_spi_link_wardrive(uint8_t command,const cerberus_wd_request_t *quer
 #include "cerberus_protocol.h"
 #include "s3_wifi_observation.h"
 #include "watch_receive_timing.h"
+#include "watch_profile_evidence.h"
 #include "wifi_probe_observation.h"
 #include "probe_sniff_core.h"
 #include "mesh_observation_protocol.h"
@@ -452,6 +453,38 @@ esp_err_t c5_spi_link_get_watch_detailed_result(uint8_t radio, uint8_t generatio
     uint8_t index, cerberus_watch_observation_t *result,
     cerberus_watch_receive_timing_t *timing, sentinel_watch_motion_t *motion,
     cerberus_watch_receive_timing_t *motion_timing);
+typedef struct {
+    cerberus_watch_observation_t observation;
+    cerberus_watch_receive_timing_t timing;
+    sentinel_watch_motion_t motion;
+    cerberus_watch_receive_timing_t motion_timing;
+    cerberus_watch_profile_evidence_t profile;
+    cerberus_c5_status_t peer;
+} cerberus_c5_watch_profile_result_t;
+typedef struct {
+    cerberus_watch_profile_projection_t image;
+    cerberus_c5_watch_profile_result_t pending;
+    cerberus_c5_status_t expected_peer, peer;
+    uint64_t expected_epoch, capture_epoch, started_us, last_us;
+    uint32_t projection, deadline_ms;
+    esp_err_t error;
+    uint8_t radio, generation, index, chunk, phase;
+    bool expect_peer, anchored;
+} cerberus_c5_watch_profile_reader_t;
+/* BEGIN/cancel perform no I/O. New peers: one passive exchange per step,
+ * <=20ms mutex wait, original absolute deadline, immutable copied projection.
+ * expected_epoch0 discovers the first row's full epoch; use that nonzero epoch
+ * for every later row in the same publication. The caller brackets the entire
+ * bank with peer/status proofs. No output is published before complete=true.
+ * Peers below89 use the unchanged detailed-row getter once, returning canonical
+ * unavailable profile evidence. That legacy step retains its old wire budget.
+ * Any supported-peer failure is explicit and never selects legacy fallback. */
+esp_err_t c5_spi_link_watch_profile_begin(cerberus_c5_watch_profile_reader_t *,
+    const cerberus_c5_status_t *expected_peer, uint8_t radio, uint8_t generation,
+    uint8_t index, uint64_t expected_epoch, uint32_t deadline_ms);
+esp_err_t c5_spi_link_watch_profile_step(cerberus_c5_watch_profile_reader_t *,
+    cerberus_c5_watch_profile_result_t *, bool *complete);
+void c5_spi_link_watch_profile_cancel(cerberus_c5_watch_profile_reader_t *);
 /* Revision 54+ bounded passive priority job. STATUS ID0 discovers the retained
  * high-water job; all mutations require an exact nonzero caller-chosen ID.
  * ESP_OK means a validated C5 reply, including REJECTED/error states. Only

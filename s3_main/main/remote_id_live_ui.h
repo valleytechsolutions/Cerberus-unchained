@@ -9,16 +9,20 @@ typedef struct {
     cerberus_remote_id_session_t session;
     cerberus_remote_id_ui_view_t view;
     cerberus_remote_id_ui_cache_t cache;
+    cerberus_c5_watch_profile_reader_t profile_reader;
+    cerberus_c5_watch_profile_result_t profile_result;
     uint64_t c5_epoch;
     uint64_t c5_job_id;
     cerberus_remote_id_status_payload_t c5_profile;
     cerberus_c5_status_t c5_peer;
     cerberus_remote_id_follow_hint_t c5_follow_hint; /* Immutable attempted job profile. */
-    uint32_t c5_uptime, c5_boot, c5_firmware, last_tick;
+    uint32_t c5_uptime, c5_boot, c5_firmware, last_tick, last_draw;
     size_t offset;
     char identifiers[5][24], phases[2][40], message[49];
     uint8_t c5_before_generation;
-    bool c5_seen, c5_priority, c5_profile_valid, detail, exit_pending, follow_enabled, motion_detail;
+    bool c5_seen, c5_priority, c5_profile_valid, detail, exit_pending, follow_enabled, motion_detail, message_detail;
+    uint8_t message_page;
+    bool profile_reader_active;
 } remote_id_live_store_t;
 static remote_id_live_store_t *remote_id_live;
 static esp_err_t remote_id_open_error;
@@ -346,6 +350,49 @@ static int32_t remote_id_watch_row_detailed(void *context, uint8_t radio, uint8_
         c5_spi_link_get_watch_detailed_result(radio, generation, index, row, timing, motion, motion_timing);
 }
 
+static void remote_id_watch_profile_cancel(void *context)
+{
+    remote_id_live_store_t *store=context;
+    c5_spi_link_watch_profile_cancel(&store->profile_reader);
+    store->profile_reader_active=false;
+    memset(&store->profile_result,0,sizeof(store->profile_result));
+}
+
+static int32_t remote_id_watch_profile_step(void *context,uint8_t radio,uint8_t generation,
+    uint8_t index,uint64_t expected_epoch,cerberus_watch_observation_t *row,
+    cerberus_watch_receive_timing_t *timing,sentinel_watch_motion_t *motion,
+    cerberus_watch_receive_timing_t *motion_timing,cerberus_watch_profile_evidence_t *profile,bool *complete)
+{
+    remote_id_live_store_t *store=context;
+    memset(row,0,sizeof(*row));memset(timing,0,sizeof(*timing));
+    memset(motion,0,sizeof(*motion));memset(motion_timing,0,sizeof(*motion_timing));
+    memset(profile,0,sizeof(*profile));*complete=false;
+    if(radio==CERBERUS_WATCH_RADIO_BLE){
+        if(store->profile_reader_active)return ESP_ERR_INVALID_STATE;
+        esp_err_t error=cerberus_s3_ble_scanner_get_watch_profiled_result(generation,index,expected_epoch,
+            row,timing,motion,motion_timing,profile);
+        *complete=error==ESP_OK;return error;
+    }
+    if(!store->profile_reader_active){
+        esp_err_t error=c5_spi_link_watch_profile_begin(&store->profile_reader,&store->c5_peer,
+            radio,generation,index,expected_epoch,(uint32_t)remote_id_clock(store)+15000U);
+        if(error!=ESP_OK)return error;
+        store->profile_reader_active=true;
+    }else if(store->profile_reader.radio!=radio||store->profile_reader.generation!=generation||
+        store->profile_reader.index!=index||store->profile_reader.expected_epoch!=expected_epoch){
+        remote_id_watch_profile_cancel(store);return CERBERUS_REMOTE_ID_ERROR_SOURCE_CHANGED;
+    }
+    esp_err_t error=c5_spi_link_watch_profile_step(&store->profile_reader,&store->profile_result,complete);
+    if(error!=ESP_OK){remote_id_watch_profile_cancel(store);return error;}
+    if(*complete){
+        *row=store->profile_result.observation;*timing=store->profile_result.timing;
+        *motion=store->profile_result.motion;*motion_timing=store->profile_result.motion_timing;
+        *profile=store->profile_result.profile;
+        remote_id_watch_profile_cancel(store);
+    }
+    return ESP_OK;
+}
+
 static const char *remote_id_error_name(int32_t error)
 {
     if (error == CERBERUS_REMOTE_ID_ERROR_SOURCE_CHANGED) return "SOURCE CHANGED";
@@ -400,6 +447,9 @@ static esp_err_t remote_id_draw(bool full)
     memset(view, 0, sizeof(*view));
     view->now_ms = remote_id_clock(store); view->detail = store->detail;
     view->motion_detail = store->detail && store->motion_detail;
+    view->message_detail = store->detail && store->message_detail;
+    view->message_page = store->message_page;
+    view->private_values = privacy_addresses_masked();
     bool released = cerberus_remote_id_session_released(&store->session);
     bool fault = store->session.radios[0].faulted || store->session.radios[1].faulted ||
         store->session.radios[0].scan.faulted || store->session.radios[1].scan.faulted;
@@ -459,7 +509,9 @@ static esp_err_t remote_id_draw(bool full)
         snprintf(store->message, sizeof(store->message), "FINISHING CURRENT FOLLOW WINDOW");
     view->message = store->exit_pending ? "STOPPING BOTH RADIOS BEFORE EXIT" :
         store->message[0] ? store->message : NULL;
-    return cerberus_remote_id_ui_update(&store->cache, view, full);
+    esp_err_t error=cerberus_remote_id_ui_update(&store->cache, view, full);
+    if(error==ESP_OK)store->last_draw=(uint32_t)view->now_ms;
+    return error;
 }
 
 static void remote_id_open(void)
@@ -481,6 +533,7 @@ static void remote_id_open(void)
 static bool remote_id_finish_exit(void)
 {
     if (remote_id_live && !cerberus_remote_id_session_released(&remote_id_live->session)) return false;
+    if(remote_id_live)remote_id_watch_profile_cancel(remote_id_live);
     heap_caps_free(remote_id_live); remote_id_live = NULL;
     remote_id_publish_diagnostics();
     if (current_page == UI_PAGE_REMOTE_ID) {
@@ -504,8 +557,8 @@ static void remote_id_handle_tap(uint16_t x, uint16_t y)
     case CERBERUS_REMOTE_ID_UI_ACTION_STOP:
         cerberus_remote_id_session_stop(&store->session); break;
     case CERBERUS_REMOTE_ID_UI_ACTION_BACK:
-        if (store->detail && store->motion_detail) {
-            store->motion_detail = false;
+        if (store->detail && (store->motion_detail || store->message_detail)) {
+            store->motion_detail = store->message_detail = false;
         } else if (store->detail) {
             store->detail = false; store->follow_enabled = false;
             cerberus_remote_id_inventory_clear_selection(&store->inventory);
@@ -516,14 +569,26 @@ static void remote_id_handle_tap(uint16_t x, uint16_t y)
         break;
     case CERBERUS_REMOTE_ID_UI_ACTION_SELECT:
         if (cerberus_remote_id_inventory_select(&store->inventory, &event.selected)) {
-            store->detail = true; store->motion_detail = false; store->follow_enabled = false;
+            store->detail = true; store->motion_detail = store->message_detail = false;
+            store->message_page = 0U; store->follow_enabled = false;
         }
         break;
     case CERBERUS_REMOTE_ID_UI_ACTION_MOTION:
     case CERBERUS_REMOTE_ID_UI_ACTION_DETAILS:
+    case CERBERUS_REMOTE_ID_UI_ACTION_MESSAGES:
+    case CERBERUS_REMOTE_ID_UI_ACTION_MESSAGE_PREV:
+    case CERBERUS_REMOTE_ID_UI_ACTION_MESSAGE_NEXT:
         if (!store->detail || !store->inventory.selected.valid || store->exit_pending ||
             !cerberus_remote_id_source_equal(&event.selected, &store->inventory.selected.frozen)) return;
-        store->motion_detail = event.action == CERBERUS_REMOTE_ID_UI_ACTION_MOTION;
+        if(event.action==CERBERUS_REMOTE_ID_UI_ACTION_MESSAGE_PREV ||
+            event.action==CERBERUS_REMOTE_ID_UI_ACTION_MESSAGE_NEXT){
+            if(!store->message_detail)return;
+            store->message_page=(uint8_t)((store->message_page+
+                (event.action==CERBERUS_REMOTE_ID_UI_ACTION_MESSAGE_PREV?5U:1U))%6U);
+        }else{
+            store->motion_detail = event.action == CERBERUS_REMOTE_ID_UI_ACTION_MOTION;
+            store->message_detail = event.action == CERBERUS_REMOTE_ID_UI_ACTION_MESSAGES;
+        }
         break;
     case CERBERUS_REMOTE_ID_UI_ACTION_FOLLOW:
     case CERBERUS_REMOTE_ID_UI_ACTION_UNFOLLOW:
@@ -556,20 +621,25 @@ static void remote_id_tick(uint32_t now, bool asleep)
 {
     remote_id_live_store_t *store = remote_id_live;
     if (!store) return;
+    if(asleep&&store->session.running)cerberus_remote_id_session_stop(&store->session);
     if (current_page != UI_PAGE_REMOTE_ID && !store->exit_pending) {
         store->exit_pending = true; cerberus_remote_id_session_stop(&store->session);
     }
-    if ((uint32_t)(now - store->last_tick) < 500U) return;
+    bool reading=store->session.radios[0].capture_pending||store->session.radios[1].capture_pending||
+        store->session.capture.owner||store->session.capture_cancel_pending||store->profile_reader_active;
+    if ((uint32_t)(now - store->last_tick) < (reading?20U:500U)) return;
     store->last_tick = now;
     cerberus_remote_id_ops_t ops = {.context = store, .poll = remote_id_poll,
         .command = remote_id_command, .status = remote_id_watch_status, .row = remote_id_watch_row,
         .now_ms = remote_id_clock, .row_observed = remote_id_watch_row_observed,
-        .row_detailed = remote_id_watch_row_detailed};
+        .row_detailed = remote_id_watch_row_detailed,.row_profiled_step=remote_id_watch_profile_step,
+        .row_profiled_cancel=remote_id_watch_profile_cancel};
     cerberus_remote_id_session_tick(&store->session, &store->inventory, &ops);
     remote_id_publish_diagnostics();
     if (!store->c5_priority && store->session.radios[0].published_sweeps)
         live_capture_pending |= UINT32_C(1) << SENTINEL_SCAN_WIFI;
     if (store->session.radios[1].published_sweeps) live_capture_pending |= UINT32_C(1) << SENTINEL_SCAN_BLE;
     if (store->exit_pending && remote_id_finish_exit()) return;
-    if (current_page == UI_PAGE_REMOTE_ID && !asleep) ESP_ERROR_CHECK(remote_id_draw(false));
+    if (current_page == UI_PAGE_REMOTE_ID && !asleep && (uint32_t)(now-store->last_draw)>=500U)
+        ESP_ERROR_CHECK(remote_id_draw(false));
 }

@@ -60,6 +60,8 @@ void cerberus_watch_capture_finish(cerberus_watch_capture_t *capture,
         capture->qualifying_valid = 0U;
         memset(capture->motion_us, 0, sizeof(capture->motion_us));
         capture->motion_valid = 0U;
+        memset(capture->profile_us, 0, sizeof(capture->profile_us));
+        memset(capture->profile_valid, 0, sizeof(capture->profile_valid));
     }
     if (capture->status.state != CERBERUS_WATCH_RUNNING) return;
     capture->status.duration_ms = now_ms - capture->started_ms;
@@ -68,6 +70,7 @@ void cerberus_watch_capture_finish(cerberus_watch_capture_t *capture,
         capture->status.stored_count = 0U;
         memset(capture->records, 0, sizeof(capture->records));
         memset(capture->motion, 0, sizeof(capture->motion));
+        memset(capture->profiles, 0, sizeof(capture->profiles));
     }
 }
 
@@ -79,7 +82,9 @@ static void observe(cerberus_watch_capture_t *capture,
     if (capture->status.reports != UINT32_MAX) ++capture->status.reports;
     if (protocol == NULL || address == NULL || protocol->kind == SENTINEL_WATCH_PROTOCOL_NONE) return;
     if (!sentinel_watch_motion_valid(&protocol->motion) ||
-        (protocol->kind != SENTINEL_WATCH_PROTOCOL_DRONE && protocol->motion.flags)) return;
+        !sentinel_watch_profile_valid(&protocol->profile) ||
+        (protocol->kind != SENTINEL_WATCH_PROTOCOL_DRONE &&
+            (protocol->motion.flags || protocol->profile.present))) return;
     cerberus_watch_observation_t *record = NULL;
     for (uint8_t i = 0U; i < capture->status.stored_count; ++i) {
         cerberus_watch_observation_t *candidate = &capture->records[i];
@@ -107,6 +112,9 @@ static void observe(cerberus_watch_capture_t *capture,
                     memset(&capture->motion[i - 1U], 0, sizeof(capture->motion[0]));
                     capture->motion_us[i - 1U] = 0U;
                     capture->motion_valid &= (uint16_t)~(1U << (i - 1U));
+                    memset(&capture->profiles[i - 1U], 0, sizeof(capture->profiles[0]));
+                    memset(capture->profile_us[i - 1U], 0, sizeof(capture->profile_us[0]));
+                    capture->profile_valid[i - 1U] = 0U;
                     break;
                 }
             }
@@ -122,12 +130,22 @@ static void observe(cerberus_watch_capture_t *capture,
     size_t index = (size_t)(record - capture->records);
     uint16_t bit = (uint16_t)(1U << index);
     bool source_backwards = (capture->qualifying_valid & bit) && callback_us < capture->qualifying_us[index];
+    sentinel_watch_profile_t *profile = &capture->profiles[index];
+    bool incoming_basic = (protocol->profile.present & (1U << SENTINEL_WATCH_PROFILE_BASIC)) != 0U;
+    bool old_basic = (profile->present & (1U << SENTINEL_WATCH_PROFILE_BASIC)) != 0U;
+    bool basic_changed = incoming_basic && old_basic &&
+        ((protocol->profile.basic[0] >> 4U) != (profile->basic[0] >> 4U) ||
+            memcmp(protocol->profile.basic + 1U, profile->basic + 1U, 20U));
+    bool binary_replaces_text = incoming_basic && (protocol->profile.basic[0] >> 4U) > 2U &&
+        (record->flags & SENTINEL_WATCH_PROTOCOL_HAS_ID);
     /* An advertiser can change or spoof its ID. Never carry a prior object's
        location into a newly claimed identity sharing that address. */
-    if ((protocol->flags & SENTINEL_WATCH_PROTOCOL_HAS_ID) != 0U &&
+    if (basic_changed || binary_replaces_text ||
+        ((protocol->flags & SENTINEL_WATCH_PROTOCOL_HAS_ID) != 0U &&
         (record->flags & SENTINEL_WATCH_PROTOCOL_HAS_ID) != 0U &&
-        memcmp(record->id, protocol->id, sizeof(record->id)) != 0) {
+        memcmp(record->id, protocol->id, sizeof(record->id)) != 0)) {
         record->flags = 0U;
+        memset(record->id, 0, sizeof(record->id));
         record->latitude_e7 = 0;
         record->longitude_e7 = 0;
         record->altitude_dm = 0;
@@ -135,6 +153,25 @@ static void observe(cerberus_watch_capture_t *capture,
         memset(&capture->motion[index], 0, sizeof(capture->motion[0]));
         capture->motion_us[index] = 0U;
         capture->motion_valid &= (uint16_t)~bit;
+        memset(profile, 0, sizeof(*profile));
+        memset(capture->profile_us[index], 0, sizeof(capture->profile_us[index]));
+        capture->profile_valid[index] = 0U;
+    }
+    for (unsigned group = 0U; group < SENTINEL_WATCH_PROFILE_GROUPS; ++group) {
+        uint8_t group_bit = (uint8_t)(1U << group);
+        if (!(protocol->profile.present & group_bit)) continue;
+        size_t length, source_length;
+        uint8_t *destination = (uint8_t *)sentinel_watch_profile_group(profile, group, &length);
+        const uint8_t *source = sentinel_watch_profile_group(&protocol->profile, group, &source_length);
+        (void)source_length;
+        bool backwards = source_backwards || callback_us < capture->profile_us[index][group];
+        memcpy(destination, source, length);
+        profile->version[group] = protocol->profile.version[group];
+        profile->present |= group_bit;
+        if (timed && capture->capture_epoch && callback_us <= INT64_MAX && !backwards) {
+            capture->profile_us[index][group] = callback_us;
+            capture->profile_valid[index] |= group_bit;
+        } else capture->profile_valid[index] &= (uint8_t)~group_bit;
     }
     if (protocol->motion.flags & SENTINEL_WATCH_MOTION_LOCATION_PRESENT) {
         /* One Location is one group. New unavailable coordinates/altitude must
@@ -233,6 +270,37 @@ bool cerberus_watch_capture_get_motion(const cerberus_watch_capture_t *capture,
         uint64_t elapsed = now_us - capture->motion_us[index];
         timing->source_age_ms = elapsed / 1000U + (elapsed % 1000U != 0U);
         timing->flags = CERBERUS_WATCH_TIMING_VALID;
+    }
+    return true;
+}
+
+bool cerberus_watch_capture_get_profile(const cerberus_watch_capture_t *capture,
+    uint8_t radio, uint8_t generation, uint8_t index, uint64_t now_us,
+    sentinel_watch_profile_t *profile, sentinel_watch_profile_timing_t *timing)
+{
+    if (profile) memset(profile, 0, sizeof(*profile));
+    if (timing) {
+        memset(timing, 0, sizeof(*timing));
+        for (unsigned group = 0U; group < SENTINEL_WATCH_PROFILE_GROUPS; ++group)
+            timing->age_ms[group] = UINT32_MAX;
+    }
+    if (!capture || !profile || !timing ||
+        (radio != CERBERUS_WATCH_RADIO_BLE && radio != CERBERUS_WATCH_RADIO_WIFI) ||
+        capture->status.radio != radio || capture->status.generation != generation ||
+        capture->status.state != CERBERUS_WATCH_COMPLETE || !capture->capture_epoch ||
+        index >= capture->status.stored_count || index >= CERBERUS_WATCH_MAX_OBSERVATIONS ||
+        !sentinel_watch_profile_valid(&capture->profiles[index])) return false;
+    *profile = capture->profiles[index];
+    timing->capture_epoch = capture->capture_epoch;
+    for (unsigned group = 0U; group < SENTINEL_WATCH_PROFILE_GROUPS; ++group) {
+        uint8_t bit = (uint8_t)(1U << group);
+        if (!(profile->present & bit) || !(capture->profile_valid[index] & bit) ||
+            now_us > INT64_MAX || now_us < capture->profile_us[index][group]) continue;
+        uint64_t elapsed = now_us - capture->profile_us[index][group];
+        uint64_t age = elapsed / 1000U + (elapsed % 1000U != 0U);
+        if (age >= UINT32_MAX) continue;
+        timing->age_ms[group] = (uint32_t)age;
+        timing->valid_mask |= bit;
     }
     return true;
 }

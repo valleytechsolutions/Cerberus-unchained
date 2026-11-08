@@ -6,6 +6,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include "sentinel_watch_motion.h"
+#include "sentinel_watch_profile.h"
 
 #define SENTINEL_WATCH_PROTOCOL_BLE_MAX 255U
 #define SENTINEL_WATCH_PROTOCOL_WIFI_MAX 2304U
@@ -43,6 +44,7 @@ typedef struct {
      * Never truncate a binary Remote ID into a misleading text identifier. */
     char id[SENTINEL_WATCH_PROTOCOL_ID_MAX + 1U];
     sentinel_watch_motion_t motion; /* Separate Location group; not legacy row flags. */
+    sentinel_watch_profile_t profile; /* Six independently received public groups. */
 } sentinel_watch_protocol_record_t;
 
 /* BLE: one complete advertisement, no fragment/scan-response concatenation.
@@ -53,6 +55,8 @@ typedef struct {
  * flags and bounded bitmap/matching/response filters. Service information
  * must consume its descriptor exactly and contain a counter + MessagePack.
  * Wi-Fi never accepts bare single-message payloads or fragment reassembly.
+ * Repeated groups retain the last complete message within a pack, including
+ * Basic ID and Authentication pages. Duplicate Location remains rejected.
  * Both functions clear output on rejection and validate enclosing TLV lengths.
  * Merge ID/location fields only across identical MAC, address type and kind.
  * Unknown/missing fields remain absent; do not substitute receiver position. */

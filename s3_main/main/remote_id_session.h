@@ -44,20 +44,35 @@ typedef struct {
     int32_t (*row_detailed)(void *, uint8_t radio, uint8_t generation, uint8_t index,
         cerberus_watch_observation_t *, cerberus_watch_receive_timing_t *,
         sentinel_watch_motion_t *, cerberus_watch_receive_timing_t *);
+    /* Preferred incremental, atomic row and message-profile reader. A step
+     * performs bounded work; only complete=true publishes its output row.
+     * One staged bank/reader is active at a time across the two receivers. */
+    int32_t (*row_profiled_step)(void *, uint8_t radio, uint8_t generation, uint8_t index,
+        uint64_t expected_capture_epoch, cerberus_watch_observation_t *,
+        cerberus_watch_receive_timing_t *, sentinel_watch_motion_t *,
+        cerberus_watch_receive_timing_t *, cerberus_watch_profile_evidence_t *, bool *complete);
+    void (*row_profiled_cancel)(void *);
 } cerberus_remote_id_ops_t;
 
 typedef struct {
     sentinel_scan_session_t scan;
     cerberus_remote_id_radio_observation_t observation;
-    uint64_t token, expected_epoch, capture_since_ms, retry_after_ms;
+    uint64_t token, expected_epoch, capture_since_ms, retry_after_ms, last_poll_ms;
     uint32_t published_sweeps;
     uint8_t expected_generation, rejected_starts;
     int32_t error;
-    bool observed, owned, capture_pending, faulted, identity_pending;
+    bool observed, owned, capture_pending, faulted, identity_pending, poll_attempted;
 } cerberus_remote_id_radio_session_t;
 
 typedef struct {
     cerberus_remote_id_radio_session_t radios[2]; /* Wi-Fi, BLE */
+    struct {
+        cerberus_watch_scan_status_payload_t before, after;
+        uint64_t epoch;
+        uint8_t owner, phase, index; /* owner: 0 none, 1 Wi-Fi, 2 BLE. */
+        bool profile_available;
+    } capture;
+    bool capture_cancel_pending;
     bool running;
 } cerberus_remote_id_session_t;
 

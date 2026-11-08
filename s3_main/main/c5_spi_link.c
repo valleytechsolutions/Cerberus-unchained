@@ -2091,6 +2091,7 @@ esp_err_t c5_spi_link_copy_wifi_probe_results(uint8_t generation,
 /* END PASSIVE WIFI PROBE READER. */
 
 #include "c5_watch_link.h"
+#include "c5_watch_profile_link.h"
 #include "c5_remote_id_link.h"
 
 static esp_err_t ble_connection_command(

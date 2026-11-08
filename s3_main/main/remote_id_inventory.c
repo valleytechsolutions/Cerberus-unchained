@@ -98,6 +98,53 @@ static void copy_timing(cerberus_watch_receive_timing_t *out,
     *out = value;
 }
 
+static bool profile_valid(const cerberus_watch_observation_t *row,
+    const sentinel_watch_motion_t *motion,const cerberus_watch_profile_evidence_t *profile,
+    uint64_t receipt_ms)
+{
+    if(!profile)return true;
+    if(!cerberus_watch_profile_evidence_valid(profile,receipt_ms))return false;
+    if(!profile->available)return true;
+    if(row->kind!=SENTINEL_WATCH_PROTOCOL_DRONE)return profile->values.present==0U;
+    sentinel_watch_profile_basic_t basic;
+    bool text_id=sentinel_watch_profile_basic(&profile->values,&basic)&&basic.text;
+    if(text_id!=((row->flags&SENTINEL_WATCH_PROTOCOL_HAS_ID)!=0U))return false;
+    if(text_id&&(strlen(row->id)!=basic.length||memcmp(row->id,basic.id,basic.length)))return false;
+    sentinel_watch_profile_location_t location;
+    bool located=sentinel_watch_profile_location(&profile->values,&location);
+    bool position=located&&location.position_valid;
+    if(position!=((row->flags&SENTINEL_WATCH_PROTOCOL_HAS_POSITION)!=0U))return false;
+    if(position&&(row->latitude_e7!=location.latitude_e7||row->longitude_e7!=location.longitude_e7))return false;
+    bool altitude=located&&(location.geo_valid||location.pressure_valid);
+    if(altitude!=((row->flags&SENTINEL_WATCH_PROTOCOL_HAS_ALTITUDE)!=0U))return false;
+    if(altitude&&(row->altitude_dm!=(location.geo_valid?location.geo_altitude_dm:location.pressure_altitude_dm)||
+        row->altitude_kind!=(location.geo_valid?SENTINEL_WATCH_ALTITUDE_GEODETIC:SENTINEL_WATCH_ALTITUDE_PRESSURE)))return false;
+    if(!motion)return !located;
+    sentinel_watch_motion_t expected={0};
+    if(located){
+        expected.flags=SENTINEL_WATCH_MOTION_LOCATION_PRESENT;
+        if(location.speed_valid){expected.flags|=SENTINEL_WATCH_MOTION_SPEED;expected.speed_qms=location.speed_qms;}
+        if(location.direction_valid){expected.flags|=SENTINEL_WATCH_MOTION_DIRECTION;expected.direction_deg=location.direction_deg;}
+        if(location.height_valid){
+            expected.flags|=SENTINEL_WATCH_MOTION_HEIGHT;
+            expected.height_encoded=(uint16_t)((location.height_dm+10000)/5);
+            if(location.height_agl)expected.flags|=SENTINEL_WATCH_MOTION_HEIGHT_AGL;
+        }
+    }
+    return !memcmp(motion,&expected,sizeof(expected));
+}
+
+static void copy_profile(cerberus_watch_profile_evidence_t *out,
+    const cerberus_watch_profile_evidence_t *profile)
+{
+    cerberus_watch_profile_evidence_t value={0};
+    if(profile){
+        value.values=profile->values;value.capture_epoch=profile->capture_epoch;value.available=profile->available;
+        for(unsigned i=0;i<SENTINEL_WATCH_PROFILE_GROUP_COUNT;++i)copy_timing(&value.timing[i],&profile->timing[i]);
+    }
+    *out=value;
+}
+
 static void make_record(const cerberus_remote_id_bank_t *bank, uint8_t index,
     cerberus_remote_id_record_t *record)
 {
@@ -109,6 +156,7 @@ static void make_record(const cerberus_remote_id_bank_t *bank, uint8_t index,
     copy_timing(&record->timing, &bank->timings[index]);
     record->motion = bank->motions[index];
     copy_timing(&record->motion_timing, &bank->motion_timings[index]);
+    copy_profile(&record->profile, &bank->profiles[index]);
 }
 
 static void refresh_selection(cerberus_remote_id_inventory_t *inventory,
@@ -172,15 +220,37 @@ cerberus_remote_id_publish_result_t cerberus_remote_id_inventory_publish_detaile
     const sentinel_watch_motion_t *motions,
     const cerberus_watch_receive_timing_t *motion_timings, size_t count, uint64_t receipt_ms)
 {
+    return cerberus_remote_id_inventory_publish_profiled(inventory,sweep_token,before,after,
+        rows,timings,motions,motion_timings,NULL,count,receipt_ms);
+}
+
+cerberus_remote_id_publish_result_t cerberus_remote_id_inventory_publish_profiled(
+    cerberus_remote_id_inventory_t *inventory, uint64_t sweep_token,
+    const cerberus_watch_scan_status_payload_t *before,
+    const cerberus_watch_scan_status_payload_t *after,
+    const cerberus_watch_observation_t *rows,
+    const cerberus_watch_receive_timing_t *timings,
+    const sentinel_watch_motion_t *motions,
+    const cerberus_watch_receive_timing_t *motion_timings,
+    const cerberus_watch_profile_evidence_t *profiles,size_t count,uint64_t receipt_ms)
+{
     if (!inventory || !sweep_token || !status_valid(before) || !after ||
         memcmp(before, after, sizeof(*before)) || count != before->stored_count ||
         (count && !rows) || ((motions == NULL) != (motion_timings == NULL))) return CERBERUS_REMOTE_ID_INVALID;
     uint8_t filtered = 0U;
+    uint64_t profile_epoch=0U;
     for (size_t i = 0U; i < count; ++i) {
+        if(profiles&&i&&profiles[i].available!=profiles[0].available)return CERBERUS_REMOTE_ID_INVALID;
         if (!row_valid(before->radio, &rows[i]) ||
             !timing_valid(timings ? &timings[i] : NULL, receipt_ms) ||
             !motion_valid(&rows[i], motions ? &motions[i] : NULL,
-                motion_timings ? &motion_timings[i] : NULL, receipt_ms)) return CERBERUS_REMOTE_ID_INVALID;
+                motion_timings ? &motion_timings[i] : NULL, receipt_ms) ||
+            !profile_valid(&rows[i],motions?&motions[i]:NULL,profiles?&profiles[i]:NULL,receipt_ms))
+            return CERBERUS_REMOTE_ID_INVALID;
+        if(profiles&&profiles[i].available){
+            if(profile_epoch&&profile_epoch!=profiles[i].capture_epoch)return CERBERUS_REMOTE_ID_INVALID;
+            profile_epoch=profiles[i].capture_epoch;
+        }
         for (size_t j = 0U; j < i; ++j) {
             if (rows[i].kind == rows[j].kind && same_observation_source(&rows[i], &rows[j]))
                 return CERBERUS_REMOTE_ID_INVALID;
@@ -198,7 +268,10 @@ cerberus_remote_id_publish_result_t cerberus_remote_id_inventory_publish_detaile
             for (size_t i = 0U; i < count; ++i) {
                 if (rows[i].kind == SENTINEL_WATCH_PROTOCOL_DRONE) {
                     if (memcmp(&rows[i], &bank->rows[index], sizeof(rows[i])) ||
-                        (motions && memcmp(&motions[i], &bank->motions[index], sizeof(motions[i]))))
+                        (motions && memcmp(&motions[i], &bank->motions[index], sizeof(motions[i]))) ||
+                        (profiles && (profiles[i].available!=bank->profiles[index].available ||
+                            profiles[i].capture_epoch!=bank->profiles[index].capture_epoch ||
+                            memcmp(&profiles[i].values,&bank->profiles[index].values,sizeof(profiles[i].values)))))
                         return CERBERUS_REMOTE_ID_INVALID;
                     ++index;
                 }
@@ -215,6 +288,7 @@ cerberus_remote_id_publish_result_t cerberus_remote_id_inventory_publish_detaile
             copy_timing(&bank->timings[index], timings ? &timings[i] : NULL);
             bank->motions[index] = motions ? motions[i] : (sentinel_watch_motion_t){0};
             copy_timing(&bank->motion_timings[index], motion_timings ? &motion_timings[i] : NULL);
+            copy_profile(&bank->profiles[index],profiles?&profiles[i]:NULL);
             ++index;
         }
     }
@@ -222,6 +296,7 @@ cerberus_remote_id_publish_result_t cerberus_remote_id_inventory_publish_detaile
     memset(bank->timings + index, 0, (CERBERUS_WATCH_MAX_OBSERVATIONS - index) * sizeof(bank->timings[0]));
     memset(bank->motions + index, 0, (CERBERUS_WATCH_MAX_OBSERVATIONS - index) * sizeof(bank->motions[0]));
     memset(bank->motion_timings + index, 0, (CERBERUS_WATCH_MAX_OBSERVATIONS - index) * sizeof(bank->motion_timings[0]));
+    memset(bank->profiles + index, 0, (CERBERUS_WATCH_MAX_OBSERVATIONS - index) * sizeof(bank->profiles[0]));
     bank->status = *before;
     bank->sweep_token = sweep_token;
     bank->receipt_ms = receipt_ms;
@@ -266,7 +341,8 @@ bool cerberus_remote_id_inventory_select(cerberus_remote_id_inventory_t *invento
         painted->observation.kind != SENTINEL_WATCH_PROTOCOL_DRONE ||
         !row_valid(painted->radio, &painted->observation) ||
         !timing_valid(&painted->timing, painted->receipt_ms) ||
-        !motion_valid(&painted->observation, &painted->motion, &painted->motion_timing, painted->receipt_ms)) return false;
+        !motion_valid(&painted->observation, &painted->motion, &painted->motion_timing, painted->receipt_ms) ||
+        !profile_valid(&painted->observation,&painted->motion,&painted->profile,painted->receipt_ms)) return false;
     const cerberus_remote_id_bank_t *bank = cerberus_remote_id_inventory_bank(inventory, painted->radio);
     if (!bank || !bank->published || painted->sweep_token > bank->sweep_token ||
         painted->receipt_ms > bank->receipt_ms) return false;
@@ -276,7 +352,8 @@ bool cerberus_remote_id_inventory_select(cerberus_remote_id_inventory_t *invento
             if (!memcmp(&painted->observation, &bank->rows[i], sizeof(painted->observation)) &&
                 cerberus_watch_receive_timing_equal(&painted->timing, &bank->timings[i]) &&
                 !memcmp(&painted->motion, &bank->motions[i], sizeof(painted->motion)) &&
-                cerberus_watch_receive_timing_equal(&painted->motion_timing, &bank->motion_timings[i])) found = true;
+                cerberus_watch_receive_timing_equal(&painted->motion_timing, &bank->motion_timings[i]) &&
+                cerberus_watch_profile_evidence_equal(&painted->profile,&bank->profiles[i])) found = true;
         if (!found || painted->receipt_ms != bank->receipt_ms) return false;
     }
     cerberus_remote_id_record_t frozen = *painted; /* May alias the previous selection. */

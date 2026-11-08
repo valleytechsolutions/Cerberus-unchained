@@ -232,7 +232,21 @@ int main(void)
         cerberus_s3_ble_scanner_passive_copy_wardrive(0,0,NULL,NULL,0,&passive)!=ESP_ERR_INVALID_ARG ||
         cerberus_s3_ble_scanner_passive_copy_wardrive(1,0,NULL,NULL,0,NULL)!=ESP_ERR_INVALID_ARG ||
         cerberus_s3_ble_scanner_passive_copy_wardrive(1,32,wardrive_rows,wardrive_evidence,33,&passive)!=ESP_ERR_INVALID_ARG)return 32;
-    puts("Disabled scanner diagnostics and passive leases: canonical empty output, explicit unsupported, no host dependencies passed.");
+    cerberus_watch_profile_evidence_t profile,empty_profile={0};
+    for(unsigned missing=0;missing<=5U;++missing){
+        memset(&result,0xa5,sizeof(result));memset(&timing,0xa5,sizeof(timing));
+        memset(&motion,0xa5,sizeof(motion));memset(&motion_timing,0xa5,sizeof(motion_timing));
+        memset(&profile,0xa5,sizeof(profile));
+        if(cerberus_s3_ble_scanner_get_watch_profiled_result(255,0,UINT64_MAX,
+            missing==0U?NULL:&result,missing==1U?NULL:&timing,missing==2U?NULL:&motion,
+            missing==3U?NULL:&motion_timing,missing==4U?NULL:&profile)!=ESP_ERR_NOT_SUPPORTED)return 33;
+        if((missing!=0U&&memcmp(&result,&empty_result,sizeof(result)))||
+           (missing!=1U&&memcmp(&timing,&empty_timing,sizeof(timing)))||
+           (missing!=2U&&memcmp(&motion,&empty_motion,sizeof(motion)))||
+           (missing!=3U&&memcmp(&motion_timing,&empty_timing,sizeof(motion_timing)))||
+           (missing!=4U&&memcmp(&profile,&empty_profile,sizeof(profile))))return 34;
+    }
+    puts("Disabled scanner diagnostics, passive leases and Remote ID profiles: canonical empty output, explicit unsupported, no host dependencies passed.");
     return 0;
 }
 ''')

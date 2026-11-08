@@ -11,7 +11,7 @@
 #include <string.h>
 
 static unsigned tick, held, host_epoch;
-static unsigned mutex_takes, allocations;
+static unsigned mutex_takes, allocations, last_mutex_timeout;
 static unsigned frees, host_releases;
 static bool fail_host_release;
 static cerberus_s3_ble_host_lease_t current_host_lease;
@@ -38,7 +38,7 @@ static struct ble_npl_eventq eventq;
 
 SemaphoreHandle_t xSemaphoreCreateMutex(void) { return (void *)1; }
 int xSemaphoreTake(SemaphoreHandle_t mutex, unsigned timeout)
-{ (void)mutex; assert(!held);
+{ (void)mutex; assert(!held); last_mutex_timeout=timeout;
   if (fail_discovery_lock && timeout != portMAX_DELAY) { fail_discovery_lock=false; return 0; }
   held = 1; ++mutex_takes;
   clock_base_us += next_lock_delay_us; next_lock_delay_us=0U; return 1; }
@@ -500,11 +500,27 @@ static void check_public_generation_wrap(void)
     radio_callback(&complete,old_epoch); /* Public byte aliases, private epoch does not. */
     assert(cerberus_s3_ble_scanner_get_status(&status)==ESP_OK&&status.state==CERBERUS_BLE_SCAN_RUNNING);
     const uint8_t ordinary[]={2,1,6};emit_hc_report(ordinary,sizeof(ordinary),-42,false,99,3);
+    const uint8_t rid[31]={30,0x16,0xfa,0xff,0x0d,0,0x02,0x10,'W','R','A','P'};
+    emit_hc_report(rid,sizeof(rid),-42,false,99,3);
     radio_active=false;radio_callback(&complete,radio_arg);
     assert(cerberus_s3_ble_scanner_get_status(&status)==ESP_OK&&status.state==CERBERUS_BLE_SCAN_COMPLETE&&status.generation==published_generation);
     cerberus_c5_ble_result_t result;assert(cerberus_s3_ble_scanner_get_result(published_generation,0,&result)==ESP_OK&&result.address[0]==99);
     assert(!memcmp(&frozen,&original,sizeof(frozen))&&memcmp(&result,&frozen,sizeof(result)));
     assert(watch_epoch==published_watch_epoch+256U && snapshot->watch.capture_epoch==watch_epoch);
+    cerberus_watch_observation_t row;
+    cerberus_watch_receive_timing_t timing,motion_timing;
+    sentinel_watch_motion_t motion;
+    cerberus_watch_profile_evidence_t profile;
+    memset(&row,0xa5,sizeof(row));memset(&timing,0xa5,sizeof(timing));
+    memset(&motion,0xa5,sizeof(motion));memset(&motion_timing,0xa5,sizeof(motion_timing));
+    memset(&profile,0xa5,sizeof(profile));
+    assert(cerberus_s3_ble_scanner_get_watch_profiled_result(published_generation,0,published_watch_epoch,
+        &row,&timing,&motion,&motion_timing,&profile)==ESP_ERR_INVALID_STATE);
+    assert(all_zero(&row,sizeof(row))&&all_zero(&timing,sizeof(timing))&&all_zero(&motion,sizeof(motion))&&
+        all_zero(&motion_timing,sizeof(motion_timing))&&all_zero(&profile,sizeof(profile)));
+    assert(cerberus_s3_ble_scanner_get_watch_profiled_result(published_generation,0,watch_epoch,
+        &row,&timing,&motion,&motion_timing,&profile)==ESP_OK);
+    assert(profile.available&&profile.capture_epoch==watch_epoch&&!strcmp(row.id,"WRAP")&&profile.values.present==1U);
 }
 
 static bool bytes_zero(const void *data,size_t length)
@@ -512,6 +528,102 @@ static bool bytes_zero(const void *data,size_t length)
     const uint8_t *bytes=data;
     for(size_t i=0;i<length;++i)if(bytes[i])return false;
     return true;
+}
+
+typedef struct {
+    cerberus_watch_observation_t row;
+    cerberus_watch_receive_timing_t timing,motion_timing;
+    sentinel_watch_motion_t motion;
+    cerberus_watch_profile_evidence_t profile;
+} profile_outputs_t;
+static bool profile_outputs_clear(const profile_outputs_t *v)
+{
+    return all_zero(&v->row,sizeof(v->row))&&all_zero(&v->timing,sizeof(v->timing))&&
+        all_zero(&v->motion,sizeof(v->motion))&&all_zero(&v->motion_timing,sizeof(v->motion_timing))&&
+        all_zero(&v->profile,sizeof(v->profile));
+}
+static esp_err_t read_profile(uint8_t generation,uint8_t index,uint64_t epoch,profile_outputs_t *v)
+{
+    memset(v,0xa5,sizeof(*v));
+    return cerberus_s3_ble_scanner_get_watch_profiled_result(generation,index,epoch,
+        &v->row,&v->timing,&v->motion,&v->motion_timing,&v->profile);
+}
+static void check_watch_profile_callbacks(void)
+{
+    assert(head==tail);head=tail=0;tick=0;clock_base_us=UINT64_C(5000000001);expected_active=false;
+    cerberus_ble_scan_status_payload_t status;
+    assert(cerberus_s3_ble_scanner_start(&status)==ESP_OK);pump();
+    const uint64_t epoch=snapshot->watch.capture_epoch;
+    uint64_t observed[6];
+    for(unsigned group=0;group<6U;++group){
+        uint8_t ad[31]={30,0x16,0xfa,0xff,0x0d,0};ad[6]=(uint8_t)((group<<4U)|2U);
+        if(group==0U){ad[7]=0x10;memcpy(ad+8,"PROFILE",7U);}
+        if(group==2U){ad[9]=1U;memset(ad+14,0xbe,17U);} /* Auth bytes are never retained. */
+        if(group==3U)memcpy(ad+8,"SELF",4U);
+        if(group==5U)memcpy(ad+8,"OPERATOR",8U);
+        observed[group]=clock_base_us+(uint64_t)(tick+1U)*1000U;
+        next_lock_delay_us=1001U;
+        emit_hc_report(ad,sizeof(ad),-50,false,1,3);
+        assert(snapshot->watch.profiles[0].present==(1U<<(group+1U))-1U&&
+            snapshot->watch.profile_us[0][group]==observed[group]);
+    }
+    profile_outputs_t value;
+    assert(read_profile(status.generation,0,epoch,&value)==ESP_ERR_INVALID_STATE&&profile_outputs_clear(&value));
+    assert(last_mutex_timeout==25U&&!held);
+    struct ble_gap_event end={.type=BLE_GAP_EVENT_DISC_COMPLETE};
+    radio_active=false;radio_callback(&end,radio_arg);
+    uint64_t request=(uint64_t)esp_timer_get_time();next_lock_delay_us=2001U;
+    unsigned locks=mutex_takes,allocated=allocations,old_head=head,old_tail=tail;
+    assert(read_profile(status.generation,0,0,&value)==ESP_OK);
+    uint64_t read=(uint64_t)esp_timer_get_time();
+    assert(mutex_takes==locks+1U&&last_mutex_timeout==25U&&!held&&allocations==allocated&&
+        head==old_head&&tail==old_tail&&!radio_active&&owner==CERBERUS_S3_BLE_OWNER_NONE);
+    assert(value.profile.available&&value.profile.capture_epoch==epoch&&value.profile.values.present==63U&&
+        !strcmp(value.row.id,"PROFILE")&&value.motion.flags&SENTINEL_WATCH_MOTION_LOCATION_PRESENT);
+    for(unsigned group=0;group<6U;++group){
+        assert(value.profile.timing[group].valid&&value.profile.timing[group].request_started_us==request&&
+            value.profile.timing[group].source_age_ms==(read-observed[group]+999U)/1000U);
+        if(group)assert(value.profile.timing[group-1U].source_age_ms>value.profile.timing[group].source_age_ms);
+    }
+    assert(value.timing.source_age_ms==value.profile.timing[5].source_age_ms&&
+        value.motion_timing.source_age_ms==value.profile.timing[1].source_age_ms);
+    assert(all_zero(value.profile.values.auth+3U,4U));
+    const cerberus_watch_profile_evidence_t retained=value.profile;
+    assert(read_profile(status.generation,0,epoch+1U,&value)==ESP_ERR_INVALID_STATE&&profile_outputs_clear(&value));
+    assert(read_profile((uint8_t)(status.generation-1U),0,epoch,&value)==ESP_ERR_INVALID_STATE&&profile_outputs_clear(&value));
+    assert(read_profile(status.generation,12U,epoch,&value)==ESP_ERR_INVALID_STATE&&profile_outputs_clear(&value));
+    locks=mutex_takes;fail_discovery_lock=true;
+    assert(read_profile(status.generation,0,epoch,&value)==ESP_ERR_TIMEOUT&&profile_outputs_clear(&value));
+    assert(mutex_takes==locks&&last_mutex_timeout==25U&&!held);
+    for(unsigned missing=0;missing<5U;++missing){
+        memset(&value,0xa5,sizeof(value));locks=mutex_takes;
+        assert(cerberus_s3_ble_scanner_get_watch_profiled_result(status.generation,0,epoch,
+            missing==0U?NULL:&value.row,missing==1U?NULL:&value.timing,missing==2U?NULL:&value.motion,
+            missing==3U?NULL:&value.motion_timing,missing==4U?NULL:&value.profile)==ESP_ERR_INVALID_ARG);
+        assert(mutex_takes==locks&&(missing==0U||all_zero(&value.row,sizeof(value.row)))&&
+            (missing==1U||all_zero(&value.timing,sizeof(value.timing)))&&
+            (missing==2U||all_zero(&value.motion,sizeof(value.motion)))&&
+            (missing==3U||all_zero(&value.motion_timing,sizeof(value.motion_timing)))&&
+            (missing==4U||all_zero(&value.profile,sizeof(value.profile))));
+    }
+    discovery_clock_rollback=true;
+    assert(read_profile(status.generation,0,epoch,&value)==ESP_ERR_INVALID_STATE&&profile_outputs_clear(&value));
+    /* A stable local clock before all callback times retains values with
+     * unavailable ages; it does not borrow the source report's age. */
+    assert(read_profile(status.generation,0,epoch,&value)==ESP_OK&&value.profile.available&&
+        !memcmp(&value.profile.values,&retained.values,sizeof(retained.values)));
+    assert(!value.timing.valid&&!value.motion_timing.valid);
+    for(unsigned i=0;i<6U;++i)assert(all_zero(&value.profile.timing[i],sizeof(value.profile.timing[i])));
+    clock_base_us=UINT64_MAX;tick=0;
+    assert(read_profile(status.generation,0,epoch,&value)==ESP_ERR_INVALID_STATE&&profile_outputs_clear(&value));
+    clock_base_us=UINT64_C(6000000000);
+    snapshot->watch.profiles[0].reserved[0]=1U;
+    assert(read_profile(status.generation,0,epoch,&value)==ESP_ERR_INVALID_STATE&&profile_outputs_clear(&value));
+    snapshot->watch.profiles[0]=retained.values;snapshot->watch.capture_epoch=0U;
+    assert(read_profile(status.generation,0,0,&value)==ESP_ERR_INVALID_STATE&&profile_outputs_clear(&value));
+    snapshot->watch.capture_epoch=epoch;
+    assert(read_profile(status.generation,0,epoch,&value)==ESP_OK&&value.profile.capture_epoch==epoch);
+    clock_base_us=0;tick=0;
 }
 
 static void check_watch_motion_callbacks(void)
@@ -992,6 +1104,7 @@ int main(void)
     check_recent_inventory_callbacks();
     check_public_generation_wrap();
     check_watch_motion_callbacks();
+    check_watch_profile_callbacks();
     check_wardrive_atomic_copy();
     check_watch_timing_callbacks();
     check_mac_monitor();

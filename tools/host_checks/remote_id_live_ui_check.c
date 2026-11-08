@@ -50,6 +50,9 @@ static unsigned observed_rows[2];
 static unsigned detailed_rows[2],legacy_observed_calls,legacy_row_calls;
 static sentinel_watch_motion_t watch_motion[2][12];
 static cerberus_watch_receive_timing_t watch_motion_timing[2][12];
+static cerberus_watch_profile_evidence_t watch_profiles[2][12];
+static unsigned profile_steps,profile_step_calls,profile_cancels;
+static esp_err_t profile_error;
 static esp_err_t motion_error[2];
 static unsigned motion_failure_index;
 static esp_err_t timing_error;
@@ -281,6 +284,40 @@ esp_err_t cerberus_s3_ble_scanner_get_watch_detailed_result(uint8_t generation,u
     sentinel_watch_motion_t *motion,cerberus_watch_receive_timing_t *motion_timing)
 {return get_watch_detailed(1,generation,index,out,timing,motion,motion_timing);}
 
+esp_err_t cerberus_s3_ble_scanner_get_watch_profiled_result(uint8_t generation,uint8_t index,uint64_t epoch,
+    cerberus_watch_observation_t *out,cerberus_watch_receive_timing_t *timing,
+    sentinel_watch_motion_t *motion,cerberus_watch_receive_timing_t *motion_timing,
+    cerberus_watch_profile_evidence_t *profile)
+{
+    memset(profile,0,sizeof(*profile));
+    esp_err_t error=get_watch_detailed(1,generation,index,out,timing,motion,motion_timing);
+    if(!error&&epoch&&epoch!=watch_profiles[1][index].capture_epoch)error=ESP_ERR_INVALID_STATE;
+    if(!error)*profile=watch_profiles[1][index];
+    return error;
+}
+esp_err_t c5_spi_link_watch_profile_begin(cerberus_c5_watch_profile_reader_t *reader,
+    const cerberus_c5_status_t *expected,uint8_t radio,uint8_t generation,uint8_t index,
+    uint64_t epoch,uint32_t deadline)
+{
+    memset(reader,0,sizeof(*reader));reader->radio=radio;reader->generation=generation;reader->index=index;
+    reader->expected_epoch=epoch;reader->deadline_ms=deadline;reader->expected_peer=*expected;
+    return ESP_OK;
+}
+esp_err_t c5_spi_link_watch_profile_step(cerberus_c5_watch_profile_reader_t *reader,
+    cerberus_c5_watch_profile_result_t *out,bool *complete)
+{
+    ++profile_step_calls;memset(out,0,sizeof(*out));*complete=false;
+    if(profile_error)return profile_error;
+    if(++reader->phase<profile_steps)return ESP_OK;
+    esp_err_t error=get_watch_detailed(0,reader->generation,reader->index,&out->observation,&out->timing,&out->motion,&out->motion_timing);
+    if(!error&&reader->expected_epoch&&reader->expected_epoch!=watch_profiles[0][reader->index].capture_epoch)error=ESP_ERR_INVALID_STATE;
+    if(!error&&peer.firmware_version>=CERBERUS_REMOTE_ID_PROFILE_MIN_FIRMWARE)out->profile=watch_profiles[0][reader->index];
+    if(!error){out->peer=peer;*complete=true;}
+    return error;
+}
+void c5_spi_link_watch_profile_cancel(cerberus_c5_watch_profile_reader_t *reader)
+{++profile_cancels;memset(reader,0,sizeof(*reader));}
+
 static esp_err_t draw_header(const char *text)
 {return cerberus_display_draw_text(16,16,text,RID_UI_TEXT,RID_UI_BG,2);}
 static esp_err_t draw_centered(uint16_t y,const char *text,uint16_t color,uint8_t scale)
@@ -319,6 +356,7 @@ static void live_reset(void)
     memset(watch_status,0,sizeof(watch_status));memset(watch_data,0,sizeof(watch_data));
     memset(watch_timing,0,sizeof(watch_timing));memset(observed_rows,0,sizeof(observed_rows));timing_error=0;
     memset(watch_motion,0,sizeof(watch_motion));memset(watch_motion_timing,0,sizeof(watch_motion_timing));
+    memset(watch_profiles,0,sizeof(watch_profiles));profile_steps=1;profile_step_calls=profile_cancels=0;profile_error=0;
     memset(detailed_rows,0,sizeof(detailed_rows));memset(motion_error,0,sizeof(motion_error));
     legacy_observed_calls=legacy_row_calls=motion_failure_index=0;
     memset(&priority_status,0,sizeof(priority_status));memset(&priority_request,0,sizeof(priority_request));
@@ -341,7 +379,17 @@ static void live_reset(void)
 static void tap(unsigned x,unsigned y)
 {drawn[0]=0;actual_remote_id_route((uint16_t)x,(uint16_t)y);}
 static void tick(void)
-{clock_ms+=500;drawn[0]=0;remote_id_tick((uint32_t)clock_ms,false);}
+{
+    clock_ms+=500;drawn[0]=0;remote_id_tick((uint32_t)clock_ms,false);
+    /* Older route scenarios await a completed staged copy. Individual20ms
+     * transfer/Stop responsiveness is checked separately below. */
+    for(unsigned step=0;remote_id_live&&remote_id_live->session.capture.owner&&step<800U;++step){
+        clock_ms+=20;remote_id_tick((uint32_t)clock_ms,false);
+        if(remote_id_live&&remote_id_live->session.capture.owner&&
+            remote_id_live->session.radios[remote_id_live->session.capture.owner-1U].error)break;
+    }
+    if(remote_id_live&&current_page==UI_PAGE_REMOTE_ID)CHECK(remote_id_draw(false)==ESP_OK);
+}
 static void enter(void)
 {
     CHECK(cerberus_field_menu_tap(&field_menu,20,343)==CERBERUS_FIELD_REMOTE_ID);
@@ -353,7 +401,7 @@ static void stop_and_exit(void)
 {
     stop_error=0;stop_noop=false;hold_ble_release=false;
     if(ble.state!=CERBERUS_BLE_SCAN_RUNNING)ble_owner=CERBERUS_S3_BLE_OWNER_NONE;
-    if(remote_id_live&&remote_id_live->detail&&remote_id_live->motion_detail)tap(20,440);
+    if(remote_id_live&&remote_id_live->detail&&(remote_id_live->motion_detail||remote_id_live->message_detail))tap(20,440);
     if(remote_id_live&&remote_id_live->detail)tap(20,440);
     tap(20,440);
     for(unsigned i=0;i<15&&remote_id_live;++i)tick();
@@ -800,6 +848,7 @@ static void priority_diagnostics_publication(void)
     stop_and_exit();CHECK(!diagnostics.open&&!diagnostics.wifi_priority&&!diagnostics.wifi_profile_valid&&!diagnostics.wifi_job_id);
 }
 
+static unsigned follow_priority_base,follow_ble_base;
 static void follow_idle_sources(uint32_t firmware)
 {
     priority_reset();peer.firmware_version=firmware;peer.capabilities|=CERBERUS_C5_CAP_WIFI_5_GHZ;
@@ -808,10 +857,11 @@ static void follow_idle_sources(uint32_t firmware)
     watch_data[0][1].channel=149;
     for(unsigned i=0;i<2;++i)watch_timing[0][i]=(cerberus_watch_receive_timing_t){clock_ms*1000U,0,true};
     tick();tick();CHECK(remote_id_live->inventory.banks[0].count==2&&remote_id_live->inventory.banks[1].count==1);
-    tap(185,440);tick();CHECK(!remote_id_live->session.running&&cerberus_remote_id_session_released(&remote_id_live->session));
+    tap(185,440);tick();tick();CHECK(!remote_id_live->session.running&&cerberus_remote_id_session_released(&remote_id_live->session));
     unsigned starts=priority_starts,ble_count=ble_starts;
     tap(20,150);CHECK(remote_id_live->detail&&remote_id_live->inventory.selected.valid);
     CHECK(!remote_id_live->follow_enabled&&priority_starts==starts&&ble_starts==ble_count);
+    follow_priority_base=priority_starts;follow_ble_base=ble_starts;
 }
 
 static void follow_explicit_start_and_next_target(void)
@@ -819,31 +869,31 @@ static void follow_explicit_start_and_next_target(void)
     follow_idle_sources(CERBERUS_REMOTE_ID_FOLLOW_MIN_FIRMWARE);
     CHECK(remote_id_live->cache.painted.follow_available);
     cerberus_remote_id_record_t frozen=remote_id_live->inventory.selected.frozen;
-    tap(100,440);CHECK(remote_id_live->follow_enabled&&remote_id_live->session.running&&priority_starts==1);
-    tick();CHECK(priority_starts==2&&ble_starts==2&&!wifi_starts);
+    tap(100,440);CHECK(remote_id_live->follow_enabled&&remote_id_live->session.running&&priority_starts==follow_priority_base);
+    tick();CHECK(priority_starts==follow_priority_base+1U&&ble_starts==follow_ble_base+1U&&!wifi_starts);
     CHECK(priority_request.flags==CERBERUS_REMOTE_ID_REQUEST_FOLLOW_NAN&&priority_request.follow_channel==6);
     CHECK(!memcmp(priority_request.transmitter,frozen.observation.address,6));
     CHECK(!memcmp(&remote_id_live->inventory.selected.frozen,&frozen,sizeof(frozen)));
-    CHECK(strstr(remote_id_live->cache.painted.footer[1],"FOLLOWING WITH BACKGROUND"));
+    CHECK(strstr(remote_id_live->cache.painted.footer[0],"FOLLOWING WITH BACKGROUND"));
     CHECK(diagnostics.wifi_follow_flags==(CERBERUS_REMOTE_ID_DIAG_FOLLOW_ENABLED|
         CERBERUS_REMOTE_ID_DIAG_FOLLOW_REQUESTED|CERBERUS_REMOTE_ID_DIAG_FOLLOW_BOUND));
     uint64_t first_job=priority_request.job_id;
     cerberus_remote_id_follow_hint_t attempt=remote_id_live->c5_follow_hint;
     tap(20,440);CHECK(!remote_id_live->detail&&!remote_id_live->follow_enabled);
     tap(20,208);CHECK(remote_id_live->inventory.selected.frozen.observation.address[5]==1);
-    tap(100,440);tick();CHECK(priority_starts==2&&remote_id_live->follow_enabled);
+    tap(100,440);tick();CHECK(priority_starts==follow_priority_base+1U&&remote_id_live->follow_enabled);
     CHECK(!memcmp(&remote_id_live->c5_follow_hint,&attempt,sizeof(attempt)));
-    CHECK(strstr(remote_id_live->cache.painted.footer[1],"NEXT WI-FI WINDOW"));
-    CHECK(!strstr(remote_id_live->cache.painted.footer[1],"FOLLOWING WITH"));
+    CHECK(strstr(remote_id_live->cache.painted.footer[0],"NEXT WI-FI WINDOW"));
+    CHECK(!strstr(remote_id_live->cache.painted.footer[0],"FOLLOWING WITH"));
     priority_complete(2);complete(1,1);
     watch_data[0][0].transport=SENTINEL_WATCH_TRANSPORT_WIFI_NAN;
     watch_data[0][1].channel=36;
     for(unsigned i=0;i<2;++i)watch_timing[0][i]=(cerberus_watch_receive_timing_t){clock_ms*1000U,0,true};
     tick();tick();CHECK(remote_id_live->session.radios[0].published_sweeps==2);
-    tick();CHECK(priority_starts==3&&priority_request.job_id>first_job);
+    tick();CHECK(priority_starts==follow_priority_base+2U&&priority_request.job_id>first_job);
     CHECK(priority_request.flags==CERBERUS_REMOTE_ID_REQUEST_FOLLOW_BEACON&&priority_request.follow_channel==36);
     CHECK(priority_request.transmitter[5]==1);
-    CHECK(strstr(remote_id_live->cache.painted.footer[1],"FOLLOWING WITH BACKGROUND"));
+    CHECK(strstr(remote_id_live->cache.painted.footer[0],"FOLLOWING WITH BACKGROUND"));
     stop_and_exit();CHECK(!diagnostics.wifi_follow_flags);
 }
 
@@ -861,7 +911,7 @@ static void follow_search_and_fresh_channel(void)
         else{selected->latest.observation.channel=149;peer.capabilities&=~CERBERUS_C5_CAP_WIFI_5_GHZ;}
         tap(100,440);tick();CHECK(priority_request.flags==CERBERUS_REMOTE_ID_REQUEST_FOLLOW_NAN);
         CHECK(priority_request.follow_channel==0&&!memcmp(priority_request.transmitter,frozen.observation.address,6));
-        CHECK(strstr(remote_id_live->cache.painted.footer[1],"SEARCHING FOR SELECTED"));
+        CHECK(strstr(remote_id_live->cache.painted.footer[0],"SEARCHING FOR SELECTED"));
         CHECK(diagnostics.wifi_follow_flags==(CERBERUS_REMOTE_ID_DIAG_FOLLOW_ENABLED|CERBERUS_REMOTE_ID_DIAG_FOLLOW_REQUESTED));
         CHECK(!memcmp(&selected->frozen,&frozen,sizeof(frozen)));stop_and_exit();
     }
@@ -881,8 +931,8 @@ static void follow_compatibility_foreign_and_uncertain(void)
 {
     follow_idle_sources(CERBERUS_REMOTE_ID_MIN_FIRMWARE);
     CHECK(!remote_id_live->cache.painted.follow_available);
-    tap(100,440);tick();CHECK(!remote_id_live->follow_enabled&&priority_starts==1);
-    tap(185,440);tick();CHECK(priority_starts==2&&priority_request.flags==0);stop_and_exit();
+    tap(100,440);tick();CHECK(!remote_id_live->follow_enabled&&priority_starts==follow_priority_base);
+    tap(185,440);tick();CHECK(priority_starts==follow_priority_base+1U&&priority_request.flags==0);stop_and_exit();
     follow_idle_sources(CERBERUS_REMOTE_ID_FOLLOW_MIN_FIRMWARE);
     tap(100,440);tick();CHECK(remote_id_live->follow_enabled);
     tap(185,440);tick();tick();CHECK(cerberus_remote_id_session_released(&remote_id_live->session));
@@ -894,13 +944,14 @@ static void follow_compatibility_foreign_and_uncertain(void)
     for(unsigned i=0;i<5&&priority_starts==starts;++i)tick();
     CHECK(priority_starts==starts+1U&&priority_request.flags==0);stop_and_exit();
     follow_idle_sources(CERBERUS_REMOTE_ID_FOLLOW_MIN_FIRMWARE);
+    unsigned foreign_stops=priority_stops,foreign_renews=priority_renews;
     priority_status.job_id+=100;priority_status.state=CERBERUS_REMOTE_ID_STATE_RUNNING;
     priority_status.flags=CERBERUS_REMOTE_ID_FLAG_OWNED|CERBERUS_REMOTE_ID_FLAG_FOLLOW_REQUESTED|CERBERUS_REMOTE_ID_FLAG_FOLLOW_BOUND;
     peer.radio_state=CERBERUS_C5_RADIO_WIFI_SCAN;
-    tap(100,440);tick();CHECK(priority_query_id==0&&priority_starts==1);
-    CHECK(!remote_id_live->session.radios[0].owned&&strstr(remote_id_live->cache.painted.footer[1],"NEXT WI-FI WINDOW"));
-    CHECK(!strstr(remote_id_live->cache.painted.footer[1],"FOLLOWING WITH"));
-    stop_and_exit();CHECK(!priority_stops&&!priority_renews);
+    tap(100,440);tick();CHECK(priority_query_id==0&&priority_starts==follow_priority_base);
+    CHECK(!remote_id_live->session.radios[0].owned&&strstr(remote_id_live->cache.painted.footer[0],"NEXT WI-FI WINDOW"));
+    CHECK(!strstr(remote_id_live->cache.painted.footer[0],"FOLLOWING WITH"));
+    stop_and_exit();CHECK(priority_stops==foreign_stops&&priority_renews==foreign_renews);
     follow_idle_sources(CERBERUS_REMOTE_ID_FOLLOW_MIN_FIRMWARE);
     priority_start_error=ESP_ERR_TIMEOUT;tap(100,440);tick();
     CHECK(remote_id_live->session.radios[0].identity_pending);
@@ -908,7 +959,7 @@ static void follow_compatibility_foreign_and_uncertain(void)
     uint64_t attempted_job=remote_id_live->c5_job_id;
     tap(20,440);tap(20,208);tap(100,440);tick();
     CHECK(remote_id_live->c5_job_id==attempted_job&&!memcmp(&remote_id_live->c5_follow_hint,&attempted,sizeof(attempted)));
-    CHECK(strstr(remote_id_live->cache.painted.footer[1],"NEXT WI-FI WINDOW"));
+    CHECK(strstr(remote_id_live->cache.painted.footer[0],"NEXT WI-FI WINDOW"));
     priority_start_error=0;stop_and_exit();
 }
 
@@ -918,7 +969,7 @@ static void follow_painted_action_and_ble_selection(void)
     cerberus_remote_id_record_t old_painted=remote_id_live->cache.rows[0];
     cerberus_remote_id_page_t records;CHECK(cerberus_remote_id_inventory_page(&remote_id_live->inventory,0,&records));
     CHECK(cerberus_remote_id_inventory_select(&remote_id_live->inventory,&records.rows[1]));
-    tap(100,440);CHECK(!remote_id_live->follow_enabled&&priority_starts==1);
+    tap(100,440);CHECK(!remote_id_live->follow_enabled&&priority_starts==follow_priority_base);
     CHECK(!memcmp(&remote_id_live->cache.rows[0],&old_painted,sizeof(old_painted)));
     CHECK(remote_id_draw(true)==ESP_OK);
     tap(100,440);tick();CHECK(priority_request.transmitter[5]==1&&priority_request.flags==CERBERUS_REMOTE_ID_REQUEST_FOLLOW_BEACON);
@@ -943,15 +994,15 @@ static void follow_owned_cleanup_never_reports_ready(void)
         cerberus_remote_id_radio_observation_t observation={0};
         CHECK(remote_id_poll(remote_id_live,CERBERUS_WATCH_RADIO_WIFI,true,&observation)==ESP_OK);
         CHECK(remote_id_draw(false)==ESP_OK);
-        CHECK(strstr(remote_id_live->cache.painted.footer[1],"FOLLOW CLEANUP"));
-        CHECK(!strstr(remote_id_live->cache.painted.footer[1],"FOLLOWING"));
-        CHECK(!strstr(remote_id_live->cache.painted.footer[1],"FOLLOW READY"));
+        CHECK(strstr(remote_id_live->cache.painted.footer[0],"FOLLOW CLEANUP"));
+        CHECK(!strstr(remote_id_live->cache.painted.footer[0],"FOLLOWING"));
+        CHECK(!strstr(remote_id_live->cache.painted.footer[0],"FOLLOW READY"));
         unsigned starts=priority_starts,renews=priority_renews;
         tap(185,440);tick();
         CHECK(remote_id_live->session.radios[0].owned&&!remote_id_live->session.running&&frees==0);
-        CHECK(strstr(remote_id_live->cache.painted.footer[1],"STOPPING FOLLOW"));
-        CHECK(!strstr(remote_id_live->cache.painted.footer[1],"FOLLOWING"));
-        CHECK(!strstr(remote_id_live->cache.painted.footer[1],"FOLLOW READY"));
+        CHECK(strstr(remote_id_live->cache.painted.footer[0],"STOPPING FOLLOW"));
+        CHECK(!strstr(remote_id_live->cache.painted.footer[0],"FOLLOWING"));
+        CHECK(!strstr(remote_id_live->cache.painted.footer[0],"FOLLOW READY"));
         CHECK(remote_id_live->cache.painted.follow_available&&remote_id_live->cache.painted.follow_enabled);
         tap(100,440);CHECK(!remote_id_live->follow_enabled&&!remote_id_live->session.running);
         CHECK(priority_starts==starts&&priority_renews==renews);
@@ -971,7 +1022,7 @@ static void set_motion(unsigned slot,unsigned index,uint16_t speed,uint64_t age)
 static unsigned all_radio_calls(void)
 {
     return wifi_starts+wifi_stops+ble_starts+ble_stops+active_starts+priority_starts+
-        priority_stops+priority_renews+priority_reads+status_reads+watch_reads+watch_rows;
+        priority_stops+priority_renews+priority_reads+status_reads+watch_reads+watch_rows+profile_step_calls;
 }
 static void detailed_adapter_atomic_retry(void)
 {
@@ -1025,7 +1076,9 @@ static void motion_navigation_is_radio_free(void)
     priority_reset();peer.firmware_version=CERBERUS_WATCH_MOTION_MIN_FIRMWARE;
     enter();start_scan();priority_complete(2);complete(1,1);
     set_motion(0,0,1017,9000);set_motion(0,1,258,8000);set_motion(1,0,255,7000);
-    tick();tick();tap(185,440);tick();CHECK(cerberus_remote_id_session_released(&remote_id_live->session));
+    tick();tick();tap(185,440);tick();tick();CHECK(cerberus_remote_id_session_released(&remote_id_live->session));
+    unsigned initial_priority_starts=priority_starts,initial_ble_starts=ble_starts;
+    unsigned initial_priority_stops=priority_stops,initial_ble_stops=ble_stops;
     unsigned quiet=all_radio_calls();tap(20,150);
     CHECK(remote_id_live->detail&&!remote_id_live->motion_detail&&all_radio_calls()==quiet);
     cerberus_remote_id_record_t frozen=remote_id_live->inventory.selected.frozen;
@@ -1040,15 +1093,83 @@ static void motion_navigation_is_radio_free(void)
     CHECK(remote_id_draw(true)==ESP_OK);tap(270,440);CHECK(remote_id_live->motion_detail&&all_radio_calls()==quiet);
     tap(100,440);CHECK(remote_id_live->follow_enabled&&remote_id_live->session.running);
     CHECK(all_radio_calls()==quiet); /* Follow only queues the explicit start. */
-    tick();CHECK(priority_starts==2&&ble_starts==2&&priority_request.transmitter[5]==1);
+    tick();CHECK(priority_starts==initial_priority_starts+1U&&ble_starts==initial_ble_starts+1U&&priority_request.transmitter[5]==1);
     CHECK(remote_id_live->motion_detail&&remote_id_live->cache.painted.follow_enabled);
     quiet=all_radio_calls();tap(20,440);
     CHECK(remote_id_live->detail&&!remote_id_live->motion_detail&&remote_id_live->follow_enabled&&all_radio_calls()==quiet);
     tap(270,440);tap(270,440);CHECK(remote_id_live->follow_enabled&&all_radio_calls()==quiet);
     tap(20,440);CHECK(!remote_id_live->detail&&!remote_id_live->follow_enabled&&!remote_id_live->inventory.selected.valid&&all_radio_calls()==quiet);
     tap(20,150);tap(270,440);CHECK(remote_id_live->motion_detail&&all_radio_calls()==quiet);
-    tap(185,440);tick();CHECK(!remote_id_live->session.running&&priority_stops==1&&ble_stops==1);
+    tap(185,440);tick();CHECK(!remote_id_live->session.running&&priority_stops==initial_priority_stops+1U&&ble_stops==initial_ble_stops+1U);
     CHECK(remote_id_live->detail&&remote_id_live->motion_detail);stop_and_exit();
+}
+
+static void set_profile(unsigned slot,unsigned index)
+{
+    cerberus_watch_profile_evidence_t *p=&watch_profiles[slot][index];
+    memset(p,0,sizeof(*p));p->available=true;p->capture_epoch=100U+slot;
+    p->values.present=(1U<<SENTINEL_WATCH_PROFILE_BASIC)|(1U<<SENTINEL_WATCH_PROFILE_SELF)|(1U<<SENTINEL_WATCH_PROFILE_AUTH);
+    p->values.basic[0]=0x12;memcpy(p->values.basic+1,watch_data[slot][index].id,strlen(watch_data[slot][index].id));
+    memcpy(p->values.self+1,"TEST FLIGHT",11);p->values.auth[0]=0x10;p->values.auth[2]=17;
+    p->timing[SENTINEL_WATCH_PROFILE_BASIC]=(cerberus_watch_receive_timing_t){clock_ms*1000U,0,true};
+    p->timing[SENTINEL_WATCH_PROFILE_SELF]=(cerberus_watch_receive_timing_t){clock_ms*1000U,9000,true};
+    p->timing[SENTINEL_WATCH_PROFILE_AUTH]=(cerberus_watch_receive_timing_t){clock_ms*1000U,30000,true};
+}
+
+static void message_navigation_and_profile_handoff(void)
+{
+    priority_reset();peer.firmware_version=CERBERUS_REMOTE_ID_PROFILE_MIN_FIRMWARE;profile_steps=14;
+    enter();start_scan();priority_complete(2);complete(1,1);
+    set_profile(0,0);set_profile(0,1);set_profile(1,0);
+    tick();tick();
+    CHECK(remote_id_live->inventory.banks[0].count==2&&remote_id_live->inventory.banks[1].count==1);
+    CHECK(profile_step_calls==28&&remote_id_live->inventory.banks[0].profiles[0].capture_epoch==100);
+    CHECK(remote_id_live->inventory.banks[1].profiles[0].capture_epoch==101);
+    tap(185,440);tick();tick();CHECK(cerberus_remote_id_session_released(&remote_id_live->session));
+    tap(20,150);unsigned quiet=all_radio_calls();
+    cerberus_remote_id_record_t frozen=remote_id_live->inventory.selected.frozen;
+    tap(100,400);CHECK(remote_id_live->message_detail&&!remote_id_live->motion_detail&&all_radio_calls()==quiet);
+    CHECK(strstr(remote_id_live->cache.painted.detail[6],"HIDDEN"));
+    for(unsigned i=1;i<=6U;++i){tap(270,120);CHECK(remote_id_live->message_page==i%6U&&all_radio_calls()==quiet);}
+    tap(20,120);CHECK(remote_id_live->message_page==5&&all_radio_calls()==quiet);
+    CHECK(!memcmp(&frozen,&remote_id_live->inventory.selected.frozen,sizeof(frozen)));
+    tap(20,440);CHECK(remote_id_live->detail&&!remote_id_live->message_detail&&all_radio_calls()==quiet);
+    tap(270,440);tap(100,400);CHECK(remote_id_live->message_detail&&!remote_id_live->motion_detail&&all_radio_calls()==quiet);
+    tap(100,400);CHECK(remote_id_live->detail&&!remote_id_live->message_detail&&all_radio_calls()==quiet);
+    /* A painted message action never redirects to a newly selected source. */
+    cerberus_remote_id_page_t records;CHECK(cerberus_remote_id_inventory_page(&remote_id_live->inventory,0,&records));
+    CHECK(cerberus_remote_id_inventory_select(&remote_id_live->inventory,&records.rows[1]));
+    tap(100,400);CHECK(!remote_id_live->message_detail&&all_radio_calls()==quiet);
+    CHECK(remote_id_draw(true)==ESP_OK);tap(100,400);CHECK(remote_id_live->message_detail&&all_radio_calls()==quiet);
+    CHECK(remote_id_live->inventory.selected.frozen.observation.address[5]==1);
+    stop_and_exit();
+}
+
+static void incremental_profile_stop_and_sleep(void)
+{
+    priority_reset();peer.firmware_version=CERBERUS_REMOTE_ID_PROFILE_MIN_FIRMWARE;profile_steps=14;
+    enter();start_scan();priority_complete(1);complete(1,0);set_profile(0,0);
+    clock_ms+=500;remote_id_tick((uint32_t)clock_ms,false); /* Release completed owners. */
+    clock_ms+=500;remote_id_tick((uint32_t)clock_ms,false); /* Begin staged bank. */
+    clock_ms+=20;remote_id_tick((uint32_t)clock_ms,false);
+    CHECK(remote_id_live->profile_reader_active&&!remote_id_live->inventory.banks[0].published);
+    unsigned copies=profile_step_calls,painted=text_calls,polls=status_reads;
+    clock_ms+=20;remote_id_tick((uint32_t)clock_ms,false);
+    CHECK(profile_step_calls==copies+1U&&text_calls==painted&&status_reads==polls);
+    tap(185,440);CHECK(!remote_id_live->session.running&&!cerberus_remote_id_session_released(&remote_id_live->session));
+    clock_ms+=20;remote_id_tick((uint32_t)clock_ms,false);
+    CHECK(!remote_id_live->profile_reader_active&&!remote_id_live->session.capture.owner);
+    CHECK(!remote_id_live->inventory.banks[0].published&&profile_cancels>0);
+    tick();CHECK(cerberus_remote_id_session_released(&remote_id_live->session));
+    tap(185,440);tick();unsigned starts=priority_starts+ble_starts;
+    CHECK(remote_id_live->session.running);
+    clock_ms+=500;remote_id_tick((uint32_t)clock_ms,true);
+    CHECK(!remote_id_live->session.running);
+    clock_ms+=500;remote_id_tick((uint32_t)clock_ms,true);
+    CHECK(cerberus_remote_id_session_released(&remote_id_live->session));
+    CHECK(current_page==UI_PAGE_REMOTE_ID&&priority_starts+ble_starts==starts);
+    tick();CHECK(!remote_id_live->session.running&&priority_starts+ble_starts==starts);
+    stop_and_exit();
 }
 
 int main(void)
@@ -1066,6 +1187,7 @@ int main(void)
     follow_compatibility_foreign_and_uncertain();follow_painted_action_and_ble_selection();
     follow_owned_cleanup_never_reports_ready();
     detailed_adapter_atomic_retry();motion_navigation_is_radio_free();
+    message_navigation_and_profile_handoff();incremental_profile_stop_and_sleep();
     printf("Remote ID production live adapter/routes: %u checks; store=%zu bytes\n",checks,sizeof(remote_id_live_store_t));
     return 0;
 }

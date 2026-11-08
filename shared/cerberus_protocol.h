@@ -8,6 +8,7 @@
 #include "radio_test.h"
 #include "wifi_ap_job.h"
 #include "sentinel_watch_motion.h"
+#include "sentinel_watch_profile.h"
 #include "wifi_probe_observation.h"
 #include "wifi_relation_observation.h"
 #include "csi_protocol.h"
@@ -25,7 +26,7 @@ extern "C" {
 
 #define CERBERUS_PROTOCOL_VERSION_V1 1U
 #define CERBERUS_PROTOCOL_VERSION 2U
-#define CERBERUS_C5_FIRMWARE_VERSION 88U
+#define CERBERUS_C5_FIRMWARE_VERSION 89U
 #define CERBERUS_SPI_MAGIC 0x43455242UL
 #define CERBERUS_SPI_TRANSFER_SIZE 32U
 #define CERBERUS_SPI_FRAME_PAYLOAD_SIZE 22U
@@ -238,6 +239,8 @@ typedef enum {
     CERBERUS_SPI_COMMAND_WIFI_CAPTURE_PLAN = 203,
     CERBERUS_SPI_COMMAND_WIFI_CAPTURE_TARGET = 204,
     CERBERUS_SPI_COMMAND_WIFI_CAPTURE_HOP_STATUS = 205,
+    CERBERUS_SPI_COMMAND_WATCH_PROFILE_BEGIN = 206,
+    CERBERUS_SPI_COMMAND_WATCH_PROFILE_READ = 207,
 } cerberus_spi_command_t;
 
 typedef enum {
@@ -323,6 +326,7 @@ _Static_assert(sizeof(cerberus_net_scan_result_t) == CERBERUS_SPI_FRAME_PAYLOAD_
 #define CERBERUS_WATCH_TIMING_MIN_FIRMWARE 53U
 #define CERBERUS_WATCH_MOTION_MIN_FIRMWARE 56U
 #define CERBERUS_REMOTE_ID_MIN_FIRMWARE 54U
+#define CERBERUS_REMOTE_ID_PROFILE_MIN_FIRMWARE 89U
 #define CERBERUS_REMOTE_ID_FOLLOW_MIN_FIRMWARE 55U
 #define CERBERUS_REMOTE_ID_FOLLOW_MAX_AGE_MS 30000U
 #define CERBERUS_REMOTE_ID_WINDOW_MIN_MS 1000U
@@ -487,6 +491,53 @@ typedef struct __attribute__((packed)) {
 } cerberus_watch_scan_motion_payload_t;
 _Static_assert(sizeof(cerberus_watch_scan_motion_payload_t) == CERBERUS_SPI_FRAME_PAYLOAD_SIZE,
     "Watch motion fits one unchanged SPI frame");
+
+/* Capability89 immutable, copied Remote ID projection. BEGIN is read-only:
+ * every successful call creates a fresh projection and age baseline. Retrying
+ * READ never changes its bytes. Epoch0 discovers the completed bank; a nonzero
+ * epoch requires that exact bank. Projection IDs are never reused in one boot.
+ * The existing observation and motion wire layouts remain unchanged. */
+#define CERBERUS_WATCH_PROFILE_CHUNK_SIZE 16U
+typedef struct __attribute__((packed)) {
+    uint64_t capture_epoch;
+    uint8_t radio, generation, index, reserved;
+} cerberus_watch_profile_begin_request_t;
+typedef struct __attribute__((packed)) {
+    uint64_t capture_epoch;
+    uint32_t projection;
+    int32_t error_code;
+    uint16_t object_length;
+    uint8_t radio, generation, index, reserved;
+} cerberus_watch_profile_begin_payload_t;
+typedef struct __attribute__((packed)) {
+    uint64_t capture_epoch;
+    uint32_t projection;
+    uint8_t radio, generation, index, chunk;
+} cerberus_watch_profile_read_request_t;
+typedef struct __attribute__((packed)) {
+    uint32_t projection;
+    uint8_t chunk, length, data[CERBERUS_WATCH_PROFILE_CHUNK_SIZE];
+} cerberus_watch_profile_read_payload_t;
+typedef struct __attribute__((packed)) {
+    uint64_t capture_epoch;
+    uint32_t projection;
+    int32_t error_code;
+} cerberus_watch_profile_read_error_t;
+typedef struct __attribute__((packed)) {
+    cerberus_watch_observation_t observation;
+    sentinel_watch_motion_t motion;
+    sentinel_watch_profile_t profile;
+    uint32_t group_age_ms[SENTINEL_WATCH_PROFILE_GROUPS];
+    uint64_t source_age_ms, motion_age_ms;
+    uint8_t timing_flags, group_valid_mask;
+} cerberus_watch_profile_projection_t;
+enum { CERBERUS_WATCH_PROFILE_SOURCE_TIMED=1U, CERBERUS_WATCH_PROFILE_MOTION_TIMED=2U };
+_Static_assert(sizeof(cerberus_watch_profile_begin_request_t)==12U,"Watch profile BEGIN request");
+_Static_assert(sizeof(cerberus_watch_profile_begin_payload_t)==22U,"Watch profile BEGIN reply");
+_Static_assert(sizeof(cerberus_watch_profile_read_request_t)==16U,"Watch profile READ request");
+_Static_assert(sizeof(cerberus_watch_profile_read_payload_t)==22U,"Watch profile READ reply");
+_Static_assert(sizeof(cerberus_watch_profile_read_error_t)==16U,"Watch profile READ failure");
+_Static_assert(sizeof(cerberus_watch_profile_projection_t)==224U,"Watch profile copied image");
 
 /* All received advertising reports are counted before the 32-entry inventory.
    Controller duplicate filtering is disabled. valid_reports means complete,

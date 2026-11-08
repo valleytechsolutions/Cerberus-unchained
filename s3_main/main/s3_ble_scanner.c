@@ -1133,11 +1133,13 @@ esp_err_t cerberus_s3_ble_scanner_get_watch_result(uint8_t generation, uint8_t i
 static esp_err_t get_watch_observed_result(uint8_t generation,
     uint8_t index, cerberus_watch_observation_t *result,
     cerberus_watch_receive_timing_t *timing, sentinel_watch_motion_t *motion,
-    cerberus_watch_receive_timing_t *motion_timing, uint64_t passive_epoch)
+    cerberus_watch_receive_timing_t *motion_timing, uint64_t passive_epoch,
+    uint64_t expected_capture_epoch, cerberus_watch_profile_evidence_t *profile)
 {
     const int64_t request_started_us = esp_timer_get_time();
     if (result) memset(result, 0, sizeof(*result));
     if (timing) memset(timing, 0, sizeof(*timing));
+    if (profile) memset(profile, 0, sizeof(*profile));
     if (!result || !timing || (!snapshot && !passive_epoch)) return ESP_ERR_INVALID_ARG;
     cerberus_watch_observation_t pending = {0};
     cerberus_watch_receive_timing_t pending_timing = {0};
@@ -1147,12 +1149,16 @@ static esp_err_t get_watch_observed_result(uint8_t generation,
         esp_err_t error = passive_lock(passive_epoch);
         if (error != ESP_OK) return error;
         generation = snapshot->status.generation;
+    } else if (profile) {
+        if (!scan_mutex) return ESP_ERR_INVALID_STATE;
+        if (!xSemaphoreTake(scan_mutex, pdMS_TO_TICKS(25U))) return ESP_ERR_TIMEOUT;
     } else xSemaphoreTake(scan_mutex, portMAX_DELAY);
     bool valid = (!passive_epoch || passive_complete_locked()) &&
         snapshot->watch.status.state == CERBERUS_WATCH_COMPLETE &&
         snapshot->watch.status.generation == generation && index < snapshot->watch.status.stored_count &&
         snapshot->watch.status.stored_count <= CERBERUS_WATCH_MAX_OBSERVATIONS &&
-        index < CERBERUS_WATCH_MAX_OBSERVATIONS;
+        index < CERBERUS_WATCH_MAX_OBSERVATIONS &&
+        (!expected_capture_epoch || snapshot->watch.capture_epoch == expected_capture_epoch);
     if (valid) {
         pending = snapshot->watch.records[index];
         const int64_t source_now_us = esp_timer_get_time();
@@ -1179,9 +1185,30 @@ static esp_err_t get_watch_observed_result(uint8_t generation,
                 CERBERUS_WATCH_RADIO_BLE, generation, index, (uint64_t)request_started_us,
                 &pending_motion_timing);
         }
+        if (valid && profile) {
+            sentinel_watch_profile_timing_t source = {0};
+            valid = request_started_us >= 0 && source_now_us >= request_started_us &&
+                cerberus_watch_capture_get_profile(&snapshot->watch, CERBERUS_WATCH_RADIO_BLE,
+                    generation, index, (uint64_t)source_now_us, &profile->values, &source) &&
+                source.capture_epoch == snapshot->watch.capture_epoch;
+            if (valid) {
+                profile->available = true;
+                profile->capture_epoch = source.capture_epoch;
+                for (unsigned group = 0; group < SENTINEL_WATCH_PROFILE_GROUP_COUNT; ++group) {
+                    if (!(source.valid_mask & (1U << group))) continue;
+                    profile->timing[group] = (cerberus_watch_receive_timing_t){
+                        .request_started_us = (uint64_t)request_started_us,
+                        .source_age_ms = source.age_ms[group], .valid = true};
+                }
+                valid = cerberus_watch_profile_evidence_valid(profile, (uint64_t)source_now_us / 1000U);
+            }
+        }
     }
     xSemaphoreGive(scan_mutex);
-    if (!valid) return ESP_ERR_INVALID_STATE;
+    if (!valid) {
+        if (profile) memset(profile, 0, sizeof(*profile));
+        return ESP_ERR_INVALID_STATE;
+    }
     *result = pending;
     *timing = pending_timing;
     if (motion) *motion = pending_motion;
@@ -1192,7 +1219,7 @@ static esp_err_t get_watch_observed_result(uint8_t generation,
 esp_err_t cerberus_s3_ble_scanner_get_watch_observed_result(uint8_t generation,
     uint8_t index, cerberus_watch_observation_t *result, cerberus_watch_receive_timing_t *timing)
 {
-    return get_watch_observed_result(generation, index, result, timing, NULL, NULL, 0U);
+    return get_watch_observed_result(generation, index, result, timing, NULL, NULL, 0U, 0U, NULL);
 }
 
 esp_err_t cerberus_s3_ble_scanner_get_watch_detailed_result(uint8_t generation,
@@ -1204,7 +1231,22 @@ esp_err_t cerberus_s3_ble_scanner_get_watch_detailed_result(uint8_t generation,
     if (motion) memset(motion, 0, sizeof(*motion));
     if (motion_timing) memset(motion_timing, 0, sizeof(*motion_timing));
     if (!result || !timing || !motion || !motion_timing) return ESP_ERR_INVALID_ARG;
-    return get_watch_observed_result(generation, index, result, timing, motion, motion_timing, 0U);
+    return get_watch_observed_result(generation, index, result, timing, motion, motion_timing, 0U, 0U, NULL);
+}
+
+esp_err_t cerberus_s3_ble_scanner_get_watch_profiled_result(uint8_t generation,
+    uint8_t index, uint64_t expected_capture_epoch, cerberus_watch_observation_t *result,
+    cerberus_watch_receive_timing_t *timing, sentinel_watch_motion_t *motion,
+    cerberus_watch_receive_timing_t *motion_timing, cerberus_watch_profile_evidence_t *profile)
+{
+    if (result) memset(result, 0, sizeof(*result));
+    if (timing) memset(timing, 0, sizeof(*timing));
+    if (motion) memset(motion, 0, sizeof(*motion));
+    if (motion_timing) memset(motion_timing, 0, sizeof(*motion_timing));
+    if (profile) memset(profile, 0, sizeof(*profile));
+    if (!result || !timing || !motion || !motion_timing || !profile) return ESP_ERR_INVALID_ARG;
+    return get_watch_observed_result(generation, index, result, timing, motion, motion_timing,
+        0U, expected_capture_epoch, profile);
 }
 
 esp_err_t cerberus_s3_ble_scanner_get_activity(uint8_t generation,
@@ -1552,7 +1594,7 @@ esp_err_t cerberus_s3_ble_scanner_passive_get_watch_detailed_result(uint64_t epo
     if (motion) memset(motion, 0, sizeof(*motion));
     if (motion_timing) memset(motion_timing, 0, sizeof(*motion_timing));
     if (!epoch || !result || !timing || !motion || !motion_timing) return ESP_ERR_INVALID_ARG;
-    return get_watch_observed_result(0U, index, result, timing, motion, motion_timing, epoch);
+    return get_watch_observed_result(0U, index, result, timing, motion, motion_timing, epoch, 0U, NULL);
 }
 
 esp_err_t cerberus_s3_ble_scanner_passive_get_activity(uint64_t epoch,
@@ -1751,6 +1793,19 @@ esp_err_t cerberus_s3_ble_scanner_get_watch_detailed_result(uint8_t generation,
 }
 esp_err_t cerberus_s3_ble_scanner_get_activity(uint8_t generation, cerberus_ble_activity_payload_t *status)
 { (void)generation; (void)status; return ESP_ERR_NOT_SUPPORTED; }
+esp_err_t cerberus_s3_ble_scanner_get_watch_profiled_result(uint8_t generation,
+    uint8_t index, uint64_t expected_capture_epoch, cerberus_watch_observation_t *result,
+    cerberus_watch_receive_timing_t *timing, sentinel_watch_motion_t *motion,
+    cerberus_watch_receive_timing_t *motion_timing, cerberus_watch_profile_evidence_t *profile)
+{
+    (void)generation; (void)index; (void)expected_capture_epoch;
+    if (result) memset(result, 0, sizeof(*result));
+    if (timing) memset(timing, 0, sizeof(*timing));
+    if (motion) memset(motion, 0, sizeof(*motion));
+    if (motion_timing) memset(motion_timing, 0, sizeof(*motion_timing));
+    if (profile) memset(profile, 0, sizeof(*profile));
+    return ESP_ERR_NOT_SUPPORTED;
+}
 esp_err_t cerberus_s3_ble_scanner_track_begin(const uint8_t address[6], uint8_t address_type)
 { (void)address; (void)address_type; return ESP_ERR_NOT_SUPPORTED; }
 esp_err_t cerberus_s3_ble_scanner_track_start(cerberus_s3_ble_track_state_t *state)

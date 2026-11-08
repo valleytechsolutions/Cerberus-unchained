@@ -112,6 +112,13 @@ esp_err_t cerberus_s3_ble_scanner_get_watch_detailed_result(uint8_t generation,
     uint8_t index, cerberus_watch_observation_t *result,
     cerberus_watch_receive_timing_t *timing, sentinel_watch_motion_t *motion,
     cerberus_watch_receive_timing_t *motion_timing);
+/* One bounded lock copies every field from the same completed bank. The first
+ * row may discover its full capture epoch; subsequent rows must require it.
+ * Outputs clear together on failure, including unsupported builds. */
+esp_err_t cerberus_s3_ble_scanner_get_watch_profiled_result(uint8_t generation,
+    uint8_t index, uint64_t expected_capture_epoch, cerberus_watch_observation_t *result,
+    cerberus_watch_receive_timing_t *timing, sentinel_watch_motion_t *motion,
+    cerberus_watch_receive_timing_t *motion_timing, cerberus_watch_profile_evidence_t *profile);
 esp_err_t cerberus_s3_ble_scanner_get_activity(uint8_t generation,
     cerberus_ble_activity_payload_t *status);
 /* An exact selected identity is attached separately from its finite passive
