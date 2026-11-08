@@ -94,6 +94,8 @@ static void packet_count_receive(const wifi_promiscuous_pkt_t *p,wifi_promiscuou
 {(void)p;(void)type;(void)entered;}
 static void probe_sniff_receive(const wifi_promiscuous_pkt_t *p,wifi_promiscuous_pkt_type_t type,int64_t entered)
 { (void)p;(void)type;(void)entered; }
+/* Generic capture is inactive; this fixture exercises the MAC entry prefix. */
+static uint32_t cerberus_wifi_capture_service_admission_token(void){return 0U;}
 #include "wifi_mac_monitor_service.h"
 #undef memcpy
 #undef free
