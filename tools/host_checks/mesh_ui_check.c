@@ -24,7 +24,9 @@ typedef enum {UI_IEEE802154_MODE_MENU,UI_IEEE802154_MODE_ENERGY,UI_IEEE802154_MO
     UI_IEEE802154_MODE_ACTIVITY,UI_IEEE802154_MODE_ASSESSMENT,UI_IEEE802154_MODE_MESH} ui_ieee802154_mode_t;
 static ui_page_t current_page;
 static ui_ieee802154_mode_t ieee802154_mode;
-enum { UI_WIFI_MODE_DUAL = 1, UI_WIFI_MODE_LIST, UI_BLE_MODE_LIST };
+enum { UI_WIFI_MODE_DUAL = 1, UI_WIFI_MODE_LIST, UI_BLE_MODE_LIST, UI_WIFI_MODE_CHANNEL_ANALYZER };
+enum { CHANNEL_ANALYZER_BACK };
+static void channel_analyzer_request(unsigned action){(void)action;CHECK(false);}
 static unsigned wifi_mode,ble_mode;
 static bool dual_wifi_return_to_view,ble_attack_capture_valid,ui_capability_blocked,learning_tool_active;
 static const char *ui_capability_blocked_reason;

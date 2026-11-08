@@ -138,7 +138,7 @@ def verify(receipt_paths: list[Path], expected_head: str,
         evidence.append({"receipt": str(path), "sha256": digest(raw), "shard_index": index,
                          "suite_count": len(selected), "suite_seconds_sum": round(duration, 6)})
     require(indices == set(range(SHARD_COUNT)), "Missing Windows shard")
-    require(covered == set(names), "Windows shards do not cover all 171 registered suites")
+    require(covered == set(names), "Windows shards do not cover all 175 registered suites")
     return {"format": 1, "status": "passed", "suite_set": "rev144", "platform": "win32",
             "hardware_validated": False, "source_head": expected_head, "registry_sha256": registry,
             "execution": expected_execution,

@@ -183,11 +183,11 @@ static void previews(const char*folder)
     static const cerberus_ui_widget_theme_t theme={.background=UI_BACKGROUND,.panel=UI_PANEL,.text=UI_TEXT,.muted=UI_MUTED,.border=UI_GOOD};
     CHECK(cerberus_display_fill_rect(0,0,320,480,UI_BACKGROUND)==ESP_OK&&draw_header("Wi-Fi tools")==ESP_OK);
     CHECK(sentinel_hub_draw(SENTINEL_HUB_WIFI,&theme)==ESP_OK&&draw_button(8,430,304,42,"BACK")==ESP_OK);
-    const int actions[]={0,1,2,10,3,4,5};
-    for(unsigned i=0;i<7;++i){CHECK(sentinel_hub_hit_test(SENTINEL_HUB_WIFI,30,(uint16_t)(70U+i*40U))==actions[i]);
-        CHECK(sentinel_hub_hit_test(SENTINEL_HUB_WIFI,30,(uint16_t)(105U+i*40U))==actions[i]);
-        CHECK(sentinel_hub_hit_test(SENTINEL_HUB_WIFI,30,(uint16_t)(106U+i*40U))==-1);}
-    CHECK(sentinel_hub_hit_test(SENTINEL_HUB_WIFI,30,205)==10);ppm(folder,"probe-wifi-entry");
+    const int actions[]={0,1,2,11,10,3,4,5};
+    for(unsigned i=0;i<8;++i){CHECK(sentinel_hub_hit_test(SENTINEL_HUB_WIFI,30,(uint16_t)(70U+i*36U))==actions[i]);
+        CHECK(sentinel_hub_hit_test(SENTINEL_HUB_WIFI,30,(uint16_t)(101U+i*36U))==actions[i]);
+        CHECK(sentinel_hub_hit_test(SENTINEL_HUB_WIFI,30,(uint16_t)(102U+i*36U))==-1);}
+    CHECK(sentinel_hub_hit_test(SENTINEL_HUB_WIFI,30,225)==10);ppm(folder,"probe-wifi-entry");
 }
 int main(int argc,char**argv)
 {CHECK(argc==2);ui_checks();pending_and_save_retry();previews(argv[1]);printf("Probe UI: %u checks; workspace %zu bytes.\n",checks,sizeof(probe_sniff_ui_store_t));return 0;}

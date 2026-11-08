@@ -1,5 +1,6 @@
 #pragma once
 #include "wifi_packet_monitor_session.h"
+#include "wifi_channel_analyzer.h"
 #include "esp_err.h"
 #include "device_identity.h"
 #include "wardrive_stream.h"
@@ -331,6 +332,19 @@ esp_err_t c5_spi_link_wifi_packet_monitor_session_stop(uint64_t session,
     cerberus_wifi_packet_monitor_session_status_t *out);
 esp_err_t c5_spi_link_wifi_packet_monitor_session_sample(uint64_t session, uint16_t sequence,
     cerberus_wifi_packet_monitor_session_sample_t *out);
+esp_err_t c5_spi_link_wifi_channel_analyzer_info(cerberus_wifi_channel_analyzer_status_t *out);
+esp_err_t c5_spi_link_wifi_channel_analyzer_start(uint64_t session, uint8_t channel,
+    cerberus_wifi_channel_analyzer_status_t *out);
+esp_err_t c5_spi_link_wifi_channel_analyzer_status(uint64_t session,
+    cerberus_wifi_channel_analyzer_status_t *out);
+esp_err_t c5_spi_link_wifi_channel_analyzer_stop(uint64_t session,
+    cerberus_wifi_channel_analyzer_status_t *out);
+esp_err_t c5_spi_link_wifi_channel_analyzer_sample(uint64_t session, uint32_t sequence,
+    cerberus_wifi_channel_analyzer_sample_t *out);
+esp_err_t c5_spi_link_wifi_channel_analyzer_hint_peek(uint64_t session,
+    cerberus_wifi_channel_analyzer_hint_status_t *out);
+esp_err_t c5_spi_link_wifi_channel_analyzer_hint_read(uint64_t session, uint32_t projection, uint8_t part,
+    cerberus_wifi_channel_analyzer_hint_part_t *out);
 /* Wi-Fi capture needs C5 firmware revision 45+. `read_frame` verifies CRC32
  * into caller storage and deliberately leaves the record pending until ACK. */
 esp_err_t c5_spi_link_wifi_capture_start(

@@ -1,5 +1,6 @@
 #pragma once
 #include "wifi_packet_monitor_session.h"
+#include "wifi_channel_analyzer.h"
 
 #include "cerberus_protocol.h"
 #include "csi_protocol.h"
@@ -13,6 +14,16 @@ extern "C" {
 #endif
 
 esp_err_t cerberus_wifi_scanner_init(void);
+void cerberus_wifi_channel_analyzer_info(cerberus_wifi_channel_analyzer_status_t *out);
+esp_err_t cerberus_wifi_channel_analyzer_start(const cerberus_wifi_channel_analyzer_start_t *request,
+    cerberus_wifi_channel_analyzer_status_t *out);
+esp_err_t cerberus_wifi_channel_analyzer_status(uint64_t session,cerberus_wifi_channel_analyzer_status_t *out);
+esp_err_t cerberus_wifi_channel_analyzer_stop(uint64_t session,cerberus_wifi_channel_analyzer_status_t *out);
+esp_err_t cerberus_wifi_channel_analyzer_sample(const cerberus_wifi_channel_analyzer_read_t *request,
+    cerberus_wifi_channel_analyzer_sample_t *out);
+esp_err_t cerberus_wifi_channel_analyzer_hint_peek(uint64_t session,cerberus_wifi_channel_analyzer_hint_status_t *out);
+esp_err_t cerberus_wifi_channel_analyzer_hint_read(const cerberus_wifi_channel_analyzer_hint_request_t *request,
+    cerberus_wifi_channel_analyzer_hint_part_t *out);
 esp_err_t cerberus_wifi_packet_count_exchange(uint8_t command,const void *request,size_t request_size,void *reply,size_t reply_size);
 void cerberus_wifi_probe_sniff_info(cerberus_probe_sniff_control_t *out);
 esp_err_t cerberus_wifi_probe_sniff_start(const cerberus_probe_sniff_start_t *request,cerberus_probe_sniff_control_t *out);

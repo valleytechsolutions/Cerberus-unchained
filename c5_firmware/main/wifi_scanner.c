@@ -58,7 +58,6 @@ static uint32_t channel_survey_packet_count;
 static int64_t channel_survey_rssi_sum;
 static int8_t channel_survey_strongest_rssi;
 static cerberus_wifi_packet_monitor_status_payload_t packet_monitor_status;
-static cerberus_wifi_packet_monitor_ring_t packet_monitor_ring;
 static int64_t packet_monitor_started_us;
 static atomic_bool packet_monitor_cancelled;
 static atomic_bool packet_monitor_radio_reserved;

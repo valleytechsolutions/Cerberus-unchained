@@ -1,5 +1,6 @@
 #undef NDEBUG
 #include "wifi_packet_monitor_core.h"
+#include "wifi_channel_analyzer.h"
 #include <assert.h>
 #include <setjmp.h>
 #include <stdatomic.h>
@@ -14,8 +15,10 @@ typedef int wifi_band_mode_t;
 typedef int wifi_second_chan_t;
 typedef void *TaskHandle_t;
 enum { WIFI_BAND_2G = 2, WIFI_BAND_5G = 5,
-    WIFI_SECOND_CHAN_NONE = 0, WIFI_PKT_MGMT = 0, WIFI_PKT_DATA = 2,
-    WIFI_PROMIS_FILTER_MASK_MGMT = 1, WIFI_PROMIS_FILTER_MASK_DATA = 4, WIFI_SCAN_TYPE_PASSIVE = 1 };
+    WIFI_SECOND_CHAN_NONE = 0, WIFI_PKT_MGMT = 0, WIFI_PKT_CTRL = 1, WIFI_PKT_DATA = 2,
+    WIFI_PROMIS_FILTER_MASK_MGMT = 1, WIFI_PROMIS_FILTER_MASK_CTRL = 2,
+    WIFI_PROMIS_FILTER_MASK_DATA = 4, WIFI_SCAN_TYPE_PASSIVE = 1 };
+#define WIFI_PROMIS_CTRL_FILTER_MASK_ALL 0xff800000U
 #define pdTRUE 1
 #define portMAX_DELAY 0xffffffffU
 #define pdMS_TO_TICKS(ms) (ms)
@@ -26,7 +29,7 @@ typedef unsigned wifi_promiscuous_pkt_type_t;
 typedef struct { unsigned filter_mask; } wifi_promiscuous_filter_t;
 typedef struct {
     struct { unsigned rx_state, sig_len, channel; int8_t rssi; } rx_ctrl;
-    uint8_t payload[64];
+    uint8_t payload[128];
 } wifi_promiscuous_pkt_t;
 typedef struct {
     bool show_hidden;
@@ -45,7 +48,6 @@ static cerberus_wifi_defense_status_payload_t defense_status;
 static atomic_bool probe_sniff_radio_reserved;
 static atomic_bool capture_radio_reserved;
 static cerberus_wifi_packet_monitor_status_payload_t packet_monitor_status;
-static cerberus_wifi_packet_monitor_ring_t packet_monitor_ring;
 static int64_t packet_monitor_started_us;
 static atomic_bool packet_monitor_cancelled, packet_monitor_radio_reserved;
 static int packet_monitor_mux, defense_capture_mux;
@@ -85,8 +87,11 @@ static wifi_band_mode_t current_band;
 static uint8_t current_channel;
 static wifi_second_chan_t current_second;
 static wifi_promiscuous_filter_t current_filter;
+static wifi_promiscuous_filter_t current_ctrl_filter;
+static bool fail_ctrl_filter_restore;
 static bool fail_filter_restore, record_heap_fail;
 static bool record_test_data;
+static void (*analyzer_test_delay)(void);
 static size_t record_heap_bytes, record_heap_free = 65536U;
 #define MALLOC_CAP_INTERNAL 1U
 #define MALLOC_CAP_8BIT 2U
@@ -149,6 +154,10 @@ static bool another_radio_operation_is_active(void)
 { return atomic_load(&capture_radio_reserved) || atomic_load(&packet_monitor_radio_reserved); }
 static bool wifi_connection_is_active_locked(void) { assert(locked); return false; }
 static esp_err_t cerberus_wifi_packet_monitor_stop(uint8_t generation);
+esp_err_t cerberus_wifi_channel_analyzer_stop(uint64_t session,
+    cerberus_wifi_channel_analyzer_status_t *out);
+/* The callback runs before the included service defines its private mode. */
+static void cancel_receive_owner(void);
 static esp_err_t esp_wifi_get_band_mode(wifi_band_mode_t *band)
 { *band = current_band; return ESP_OK; }
 static esp_err_t esp_wifi_get_channel(uint8_t *channel, wifi_second_chan_t *second)
@@ -170,12 +179,19 @@ static esp_err_t esp_wifi_set_promiscuous_filter(const wifi_promiscuous_filter_t
 }
 static esp_err_t esp_wifi_get_promiscuous_filter(wifi_promiscuous_filter_t *filter)
 { *filter = current_filter; return ESP_OK; }
+static esp_err_t esp_wifi_get_promiscuous_ctrl_filter(wifi_promiscuous_filter_t *filter)
+{ *filter = current_ctrl_filter; return ESP_OK; }
+static esp_err_t esp_wifi_set_promiscuous_ctrl_filter(const wifi_promiscuous_filter_t *filter)
+{
+    if (fail_ctrl_filter_restore && filter->filter_mask == 0x800000U) return ESP_FAIL;
+    current_ctrl_filter = *filter;
+    return ESP_OK;
+}
 static esp_err_t esp_wifi_set_promiscuous(bool enabled)
 {
     if (enabled) {
         ++enable_calls; promiscuous = true;
-        if (cancel_during_enable)
-            assert(cerberus_wifi_packet_monitor_stop(packet_monitor_status.generation) == ESP_OK);
+        if (cancel_during_enable) cancel_receive_owner();
     } else {
         ++disable_calls;
         if (fail_disable) return ESP_FAIL;
@@ -186,10 +202,21 @@ static esp_err_t esp_wifi_set_promiscuous(bool enabled)
 
 #include "wifi_packet_monitor_service.h"
 
+static void cancel_receive_owner(void)
+{
+    if (channel_analyzer_mode) {
+        cerberus_wifi_channel_analyzer_status_t reply;
+        assert(cerberus_wifi_channel_analyzer_stop(packet_monitor_session_id, &reply) == ESP_OK);
+    } else assert(cerberus_wifi_packet_monitor_stop(packet_monitor_status.generation) == ESP_OK);
+}
+
 static void vTaskDelayUntil(TickType_t *last, TickType_t period)
 {
-    assert(period == 200U && !locked && atomic_load(&packet_monitor_radio_reserved));
+    assert(period == (channel_analyzer_mode ? 100U : 200U) &&
+        !locked && atomic_load(&packet_monitor_radio_reserved));
     *last += period; clock_ms = *last; ++samples;
+    if (channel_analyzer_mode && analyzer_test_delay) analyzer_test_delay();
+    else {
     wifi_promiscuous_pkt_t packet = {.rx_ctrl = {0U, 28U, current_channel, -55}};
     packet.payload[0] = 0x80U;
     packet_monitor_receive(&packet, WIFI_PKT_MGMT);
@@ -197,8 +224,12 @@ static void vTaskDelayUntil(TickType_t *last, TickType_t period)
         packet.payload[0] = 0x08U;
         packet_monitor_receive(&packet, WIFI_PKT_DATA);
     }
+    }
     if (stop_after && samples >= stop_after) {
-        if (packet_monitor_session_id) {
+        if (channel_analyzer_mode) {
+            cerberus_wifi_channel_analyzer_status_t reply;
+            assert(cerberus_wifi_channel_analyzer_stop(packet_monitor_session_id, &reply) == ESP_OK);
+        } else if (packet_monitor_session_id) {
             cerberus_wifi_packet_monitor_session_status_t reply;
             assert(cerberus_wifi_packet_monitor_session_stop(packet_monitor_session_id, &reply) == ESP_OK);
         } else assert(cerberus_wifi_packet_monitor_stop(packet_monitor_status.generation) == ESP_OK);
@@ -250,13 +281,23 @@ static void reset(void)
     record_test_data = false;
     record_heap_free = 65536U;
     current_filter.filter_mask = 0x20U;
+    current_ctrl_filter.filter_mask = 0x800000U;
+    fail_ctrl_filter_restore = false;
     atomic_store(&packet_count_radio_reserved,false);count_polls=0;
     memset(&scan_status, 0, sizeof(scan_status));
     scan_band = CERBERUS_WIFI_SCAN_BAND_ALL;
     memset(&probe_capture, 0, sizeof(probe_capture));
     memset(&relation_capture, 0, sizeof(relation_capture));atomic_store(&relation_receiving,false);
     memset(&packet_monitor_status, 0, sizeof(packet_monitor_status));
-    memset(&packet_monitor_ring, 0, sizeof(packet_monitor_ring));
+    memset(&packet_receive_history, 0, sizeof(packet_receive_history));
+    channel_analyzer_mode = channel_analyzer_saturated = false;
+    atomic_store(&channel_analyzer_clock_invalid, false);
+    channel_analyzer_receive_session = 0U; channel_analyzer_frames = 0U;
+    memset(&channel_analyzer_hint, 0, sizeof(channel_analyzer_hint));
+    channel_analyzer_hint_us = -1;
+    memset(&channel_analyzer_projection, 0, sizeof(channel_analyzer_projection));
+    channel_analyzer_projection_id = 0U; channel_analyzer_projection_valid = false;
+    analyzer_test_delay = NULL;
     packet_monitor_session_epoch = packet_monitor_session_id = 0U;
     packet_monitor_control_busy = packet_monitor_cleanup_retry = false;
     atomic_store(&packet_monitor_radio_reserved, false);

@@ -8,7 +8,7 @@ import sys
 root = Path(__file__).resolve().parents[1]
 source = (root / "c5_firmware/main/wifi_packet_monitor_service.h").read_text()
 start = source.index("static esp_err_t packet_monitor_restore_radio(void)")
-end = source.index("static void packet_monitor_run(void)", start)
+end = source.index("static esp_err_t channel_analyzer_run_windows(", start)
 impl = source[start:end]
 program = r'''
 #undef NDEBUG
@@ -26,6 +26,10 @@ static wifi_band_mode_t packet_monitor_previous_band_mode;
 static uint8_t packet_monitor_previous_channel;
 static wifi_second_chan_t packet_monitor_previous_second;
 static int packet_monitor_previous_filter = 5;
+static int channel_analyzer_previous_ctrl_filter;
+static bool channel_analyzer_mode;
+static esp_err_t esp_wifi_set_promiscuous_ctrl_filter(const int *filter)
+{(void)filter;return ESP_OK;}
 static bool packet_monitor_restore_pending;
 static bool packet_monitor_disable_pending;
 static atomic_bool packet_monitor_radio_reserved;

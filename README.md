@@ -47,6 +47,13 @@ with the earlier [GPS qualification and retry changes](docs/GPS_AND_RADIO_RECOVE
 build, SDK, partition and memory/status information. The owner confirmed
 the S3/C5 tabs, Refresh and Back on rev157. See [Device Info](docs/DEVICE_INFO.md).
 
+The rev161 source candidate adds **Scan → Wi-Fi → Channel Analyzer** with
+C5 total-traffic receive windows and S3 history, measured rates, channel
+markers and recent beacon hints. Its direct menu entry, Stop/Restart and
+WI-FI MENU controls share the existing radio cleanup path. Full validation
+and installation are tracked separately from physical acceptance in the
+[Analyzer notes](docs/CHANNEL_ANALYZER.md).
+
 The included Wardriving changes continue across private journal segments,
 reduce redundant SD writes and keep one final CSV with strongest/weakest RSSI
 rows. A short rev156 recording saved 151 final rows in 474 ms without a

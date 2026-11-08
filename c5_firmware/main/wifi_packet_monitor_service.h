@@ -1,5 +1,27 @@
 /* Private to wifi_scanner.c: shares its STA radio, RX callback and mutex. */
 #include "wifi_packet_monitor_session.h"
+#include "wifi_channel_analyzer_core.h"
+
+/* Only one fixed-channel workflow can own the shared receiver. */
+static union {
+    cerberus_wifi_packet_monitor_ring_t monitor;
+    cerberus_wifi_channel_analyzer_ring_t analyzer;
+} packet_receive_history;
+#define packet_monitor_ring packet_receive_history.monitor
+#define channel_analyzer_ring packet_receive_history.analyzer
+static bool channel_analyzer_mode;
+static atomic_bool channel_analyzer_clock_invalid;
+static wifi_promiscuous_filter_t channel_analyzer_previous_ctrl_filter;
+/* RX accounting and latest hint are protected by packet_monitor_mux. */
+static uint64_t channel_analyzer_receive_session;
+static uint32_t channel_analyzer_frames;
+static bool channel_analyzer_saturated;
+static cerberus_wifi_channel_analyzer_hint_t channel_analyzer_hint;
+static int64_t channel_analyzer_hint_us;
+/* Immutable readout projection is protected by scanner_mutex. */
+static cerberus_wifi_channel_analyzer_hint_t channel_analyzer_projection;
+static uint32_t channel_analyzer_projection_id;
+static bool channel_analyzer_projection_valid;
 
 /* Protected by scanner_mutex. IDs are not reused within a boot. The random
  * boot seed reduces collisions across resets; it is not persistent identity. */
@@ -30,8 +52,10 @@ static void packet_monitor_expire_locked(int64_t now)
     if (!packet_monitor_session_id ||
         packet_monitor_status.state != CERBERUS_WIFI_PACKET_MONITOR_RUNNING ||
         atomic_load_explicit(&packet_monitor_cancelled, memory_order_acquire)) return;
-    if (now < 0 || now < packet_monitor_lease_clock_us ||
-        now >= packet_monitor_lease_deadline_us)
+    bool invalid_clock = now < 0 || now < packet_monitor_lease_clock_us;
+    if (invalid_clock && channel_analyzer_mode)
+        atomic_store_explicit(&channel_analyzer_clock_invalid, true, memory_order_release);
+    if (invalid_clock || now >= packet_monitor_lease_deadline_us)
         atomic_store_explicit(&packet_monitor_cancelled, true, memory_order_release);
     else packet_monitor_lease_clock_us = now;
 }
@@ -46,17 +70,40 @@ static void packet_monitor_check_expiry(void)
 static void packet_monitor_receive(const wifi_promiscuous_pkt_t *packet,
     wifi_promiscuous_pkt_type_t type)
 {
-    if (!packet || (type != WIFI_PKT_MGMT && type != WIFI_PKT_DATA) || packet->rx_ctrl.rx_state != 0U ||
-        packet->rx_ctrl.sig_len < 28U) return;
+    if (!packet || (type != WIFI_PKT_MGMT && type != WIFI_PKT_DATA && type != WIFI_PKT_CTRL) ||
+        packet->rx_ctrl.rx_state != 0U) return;
     portENTER_CRITICAL(&packet_monitor_mux);
     bool admitted = packet_monitor_receiving &&
         packet->rx_ctrl.channel == packet_monitor_receive_channel;
-    packet_monitor_record_context_t *record = admitted ? packet_monitor_record_context : NULL;
+    bool analyzer = admitted && channel_analyzer_mode;
+    uint64_t analyzer_session = analyzer ? channel_analyzer_receive_session : 0U;
+    if (analyzer) {
+        if (channel_analyzer_frames != UINT32_MAX) ++channel_analyzer_frames;
+        if (channel_analyzer_frames == UINT32_MAX) channel_analyzer_saturated = true;
+    }
+    bool monitor = admitted && !analyzer && packet->rx_ctrl.sig_len >= 28U &&
+        (type == WIFI_PKT_MGMT || type == WIFI_PKT_DATA);
+    packet_monitor_record_context_t *record = monitor ? packet_monitor_record_context : NULL;
     if (record) ++record->inflight;
-    if (admitted && type == WIFI_PKT_MGMT)
+    if (monitor && type == WIFI_PKT_MGMT)
         cerberus_wifi_packet_monitor_observe(&packet_monitor_counts,
             packet->payload, packet->rx_ctrl.sig_len - 4U);
     portEXIT_CRITICAL(&packet_monitor_mux);
+    if (analyzer && type == WIFI_PKT_MGMT && packet->rx_ctrl.sig_len >= 4U) {
+        int64_t received_us = esp_timer_get_time();
+        cerberus_wifi_channel_analyzer_hint_t hint;
+        if (received_us >= 0 && cerberus_wifi_channel_analyzer_beacon(packet->payload,
+                packet->rx_ctrl.sig_len - 4U, packet->rx_ctrl.channel, packet->rx_ctrl.rssi, &hint)) {
+            portENTER_CRITICAL(&packet_monitor_mux);
+            if (packet_monitor_receiving && channel_analyzer_mode &&
+                channel_analyzer_receive_session == analyzer_session &&
+                packet_monitor_receive_channel == hint.channel) {
+                channel_analyzer_hint = hint;
+                channel_analyzer_hint_us = received_us;
+            }
+            portEXIT_CRITICAL(&packet_monitor_mux);
+        }
+    }
     if (record) {
         /* IDF defines the payload by sig_len; exclude FCS for both supported
          * callback types. CTRL/MISC and error callbacks supply no bytes here. */
@@ -91,10 +138,56 @@ static esp_err_t packet_monitor_restore_radio(void)
         }
         error = esp_wifi_set_promiscuous_filter(&packet_monitor_previous_filter);
         if (error != ESP_OK) return error;
+        if (channel_analyzer_mode) {
+            error = esp_wifi_set_promiscuous_ctrl_filter(&channel_analyzer_previous_ctrl_filter);
+            if (error != ESP_OK) return error;
+        }
         packet_monitor_restore_pending = false;
     }
     atomic_store_explicit(&packet_monitor_radio_reserved, false,
         memory_order_release);
+    return ESP_OK;
+}
+
+static esp_err_t channel_analyzer_run_windows(uint64_t session, uint8_t generation, uint8_t channel)
+{
+    portENTER_CRITICAL(&packet_monitor_mux);
+    int64_t began = esp_timer_get_time();
+    channel_analyzer_receive_session = session;
+    channel_analyzer_frames = 0U;
+    channel_analyzer_saturated = false;
+    packet_monitor_receive_channel = channel;
+    packet_monitor_receiving = began >= 0 && !atomic_load_explicit(&packet_monitor_cancelled,memory_order_acquire);
+    portEXIT_CRITICAL(&packet_monitor_mux);
+    if (began < 0) return ESP_ERR_INVALID_STATE;
+    TickType_t last = xTaskGetTickCount();
+    while (!atomic_load_explicit(&packet_monitor_cancelled,memory_order_acquire)) {
+        vTaskDelayUntil(&last,pdMS_TO_TICKS(CERBERUS_WIFI_CHANNEL_ANALYZER_TARGET_MS));
+        packet_monitor_check_expiry();
+        portENTER_CRITICAL(&packet_monitor_mux);
+        int64_t now = esp_timer_get_time();
+        bool valid = now > began && (uint64_t)(now-began) <= UINT32_MAX;
+        bool cancelled = atomic_load_explicit(&packet_monitor_cancelled,memory_order_acquire);
+        uint32_t duration = valid ? (uint32_t)(now-began) : 0U;
+        uint32_t frames = channel_analyzer_frames;
+        uint8_t flags = channel_analyzer_saturated ? CERBERUS_WIFI_CHANNEL_ANALYZER_SATURATED : 0U;
+        bool complete = valid && !cancelled && duration >= CERBERUS_WIFI_CHANNEL_ANALYZER_TARGET_MS*1000U;
+        if (complete) {
+            channel_analyzer_frames=0U;channel_analyzer_saturated=false;began=now;
+        }
+        portEXIT_CRITICAL(&packet_monitor_mux);
+        if (!valid) return ESP_ERR_INVALID_STATE;
+        if (cancelled) break;
+        if (!complete) continue;
+        xSemaphoreTake(scanner_mutex,portMAX_DELAY);
+        bool same = channel_analyzer_mode && packet_monitor_session_id==session &&
+            packet_monitor_status.generation==generation &&
+            packet_monitor_status.state==CERBERUS_WIFI_PACKET_MONITOR_RUNNING;
+        bool stored = same && cerberus_wifi_channel_analyzer_push(&channel_analyzer_ring,
+            frames,duration,channel,flags);
+        xSemaphoreGive(scanner_mutex);
+        if (!stored) return ESP_ERR_INVALID_STATE;
+    }
     return ESP_OK;
 }
 
@@ -110,6 +203,7 @@ static void packet_monitor_run(void)
     uint8_t generation = packet_monitor_status.generation;
     uint64_t session = packet_monitor_session_id;
     uint8_t channel = packet_monitor_status.channel;
+    bool analyzer = channel_analyzer_mode;
     xSemaphoreGive(scanner_mutex);
     if (!running && !retry) return;
 
@@ -124,6 +218,8 @@ static void packet_monitor_run(void)
                 &packet_monitor_previous_second);
         if (error == ESP_OK)
             error = esp_wifi_get_promiscuous_filter(&packet_monitor_previous_filter);
+        if (error == ESP_OK && analyzer)
+            error = esp_wifi_get_promiscuous_ctrl_filter(&channel_analyzer_previous_ctrl_filter);
         if (error == ESP_OK) {
             packet_monitor_restore_pending = true;
             error = esp_wifi_set_band(channel <= 14U ?
@@ -133,16 +229,22 @@ static void packet_monitor_run(void)
             error = esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE);
         wifi_promiscuous_filter_t filter = {
             .filter_mask = WIFI_PROMIS_FILTER_MASK_MGMT |
-                (packet_monitor_record_requested ? WIFI_PROMIS_FILTER_MASK_DATA : 0U),
+                ((packet_monitor_record_requested || analyzer) ? WIFI_PROMIS_FILTER_MASK_DATA : 0U) |
+                (analyzer ? WIFI_PROMIS_FILTER_MASK_CTRL : 0U),
         };
         if (error == ESP_OK) error = esp_wifi_set_promiscuous_filter(&filter);
+        if (error == ESP_OK && analyzer) {
+            wifi_promiscuous_filter_t controls = {.filter_mask = WIFI_PROMIS_CTRL_FILTER_MASK_ALL};
+            error = esp_wifi_set_promiscuous_ctrl_filter(&controls);
+        }
         if (error == ESP_OK) {
             packet_monitor_disable_pending = true;
             error = esp_wifi_set_promiscuous(true);
             promiscuous = error == ESP_OK;
         }
     }
-    if (promiscuous) {
+    if (promiscuous && analyzer) error = channel_analyzer_run_windows(session,generation,channel);
+    if (promiscuous && !analyzer) {
         portENTER_CRITICAL(&packet_monitor_mux);
         packet_monitor_counts = (cerberus_wifi_packet_monitor_counters_t){0};
         packet_monitor_receive_channel = channel;
@@ -182,6 +284,8 @@ static void packet_monitor_run(void)
         }
     }
     packet_monitor_record_close_admission();
+    if (analyzer && atomic_load_explicit(&channel_analyzer_clock_invalid, memory_order_acquire))
+        error = ESP_ERR_INVALID_STATE;
     if (packet_monitor_record_faulted() && error == ESP_OK) error = ESP_ERR_INVALID_STATE;
     esp_err_t cleanup = packet_monitor_restore_radio();
     if (cleanup != ESP_OK) error = cleanup;
@@ -210,7 +314,7 @@ static bool packet_monitor_held_locked(void)
         atomic_load_explicit(&packet_monitor_radio_reserved, memory_order_acquire);
 }
 
-static esp_err_t packet_monitor_start_internal(uint8_t channel, uint64_t session, bool recording)
+static esp_err_t packet_monitor_start_internal(uint8_t channel, uint64_t session, bool recording, bool analyzer)
 {
     if (!cerberus_wifi_packet_monitor_channel_valid(channel))
         return ESP_ERR_INVALID_ARG;
@@ -220,7 +324,8 @@ static esp_err_t packet_monitor_start_internal(uint8_t channel, uint64_t session
     if (session) packet_monitor_session_init_locked();
     if (session && session == packet_monitor_session_id) {
         packet_monitor_expire_locked(esp_timer_get_time());
-        bool same = packet_monitor_status.channel == channel && packet_monitor_record_requested == recording;
+        bool same = packet_monitor_status.channel == channel && packet_monitor_record_requested == recording &&
+            channel_analyzer_mode == analyzer;
         xSemaphoreGive(scanner_mutex);
         return same ? ESP_OK : ESP_ERR_INVALID_ARG;
     }
@@ -234,7 +339,7 @@ static esp_err_t packet_monitor_start_internal(uint8_t channel, uint64_t session
      * Start must not become a new scan after the competing owner finishes. */
     if (session) packet_monitor_session_epoch = session;
     if (packet_monitor_control_busy || packet_monitor_held_locked() || packet_monitor_record_context) {
-        bool legacy_replay = !session && !packet_monitor_session_id &&
+        bool legacy_replay = !analyzer && !channel_analyzer_mode && !session && !packet_monitor_session_id &&
             packet_monitor_status.state == CERBERUS_WIFI_PACKET_MONITOR_RUNNING &&
             packet_monitor_status.channel == channel;
         xSemaphoreGive(scanner_mutex);
@@ -271,7 +376,15 @@ static esp_err_t packet_monitor_start_internal(uint8_t channel, uint64_t session
     }
     uint8_t generation = (uint8_t)(packet_monitor_status.generation + 1U);
     if (generation == 0U) generation = 1U;
-    memset(&packet_monitor_ring, 0, sizeof(packet_monitor_ring));
+    memset(&packet_receive_history, 0, sizeof(packet_receive_history));
+    portENTER_CRITICAL(&packet_monitor_mux);
+    channel_analyzer_mode=analyzer;
+    channel_analyzer_receive_session=0U;
+    memset(&channel_analyzer_hint,0,sizeof(channel_analyzer_hint));
+    channel_analyzer_hint_us=-1;
+    portEXIT_CRITICAL(&packet_monitor_mux);
+    channel_analyzer_projection_id=0U;channel_analyzer_projection_valid=false;
+    atomic_store_explicit(&channel_analyzer_clock_invalid, false, memory_order_release);
     packet_monitor_restore_pending = false;
     packet_monitor_disable_pending = false;
     packet_monitor_previous_channel = 0U;
@@ -300,7 +413,7 @@ static esp_err_t packet_monitor_start_internal(uint8_t channel, uint64_t session
 
 esp_err_t cerberus_wifi_packet_monitor_start(uint8_t channel)
 {
-    return packet_monitor_start_internal(channel, 0U, false);
+    return packet_monitor_start_internal(channel, 0U, false, false);
 }
 
 esp_err_t cerberus_wifi_packet_monitor_stop(uint8_t generation)
@@ -351,6 +464,12 @@ void cerberus_wifi_packet_monitor_get_status(
         return;
     }
     xSemaphoreTake(scanner_mutex, portMAX_DELAY);
+    if (channel_analyzer_mode) {
+        status->state=CERBERUS_WIFI_PACKET_MONITOR_ERROR;
+        status->error_code=ESP_ERR_INVALID_STATE;
+        xSemaphoreGive(scanner_mutex);
+        return;
+    }
     *status = packet_monitor_status;
     if (status->state == CERBERUS_WIFI_PACKET_MONITOR_RUNNING)
         status->elapsed_ms = packet_monitor_elapsed_locked();
@@ -375,7 +494,12 @@ static void packet_monitor_session_reply_locked(uint64_t requested, bool info,
 {
     memset(out, 0, sizeof(*out));
     out->session_id = info ? packet_monitor_session_epoch : requested;
-    bool bound = packet_monitor_session_id && out->session_id == packet_monitor_session_id;
+    bool bound = !channel_analyzer_mode && packet_monitor_session_id && out->session_id == packet_monitor_session_id;
+    if (channel_analyzer_mode) {
+        if (info && packet_monitor_held_locked()) out->flags=CERBERUS_WIFI_PACKET_MONITOR_HELD;
+        out->error_code=info ? (packet_monitor_held_locked() ? ESP_ERR_INVALID_STATE : ESP_OK) : ESP_ERR_NOT_FOUND;
+        return;
+    }
     if (info || bound) {
         out->state = packet_monitor_status.state;
         out->channel = packet_monitor_status.channel;
@@ -413,7 +537,7 @@ esp_err_t cerberus_wifi_packet_monitor_session_start(
     memset(out, 0, sizeof(*out)); out->session_id = request->session_id;
     if (!scanner_mutex) { out->error_code = ESP_ERR_INVALID_STATE; return ESP_ERR_INVALID_STATE; }
     esp_err_t error = request->session_id ?
-        packet_monitor_start_internal(request->channel, request->session_id, false) : ESP_ERR_INVALID_ARG;
+        packet_monitor_start_internal(request->channel, request->session_id, false, false) : ESP_ERR_INVALID_ARG;
     xSemaphoreTake(scanner_mutex, portMAX_DELAY);
     packet_monitor_session_reply_locked(request->session_id, false, error, out);
     xSemaphoreGive(scanner_mutex);
@@ -428,7 +552,7 @@ esp_err_t cerberus_wifi_packet_monitor_record_start(
     memset(out, 0, sizeof(*out)); out->session_id = request->session_id;
     if (!scanner_mutex) { out->error_code = ESP_ERR_INVALID_STATE; return ESP_ERR_INVALID_STATE; }
     esp_err_t error = request->session_id ?
-        packet_monitor_start_internal(request->channel, request->session_id, true) : ESP_ERR_INVALID_ARG;
+        packet_monitor_start_internal(request->channel, request->session_id, true, false) : ESP_ERR_INVALID_ARG;
     xSemaphoreTake(scanner_mutex, portMAX_DELAY);
     packet_monitor_session_reply_locked(request->session_id, false, error, out);
     xSemaphoreGive(scanner_mutex);
@@ -442,7 +566,7 @@ static esp_err_t packet_monitor_session_control(uint64_t session, bool stop,
     memset(out, 0, sizeof(*out)); out->session_id = session;
     if (!scanner_mutex) { out->error_code = ESP_ERR_INVALID_STATE; return ESP_ERR_INVALID_STATE; }
     xSemaphoreTake(scanner_mutex, portMAX_DELAY);
-    esp_err_t error = session && session == packet_monitor_session_id ? ESP_OK : ESP_ERR_NOT_FOUND;
+    esp_err_t error = !channel_analyzer_mode && session && session == packet_monitor_session_id ? ESP_OK : ESP_ERR_NOT_FOUND;
     bool notify = false;
     if (error == ESP_OK) {
         int64_t now = esp_timer_get_time();
@@ -487,10 +611,12 @@ esp_err_t cerberus_wifi_packet_monitor_session_sample(
     memset(out, 0, sizeof(*out));
     if (!scanner_mutex) return ESP_ERR_INVALID_STATE;
     xSemaphoreTake(scanner_mutex, portMAX_DELAY);
-    bool valid = request->session_id && request->session_id == packet_monitor_session_id &&
+    bool valid = !channel_analyzer_mode && request->session_id && request->session_id == packet_monitor_session_id &&
         cerberus_wifi_packet_monitor_ring_get(&packet_monitor_ring, request->sequence, &out->sample);
     if (valid) out->session_id = request->session_id;
     else memset(out, 0, sizeof(*out));
     xSemaphoreGive(scanner_mutex);
     return valid ? ESP_OK : ESP_ERR_NOT_FOUND;
 }
+
+#include "wifi_channel_analyzer_service.h"

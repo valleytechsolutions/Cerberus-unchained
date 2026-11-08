@@ -27,7 +27,7 @@ body=ui[begin:].split('{',1)[1].split('} else if',1)[0]
 tick_start=ui.index('        probe_sniff_tick((uint64_t)now_ms,')
 tick=ui[tick_start:ui.index(';',tick_start)+1]
 (out/"probe_ui_routes.h").write_text('static void route_back(void) {\n'+body+'}\n'
-    'static void route_menu_probe(void) {switch(sentinel_hub_hit_test(SENTINEL_HUB_WIFI,30,205)) {'
+    'static void route_menu_probe(void) {switch(sentinel_hub_hit_test(SENTINEL_HUB_WIFI,30,225)) {'
     +ui[ui.index('case 10: probe_sniff_open(); break;'):].split('\n',1)[0]+'default:CHECK(false);}}\n'
     +'static void route_tick(uint64_t now_ms,bool screen_asleep){\n'+tick+'\n}\n')
 assert 'probe_sniff_tick((uint64_t)now_ms, current_page == UI_PAGE_WIFI &&' in ui

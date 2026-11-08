@@ -240,6 +240,7 @@ typedef enum {
     UI_WIFI_MODE_DUAL,
     UI_WIFI_MODE_PROBE_SNIFF,
     UI_WIFI_MODE_PACKET_COUNT,
+    UI_WIFI_MODE_CHANNEL_ANALYZER,
 } ui_wifi_mode_t;
 
 typedef cerberus_s3_wifi_ssid_analysis_t ui_wifi_ssid_analysis_t;
@@ -2314,6 +2315,7 @@ static void wifi_channel_survey_refresh(uint32_t now_ms)
 }
 
 #include "wifi_packet_monitor_ui.h"
+#include "wifi_channel_analyzer_ui.h"
 
 static uint16_t packet_monitor_count(
     const cerberus_wifi_packet_monitor_sample_payload_t *sample,
@@ -3353,6 +3355,7 @@ static esp_err_t draw_wifi(void)
     if (wifi_mode == UI_WIFI_MODE_MULTISSID) return multissid_draw();
     if (wifi_mode == UI_WIFI_MODE_PINESCAN) return pinescan_draw();
     if (wifi_mode == UI_WIFI_MODE_PACKET_MONITOR) return draw_wifi_packet_monitor();
+    if (wifi_mode == UI_WIFI_MODE_CHANNEL_ANALYZER) return channel_analyzer_draw();
     if (wifi_mode == UI_WIFI_MODE_MENU) return sentinel_hub_draw(SENTINEL_HUB_WIFI, UI_WIDGET_THEME);
     if (live_is_view()) return draw_live_scan();
     char line[64];
@@ -8453,6 +8456,10 @@ static esp_err_t draw_detail_page(void)
         back_label = ieee802154_mode != UI_IEEE802154_MODE_MENU ? "MESH MENU" :
             tool_parent_page == UI_PAGE_FIELD_MENU ? "BACK TO SCAN" : "BACK";
     }
+    if (current_page == UI_PAGE_WIFI && wifi_mode == UI_WIFI_MODE_CHANNEL_ANALYZER)
+        return draw_button(8, UI_BACK_Y, 304, UI_BACK_HEIGHT,
+            channel_analyzer_ui && channel_analyzer_ui->action == CHANNEL_ANALYZER_BACK ?
+            "STOPPING / WIFI MENU" : "WIFI MENU");
     if (current_page == UI_PAGE_WIFI && wifi_mode == UI_WIFI_MODE_DUAL && !ui_capability_blocked)
         return ESP_OK; /* This view owns both its Back and Stop controls. */
     if (current_page == UI_PAGE_BLE && ble_mode == UI_BLE_MODE_C5) {
@@ -8662,6 +8669,11 @@ static void open_main_menu(void)
 
 static void return_to_launcher(void)
 {
+    if (current_page == UI_PAGE_WIFI && wifi_mode == UI_WIFI_MODE_CHANNEL_ANALYZER) {
+        channel_analyzer_request(CHANNEL_ANALYZER_BACK);
+        ESP_ERROR_CHECK(draw_detail_page());
+        return;
+    }
     dual_wifi_return_to_view = false;
     if (current_page == UI_PAGE_WIFI && wifi_mode == UI_WIFI_MODE_DUAL)
         dual_wifi_ui_leave();
@@ -9156,6 +9168,9 @@ static void handle_ieee802154_tap(uint16_t x, uint16_t y)
 
 static void handle_wifi_tap(uint16_t x, uint16_t y)
 {
+    if (wifi_mode == UI_WIFI_MODE_CHANNEL_ANALYZER) {
+        channel_analyzer_tap(x, y); ESP_ERROR_CHECK(draw_detail_page()); return;
+    }
     if (wifi_mode == UI_WIFI_MODE_PROBE_SNIFF) {
         probe_sniff_tap(x, y); ESP_ERROR_CHECK(draw_detail_page()); return;
     }
@@ -9188,6 +9203,7 @@ static void handle_wifi_tap(uint16_t x, uint16_t y)
         int item = sentinel_hub_hit_test(SENTINEL_HUB_WIFI, x, y);
         if (item == 6) { open_learning_lesson(0); return; }
         switch (item) {
+        case 11: channel_analyzer_open(); break;
         case 10: probe_sniff_open(); break;
         case 8: multissid_enter(); wifi_mode = UI_WIFI_MODE_MULTISSID; break;
         case 9: pinescan_enter(); wifi_mode = UI_WIFI_MODE_PINESCAN; break;
@@ -12213,6 +12229,7 @@ static void handle_tap(uint16_t x, uint16_t y)
         return;
     }
     if (learning_tool_active &&
+        !(current_page == UI_PAGE_WIFI && wifi_mode == UI_WIFI_MODE_CHANNEL_ANALYZER) &&
         current_page != UI_PAGE_BLE_SOUND &&
         !(current_page == UI_PAGE_BLE &&
           (ble_mode == UI_BLE_MODE_FOX_HUNT ||
@@ -12270,6 +12287,11 @@ static void handle_tap(uint16_t x, uint16_t y)
             } else if (current_page == UI_PAGE_BLE && ble_attack_selecting) {
                 ble_attack_selecting = false;
                 open_tool_page(UI_PAGE_BLE_ATTACK);
+            } else if (current_page == UI_PAGE_WIFI && wifi_mode == UI_WIFI_MODE_CHANNEL_ANALYZER) {
+                if (x >= 8U && x < 312U && y < UI_BACK_Y + UI_BACK_HEIGHT) {
+                    channel_analyzer_request(CHANNEL_ANALYZER_BACK);
+                    ESP_ERROR_CHECK(draw_detail_page());
+                }
             } else if (!learning_tool_active && !live_is_view() && live_page_tool() != SENTINEL_SCAN_NONE && x >= 184U &&
                 !(current_page == UI_PAGE_WIFI && wifi_mode == UI_WIFI_MODE_BASELINE)) {
                 live_toggle_pause();
@@ -12686,6 +12708,10 @@ void cerberus_ui_run(const cerberus_ui_config_t *config)
         if (packet_monitor_tick((uint64_t)now_ms, packet_monitor_visible) && packet_monitor_visible)
             ESP_ERROR_CHECK(draw_detail_page());
         mesh_archive_tick(screen_asleep);
+        bool channel_analyzer_visible = current_page == UI_PAGE_WIFI &&
+            wifi_mode == UI_WIFI_MODE_CHANNEL_ANALYZER && !screen_asleep;
+        if (channel_analyzer_tick((uint64_t)now_ms, channel_analyzer_visible) && channel_analyzer_visible)
+            ESP_ERROR_CHECK(draw_detail_page());
         mesh_ui_tick((uint64_t)now_ms, current_page == UI_PAGE_IEEE802154 &&
             ieee802154_mode == UI_IEEE802154_MODE_MESH && !screen_asleep);
         wifi_packet_count_tick((uint64_t)now_ms, current_page == UI_PAGE_WIFI &&
@@ -12757,7 +12783,8 @@ void cerberus_ui_run(const cerberus_ui_config_t *config)
             !ble_findmy_monitor_requested() &&
             !(current_page == UI_PAGE_WIFI && wifi_mode == UI_WIFI_MODE_DUAL) &&
             !(current_page == UI_PAGE_SCRIPTS && script_running) &&
-            now_ms - last_user_activity_ms >= (int64_t)ui_screen_timeout_seconds * 1000LL) {
+            now_ms - last_user_activity_ms >= (int64_t)ui_screen_timeout_seconds * 1000LL &&
+            channel_analyzer_prepare_sleep()) {
             awake_brightness = cerberus_display_get_brightness();
             esp_err_t sleep_err = cerberus_display_set_brightness(0U);
             if (sleep_err == ESP_OK) {

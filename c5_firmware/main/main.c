@@ -596,6 +596,73 @@ static void prepare_v2_response(const cerberus_spi_frame_t *request)
             memcpy(tx_buffer, &frame, sizeof(frame));
         break;
     }
+    case CERBERUS_SPI_COMMAND_WIFI_CHANNEL_ANALYZER_INFO:
+    case CERBERUS_SPI_COMMAND_WIFI_CHANNEL_ANALYZER_START:
+    case CERBERUS_SPI_COMMAND_WIFI_CHANNEL_ANALYZER_STATUS:
+    case CERBERUS_SPI_COMMAND_WIFI_CHANNEL_ANALYZER_STOP: {
+        cerberus_wifi_channel_analyzer_status_t payload;
+        if (request->command == CERBERUS_SPI_COMMAND_WIFI_CHANNEL_ANALYZER_INFO) {
+            if (request->payload_length != 0U) return;
+            cerberus_wifi_channel_analyzer_info(&payload);
+        } else if (request->command == CERBERUS_SPI_COMMAND_WIFI_CHANNEL_ANALYZER_START) {
+            if (request->payload_length != sizeof(cerberus_wifi_channel_analyzer_start_t)) return;
+            cerberus_wifi_channel_analyzer_start_t query;
+            memcpy(&query, request->payload, sizeof(query));
+            (void)cerberus_wifi_channel_analyzer_start(&query, &payload);
+        } else {
+            if (request->payload_length != sizeof(uint64_t)) return;
+            uint64_t session;
+            memcpy(&session, request->payload, sizeof(session));
+            if (request->command == CERBERUS_SPI_COMMAND_WIFI_CHANNEL_ANALYZER_STOP)
+                (void)cerberus_wifi_channel_analyzer_stop(session, &payload);
+            else (void)cerberus_wifi_channel_analyzer_status(session, &payload);
+        }
+        prepare_frame_response((cerberus_spi_command_t)request->command,
+            request->sequence, &payload, sizeof(payload));
+        break;
+    }
+    case CERBERUS_SPI_COMMAND_WIFI_CHANNEL_ANALYZER_SAMPLE: {
+        if (request->payload_length != sizeof(cerberus_wifi_channel_analyzer_read_t)) return;
+        cerberus_wifi_channel_analyzer_read_t query;
+        cerberus_wifi_channel_analyzer_sample_t payload;
+        memcpy(&query, request->payload, sizeof(query));
+        esp_err_t error = cerberus_wifi_channel_analyzer_sample(&query, &payload);
+        if (error == ESP_OK)
+            prepare_frame_response((cerberus_spi_command_t)request->command,
+                request->sequence, &payload, sizeof(payload));
+        else {
+            cerberus_wifi_channel_analyzer_read_error_t failure = {query.session_id, query.sequence, error};
+            prepare_frame_response((cerberus_spi_command_t)request->command,
+                request->sequence, &failure, sizeof(failure));
+        }
+        break;
+    }
+    case CERBERUS_SPI_COMMAND_WIFI_CHANNEL_ANALYZER_HINT_PEEK: {
+        if (request->payload_length != sizeof(uint64_t)) return;
+        uint64_t session;
+        cerberus_wifi_channel_analyzer_hint_status_t payload;
+        memcpy(&session, request->payload, sizeof(session));
+        (void)cerberus_wifi_channel_analyzer_hint_peek(session, &payload);
+        prepare_frame_response((cerberus_spi_command_t)request->command,
+            request->sequence, &payload, sizeof(payload));
+        break;
+    }
+    case CERBERUS_SPI_COMMAND_WIFI_CHANNEL_ANALYZER_HINT_READ: {
+        if (request->payload_length != sizeof(cerberus_wifi_channel_analyzer_hint_request_t)) return;
+        cerberus_wifi_channel_analyzer_hint_request_t query;
+        cerberus_wifi_channel_analyzer_hint_part_t payload;
+        memcpy(&query, request->payload, sizeof(query));
+        esp_err_t error = cerberus_wifi_channel_analyzer_hint_read(&query, &payload);
+        if (error == ESP_OK)
+            prepare_frame_response((cerberus_spi_command_t)request->command,
+                request->sequence, &payload, sizeof(payload));
+        else {
+            cerberus_wifi_channel_analyzer_read_error_t failure = {query.session_id, query.projection, error};
+            prepare_frame_response((cerberus_spi_command_t)request->command,
+                request->sequence, &failure, sizeof(failure));
+        }
+        break;
+    }
     case CERBERUS_SPI_COMMAND_WIFI_PACKET_MONITOR_START:
     case CERBERUS_SPI_COMMAND_WIFI_PACKET_MONITOR_STOP:
     case CERBERUS_SPI_COMMAND_WIFI_PACKET_MONITOR_STATUS: {

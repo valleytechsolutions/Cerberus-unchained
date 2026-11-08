@@ -1,8 +1,9 @@
 # Channel Analyzer implementation plan
 
-Status: **pending**. Cerberus does not yet have a distinct Channel Analyzer
-workflow. This document records the audited upstream behavior and a proposed
-implementation; it does not announce a new menu entry or completed feature.
+This is the pre-implementation source audit recorded at rev160. Rev161 adds
+the [Channel Analyzer workflow](CHANNEL_ANALYZER.md); that document records
+its implementation and validation boundaries. The proposal below preserves
+the original acceptance criteria and does not establish physical acceptance.
 
 ## Upstream behavior
 
