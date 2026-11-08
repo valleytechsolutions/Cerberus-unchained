@@ -69,9 +69,9 @@ Target build and loaded-device measurements are separate from these layouts.
 ## Validation and remaining acceptance
 
 Source, host fixtures, native builds, packaging and installation are recorded
-separately. Until the installation checkpoint below is populated, rev168 is
-the installed baseline. Physical six-family reception, touchscreen paging,
-Stop/Back/sleep, repeated following scans and loaded memory/performance require
+separately. Rev169 is installed as recorded below. Physical six-family
+reception, touchscreen paging, Stop/Back/sleep, repeated following scans and
+loaded memory/performance require
 device acceptance. Host tests and idle boot checks do not establish those.
 
 The decoder follows the pinned OpenDroneID
@@ -80,3 +80,40 @@ and [conversion rules](https://github.com/opendroneid/opendroneid-core-c/blob/84
 No third-party implementation was imported. Marauder `develop` was rechecked
 on 2026-11-08 and remains at
 `79cc6bcba1db6679baee1dab2b0c1ad5010e6363`.
+
+## Installed rev169 checkpoint
+
+Installed from `e325a70ef579ea84168ff17ae6a365cc04f10946` with C5 capability 89
+after all 200 host suites, five native targets and matched packaging passed on
+1476 unchanged
+inputs. Native runs first rejected compact conditional formatting and then
+three potentially truncated numeric display lines. Both failed reports were
+retained; eight guards were clarified, field limits made explicit and extreme
+display values tested before the full gates passed. Recovery backups and all
+nine image writes were verified, and both running build descriptors match the
+package.
+
+Package: `dist/cerberus-unchained-0.1.0-dev.rev169-20261108T144745Z`.
+Manifest SHA-256:
+`4774dc94d38f0f07005becaa653c35780069031f7a07da32460185e992a7cfbe`.
+Application sizes: S3 2,504,736 bytes, C5 1,757,008 bytes,
+temporary bridge 255,280 bytes.
+
+Two idle captures 60.4 seconds apart show S3 internal free
+128,536 bytes, largest internal block 86,016,
+PSRAM free 1,426,140 and 10 tasks at the settled sample.
+C5 free heap is 48,228 bytes with one boot.
+Relative to the rev168 baseline, this adds 5,376 bytes of S3 idle internal
+memory cost and 4,496 bytes on C5; sampled PSRAM and task counts are unchanged.
+Both new-build samples have the same free heap values. This is the cost of
+retaining the additional message evidence, not a measured throughput gain.
+SPI exchanges advanced from 71 to 358;
+the monitored timeout/fallback/error counters did not increase. The SD card
+is mounted and no previous reset fault is reported. The console's lowest
+observed stack margin during diagnostics is 1040 bytes;
+this is not a loaded Remote ID stack measurement.
+
+No RF session, recording or live upload was started for these installation
+checks. Physical message reception, UI operation and loaded performance
+remain pending. The optional live workspace was not opened during idle
+sampling. Full Marauder parity is not complete.
