@@ -6,7 +6,7 @@
 #include <string.h>
 #include "wifi_target_view.h"
 
-enum { UI_PAGE_WIFI=1, UI_WIFI_MODE_MENU=2, UI_WIFI_MODE_DUAL, UI_WIFI_MODE_MULTISSID,
+enum { UI_PAGE_WIFI=1, UI_WIFI_MODE_MENU=2, UI_WIFI_MODE_AUTH, UI_WIFI_MODE_DUAL, UI_WIFI_MODE_MULTISSID,
     UI_WIFI_MODE_PINESCAN, UI_WIFI_MODE_FIELD_SURVEY, UI_WIFI_MODE_STATS, UI_WIFI_MODE_PACKET_MONITOR,
     UI_WIFI_MODE_BASELINE, UI_WIFI_MODE_DEFENSE, UI_WIFI_MODE_CONNECTION, UI_WIFI_MODE_CHANNELS_24,
     UI_WIFI_MODE_LIST, UI_WIFI_MODE_TARGET, UI_WIFI_MODE_PROBE_SNIFF, UI_WIFI_MODE_CHANNEL_ANALYZER };
@@ -36,7 +36,6 @@ static void dual_wifi_live_tap(uint16_t x,uint16_t y) { (void)x;(void)y;++tap_co
 static void dual_wifi_ui_leave(void) { ++dual_leaves; pending_start=false; }
 static int sentinel_hub_hit_test(int hub,uint16_t x,uint16_t y) { (void)x;(void)y;assert(hub==SENTINEL_HUB_WIFI);return (int)menu_item; }
 static void open_learning_lesson(int value) { (void)value; }
-static void sae_ui_open(bool from_hub) { assert(from_hub); }
 static void multissid_enter(void) {}
 static void pinescan_enter(void) {}
 static int refresh_wifi_scan_status(void) { ++scan_refreshes; return 0; }
@@ -68,6 +67,8 @@ int main(void)
     reset();root_wifi_tap(10,10);assert(dual_opens==1&&pending_start&&wifi_mode==UI_WIFI_MODE_DUAL);
     root_wifi_tap(20,445);assert(tap_count==1);root_touch(20,445);assert(tap_count==2);
     ui_capability_blocked=true;root_touch(20,445);assert(tap_count==2);
+    reset();menu_item=12;root_wifi_tap(10,10);
+    assert(wifi_mode==UI_WIFI_MODE_AUTH&&!pending_start&&!dual_opens&&!dual_leaves&&!scan_refreshes&&!surveys);
     reset();menu_item=10;root_wifi_tap(10,10);
     assert(wifi_mode==UI_WIFI_MODE_PROBE_SNIFF&&probe_opens==1&&!pending_start&&
         !dual_opens&&!dual_leaves&&!scan_refreshes&&!surveys);
