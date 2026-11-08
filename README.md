@@ -29,25 +29,31 @@ reference revisions and the distinction between adapted code and independently
 implemented workflows. This acknowledgment does not change any license or
 imply upstream endorsement of Cerberus Unchained.
 
-**Local development checkpoint:** `0.1.0-dev.rev162` is installed on the
-development board with onboard C5 capability 83. Passive **Wi-Fi Fox Hunt**
-opens from selected AP, observed-client, PineScan and MultiSSID details. C5
-tracks the transmitter and searches after signal loss; S3 validates the
-readings, retains history and handles the screen. Channel Analyzer cleanup
-errors also remain visible while release is retried.
-[Tracker behavior and installation evidence](docs/WIFI_FOX_HUNT.md)
+**Development source:** `0.1.0-dev.rev170`, with onboard C5 capability 90,
+adds **Scan → AP/CLIENT SURVEY**. S3 receives 2.4 GHz while C5 receives 5 GHz;
+stable AP/client lists show separate traffic directions, signal ages and
+receiver coverage. Stop retains the results and releases both radios.
+**SAVE REPORT** writes a stopped local CSV evidence report.
+[Survey behavior and validation](docs/WIFI_AP_CLIENT_SURVEY.md)
 
-All 179 registered host suites and five native targets passed on unchanged
-inputs. All nine image writes verified, and both live build fingerprints
-match the package. Two idle captures 72.9 seconds apart showed mounted SD,
-stable free memory and unchanged monitored SPI error counters. The saved
-upload profile loads. Physical tracking/reacquisition, touchscreen navigation,
-radio handoffs and sustained-use checks remain pending.
+All 207 registered host suites and five native targets passed at `5f49203`
+with unchanged inputs. Rev170 has not been packaged or installed. The latest
+verified installed pair is **rev169**, from `e325a70` with C5 capability 89:
+200 host suites, five native targets, matched packaging, recovery backups and
+nine verified image writes passed. Both live build fingerprints match, and
+60.4 seconds of idle samples showed no new monitored SPI errors. Physical
+reception, touchscreen navigation, saved-report readback, radio handoffs and
+loaded performance remain pending for the newer receive tools.
 
 The pair also includes the [Channel Activity graph](docs/CHANNEL_ACTIVITY.md),
 [Channel Analyzer](docs/CHANNEL_ANALYZER.md),
 [GPS qualification and radio cleanup retries](docs/GPS_AND_RADIO_RECOVERY.md),
 and [recovery after early S3 Wi-Fi startup failures](docs/SCAN_STARTUP_RECOVERY.md).
+Later additions include [Wi-Fi Fox Hunt](docs/WIFI_FOX_HUNT.md),
+[saved Bluetooth lookup](docs/SAVED_BLE_LOOKUP.md), scoped
+[EAPOL](docs/WIFI_EAPOL_MONITOR.md) and [SAE](docs/WIFI_SAE_MONITOR.md) monitors,
+[SSID Lists](docs/SSID_LISTS.md), [Frame Capture](docs/WIFI_CAPTURE_DESIGN.md),
+and [Remote ID message details](docs/REMOTE_ID_MESSAGES.md).
 These are specific implemented improvements; complete Marauder parity remains
 open in the coverage ledger.
 
@@ -82,20 +88,16 @@ WDGWars attempt failed during the TLS handshake. Live Wardrift uploads, long
 drives and full Marauder feature parity remain open. [CSV readback](docs/DUAL_RADIO_REV138.md) ·
 [Rev144 device checks](docs/DUAL_RADIO_REV144.md)
 
-The published experimental release documented here is **`0.1.0-dev.rev144`**,
-paired with onboard C5 firmware revision 75 and protocol 2.
-[Install rev144 with the web flasher](https://463n7.github.io/Cerberus-unchained/)
-or [download its matched package and checksums](https://github.com/463N7/Cerberus-unchained/releases/tag/v0.1.0-dev.rev144).
-The guided installer programs the bridge, C5 and S3 using one USB cable in
-desktop Chrome or Edge. The release images match the package used for the
-owner's rev144 acceptance checks: all nine image writes and 29 paired
-installation/startup checks passed, including mounted SD, buffered display, advancing processor uptimes and
-clean startup. This does not establish full radio, GPS or upload-service acceptance.
-The [SD assets and copy instructions](https://463n7.github.io/Cerberus-unchained/#sd-assets)
-are directly below the flasher; the existing rev136 SD pack is also compatible.
+The historical **rev144** release used onboard C5 firmware revision 75 and
+protocol 2. Its retained images match the package used for the documented
+nine verified writes and 29 paired installation/startup checks. Those checks
+do not establish acceptance of the current development source. The original
+`463N7/Cerberus-unchained` repository returned 404 when checked on 2026-11-08;
+its old release and flasher links should not be treated as current install
+instructions. This contribution publishes no new release or flasher deployment.
 See the [rev144 checkpoint](docs/DUAL_RADIO_REV144.md) and
-[flasher guide](docs/WEB_FLASHER.md). The prior rev136 release remains available.
-Sentinel 1.0.0 binaries are not Unchained firmware.
+[flasher guide](docs/WEB_FLASHER.md) for the historical packaging and installer
+design. Sentinel 1.0.0 binaries are not Unchained firmware.
 
 ## Build and validation
 

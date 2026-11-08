@@ -7,8 +7,9 @@ workspace with S3 2.4 GHz and C5 5 GHz reception, stable AP/client lists and
 direction-specific details. Immutable copying leaves both receivers running;
 Stop takes final snapshots and releases their sessions. Back and sleep drain
 ownership before the workspace is freed. The ordinary finite-scan publication
-described below remains unchanged. Rev170 source validation is in progress;
-physical reception, navigation, saved-report readback and full upstream parity
+described below remains unchanged. Rev170 source `5f49203` passed all 207 host
+suites and five native targets; packaging and installation remain pending.
+Physical reception, navigation, saved-report readback and full upstream parity
 remain open.
 
 ## Rev93 source contribution

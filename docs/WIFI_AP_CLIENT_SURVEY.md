@@ -31,8 +31,9 @@ reusing an identity. A client observation can precede its AP's beacon.
 
 STOP closes reception, obtains the final available snapshots and releases both
 backends. The stopped results remain visible. BACK TO SCAN and sleep cancel
-partial transfers and drain only this workspace's exact owned sessions before
-freeing it. Neither wake nor opening the page starts reception. SAVE SD is
+partial transfers and drain only this workspace's exact owned sessions.
+Back then frees the workspace; sleep retains its results. Neither wake nor
+opening the page starts reception. SAVE REPORT is
 available after cleanup and writes a bounded local evidence report through the
 existing Wi-Fi report writer. Binary SSIDs are hex encoded. This report uses
 receiver uptime and transfer anchors; it is not a GPS/WiGLE recording or PCAP.
@@ -83,14 +84,20 @@ Focused host fixtures cover the actual collector, native receiver, C5 service
 and wire reader, stable model, renderer and coordinator. They include late
 callbacks, channel failure, table replacement, counter exhaustion, country
 intersection, lost control replies, foreign owners, malformed images, lease
-expiry, clock rollback, partial-copy cancellation and repeated runs. Native
-build, matched-package and installation evidence will be recorded below after
-those gates finish. Physical dual-band reception, touchscreen navigation,
+expiry, clock rollback, partial-copy cancellation and repeated runs. Physical
+dual-band reception, touchscreen navigation,
 stopped report readback, sleep/wake, the next ordinary Wi-Fi/BLE scan and loaded
 performance remain pending.
 
 ## Checkpoint
 
-Rev170 is under source validation. Rev169 remains the installed baseline until
-the matched rev170 package, fresh recovery backups and write verification have
-completed. No live survey or active RF test has been started for this change.
+Rev170 source `5f49203` passed all 207 host suites and five native targets
+(S3, onboard C5, USB bridge, expansion WROOM and expansion XIAO). The host and
+native receipts cover the same 1,506 unchanged input fingerprints. The source
+checkpoint is tagged `checkpoint/rev170-host-validated`; later contribution
+documentation changes do not alter those firmware inputs.
+
+Rev170 has not been packaged or installed. Rev169 remains the verified
+installed baseline. Matched packaging, fresh recovery backups, verified writes
+and physical reception/navigation are still required for rev170 acceptance.
+No live survey or active RF test has been started for this change.

@@ -268,8 +268,8 @@ parity gap. SAE Commit Flood and Evil Portal remain unavailable in rev43.
 
 All five native targets, the guarded C5 raw-link check, AP/selection/receiver
 host checks, nine frozen image hashes and paired S3/C5 boot checks passed.
-The attached S3/C5 pair identifies as `14:63:93:36:78:f4` and
-`14:c1:9f:6f:53:30`; C5 reports firmware 43 and capabilities `0x7fffffff`.
+The attached S3/C5 pair identifies as `<S3 device identifier>` and
+`<C5 device identifier>`; C5 reports firmware 43 and capabilities `0x7fffffff`.
 The SD card is mounted and boot radio jobs are idle. The owner's selected
 channel-10 test AP then produced these live diagnostics:
 
@@ -1117,7 +1117,7 @@ failures remain unresolved; this work does not establish an attack repair.
 ## 2026-10-30: rev59 Find My discovery evidence installed
 
 Installed the frozen `candidate-ble-findmy-provenance` S3 package on verified
-Cerberus COM76 / `14:63:93:36:78:f4`; all three write hashes passed. Every C5
+Cerberus COM76 / `<S3 device identifier>`; all three write hashes passed. Every C5
 image is byte-identical to the retained paired rev56/C5 50 installation. The
 five-target stable-input build, matched three-target package and final S3
 READY interrupt gate passed. NVS, PHY and SD were preserved. Exact images and
@@ -1594,7 +1594,7 @@ and four hardware-limited symbols; it does not implement a new Flock
 Wardriving feature. Existing owner evidence remains historical.
 
 Optional current-build acceptance remains: normal Wi-Fi scan, WITHIN 30S
-expiration, ALL AGES restoration and selecting Yasin Family Home. Physical
+expiration, ALL AGES restoration and selecting owner test AP. Physical
 callback coverage, touchscreen routing, repeated transitions and concurrent
 Wi-Fi/BLE operation remain pending. Prior Wi-Fi NO MEM, Association Sleep
 and Bad Message reports remain unresolved. No attack repair or full Marauder

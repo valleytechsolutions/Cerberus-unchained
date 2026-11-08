@@ -7,7 +7,9 @@ to S3 and passive 5 GHz reception to C5. Both receivers continue collecting
 while S3 incrementally copies immutable results, maintains stable selections
 and presents independent direction counts and ages. Stop and Back release
 exact owned sessions; neither opening the workspace nor waking starts RF.
-Source validation is in progress. Rev169 remains the installed baseline;
+All 207 host suites and five native targets passed at source `5f49203`, with
+unchanged inputs. Rev170 has not been packaged or installed. Rev169 remains
+the verified installed baseline;
 physical reception, navigation, saved-report readback and loaded performance
 remain open.
 
