@@ -32,6 +32,8 @@ static bool sae_ui_is_open(void){return false;}
 static void sae_ui_close(bool back){(void)back;CHECK(false);}
 static bool eapol_ui_is_open(void){return false;}
 static void eapol_ui_close(bool back){(void)back;CHECK(false);}
+static bool frame_ui_is_open(void){return false;}
+static void frame_ui_close(bool back){(void)back;CHECK(false);}
 static unsigned wifi_mode,ble_mode;
 static bool dual_wifi_return_to_view,ble_attack_capture_valid,ui_capability_blocked,learning_tool_active;
 static const char *ui_capability_blocked_reason;

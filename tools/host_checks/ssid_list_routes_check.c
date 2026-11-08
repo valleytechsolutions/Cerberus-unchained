@@ -151,6 +151,8 @@ static esp_err_t draw_current_page(void) { return draw_detail_page(); }
  * from ui.c. Any unrelated archive/radio route is a fixture failure. */
 static bool sae_ui_is_open(void) { return false; }
 static bool eapol_ui_is_open(void) { return false; }
+static bool frame_ui_is_open(void) { return false; }
+static void frame_ui_close(bool back) { (void)back; CHECK(false); }
 static void sae_ui_close(bool back) { (void)back; CHECK(false); }
 static void eapol_ui_close(bool back) { (void)back; CHECK(false); }
 static void wifi_fox_hunt_back(void) { CHECK(false); }

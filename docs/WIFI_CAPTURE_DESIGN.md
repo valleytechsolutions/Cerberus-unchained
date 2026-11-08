@@ -63,8 +63,9 @@ EAPOL header. Protected, fragmented and A-MSDU data cannot supply a plaintext
 EAPOL claim. Retry bits count observations; they do not deduplicate captures.
 
 A bounded view retains **16 recent disconnect-evidence tuples** with BSSID,
-transmitter, receiver, subtype, channel, RSSI and source/delivery ages. Matching
-tuples accumulate observations; new tuples replace the least recently seen
+transmitter, receiver, subtype, channel, RSSI, C5 source timestamps and S3
+delivery ages. Matching tuples accumulate observations; new tuples replace
+the least recently seen
 slot and increment an explicit replacement count. Admission sequence changes
 reset row age when a slot is reused. Plaintext reason codes require a clear,
 complete, unfragmented body; otherwise the reason is unknown. Public frame
@@ -125,6 +126,10 @@ radio boot/session ID and record sequence in a sidecar index if relative timing
 is needed. GPS absence does not prevent capture; it means no GPS-derived UTC.
 Until C5 and S3 clock offset and error are measured, do not convert one radio's
 monotonic count using the other radio's wall clock.
+
+The current FRAME CAPTURE path writes untimed Simple Packet Blocks and does
+not write a timing sidecar. Verified-UTC Enhanced Packet Blocks are a codec
+capability, not an enabled feature of this capture path.
 
 `original_length` is the raw 802.11 length, excluding the synthetic radiotap
 prefix. The codec enforces a 4096-byte maximum captured frame and a 65,535-byte
