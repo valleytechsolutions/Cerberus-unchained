@@ -12,5 +12,7 @@ env = dict(os.environ, ZIG_GLOBAL_CACHE_DIR=str(out / 'zig-cache'))
 subprocess.run([sys.executable, '-m', 'ziglang', 'cc', '-std=c11', '-O1', '-UNDEBUG',
     '-Wall', '-Wextra', '-Werror', '-I', str(root / 'shared'),
     str(root / 'shared/wifi_eapol_analysis.c'),
+    str(root / 'shared/wifi_capture_plan.c'), str(root / 'shared/wifi_packet_count.c'),
+    str(root / 'shared/wifi_beacon_analysis.c'),
     str(root / 'tools/host_checks/wifi_eapol_analysis_check.c'), '-o', str(exe)], check=True, env=env)
 subprocess.run([str(exe)], check=True, env=env)

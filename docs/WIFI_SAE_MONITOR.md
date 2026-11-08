@@ -1,8 +1,9 @@
 # Passive SAE monitor
 
 Rev165 adds live SAE observations and planned channel scanning to the existing
-capture service. Open **Scan -> Wi-Fi -> TOOLS -> SAE** without first selecting
-an AP. The **SAE** button is in the Wi-Fi tools footer. For a selected AP, open
+capture service. From rev167, open **Scan -> Wi-Fi -> TOOLS -> AUTH RX ->
+SAE MONITOR** without first selecting an AP. AUTH RX is the shared idle
+authentication-monitor chooser in the Wi-Fi tools footer. For a selected AP, open
 **CAPTURE THIS AP** and cycle the existing selector to **SAE MONITOR**. Both
 routes open the same page; neither starts RF reception until **START**.
 
@@ -15,7 +16,9 @@ routes open the same page; neither starts RF reception until **START**.
 | SELECTED APS | Up to 32 exact BSSIDs and the union of their selected channel hints |
 | THIS AP | The copied AP BSSID and channel; available from the AP route |
 
-**CHOOSE APS** reuses the AP picker and returns to the monitor. The identities
+**CHOOSE APS** reuses the AP picker and returns to the monitor. From rev167,
+opening the picker presents the held inventory paused; only an explicit
+**SCAN** starts a new sweep. DONE also works with an empty selection. The identities
 and channel plan are copied at Start, so later scan-list changes cannot alter
 a run. Selected channels are historical hints, not a guarantee that an AP
 remains there. Options changed after Stop apply to the next run.

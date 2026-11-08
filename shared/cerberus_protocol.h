@@ -25,7 +25,7 @@ extern "C" {
 
 #define CERBERUS_PROTOCOL_VERSION_V1 1U
 #define CERBERUS_PROTOCOL_VERSION 2U
-#define CERBERUS_C5_FIRMWARE_VERSION 86U
+#define CERBERUS_C5_FIRMWARE_VERSION 87U
 #define CERBERUS_SPI_MAGIC 0x43455242UL
 #define CERBERUS_SPI_TRANSFER_SIZE 32U
 #define CERBERUS_SPI_FRAME_PAYLOAD_SIZE 22U
@@ -557,6 +557,7 @@ typedef struct __attribute__((packed)) {
  * padded to 20 bytes; the consumer copies min(20, length-offset) bytes. */
 #define CERBERUS_WIFI_CAPTURE_MIN_FIRMWARE 45U
 #define CERBERUS_WIFI_EAPOL_MIN_FIRMWARE 85U
+#define CERBERUS_WIFI_EAPOL_PLAN_MIN_FIRMWARE 87U
 #define CERBERUS_WIFI_CAPTURE_PLAN_MIN_FIRMWARE 86U
 #define CERBERUS_WIFI_SAE_MONITOR_MIN_FIRMWARE 86U
 #define CERBERUS_WIFI_CAPTURE_SAE_MIN_FIRMWARE 48U
@@ -578,7 +579,8 @@ enum {
     /* v50: channel=0, mode=BEACON only, no BSSID filter. The C5 cycles
      * SDK-supported 2.4/5 GHz channels without restarting generation. */
     CERBERUS_WIFI_CAPTURE_FLAG_HOP = 2U,
-    /* v86: HOP|PLAN, SAE only, channel zero, no single-BSSID flag. */
+    /* v86: HOP|PLAN, SAE/250 ms, channel zero, no single-BSSID flag.
+     * v87 also permits EAPOL with optional BEACON context at 2000 ms. */
     CERBERUS_WIFI_CAPTURE_FLAG_PLAN = 4U,
 };
 enum {
@@ -603,7 +605,7 @@ typedef struct __attribute__((packed)) {
     uint8_t pending;
     uint32_t accepted;
     uint32_t dropped_full;
-    uint16_t dropped_other;
+    uint16_t dropped_other; /* v87 also counts deferred EAPOL beacon context. */
     int32_t error_code;
 } cerberus_wifi_capture_status_payload_t;
 typedef struct __attribute__((packed)) {
@@ -632,7 +634,7 @@ typedef struct __attribute__((packed)) {
     uint32_t generation;
 } cerberus_wifi_capture_stop_request_t;
 
-/* Planned SAE capture keeps the legacy START/frame-transfer layout. An
+/* Planned capture keeps the legacy START/frame-transfer layout. An
  * all-zero PLAN request queries staging without modifying or owning RF. */
 enum {
     CERBERUS_WIFI_CAPTURE_PLAN_EMPTY,

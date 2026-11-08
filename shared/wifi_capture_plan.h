@@ -6,6 +6,7 @@
 #define CERBERUS_WIFI_CAPTURE_PLAN_MAX_TARGETS 32U
 #define CERBERUS_WIFI_CAPTURE_PLAN_CHANNELS 42U
 #define CERBERUS_WIFI_CAPTURE_PLAN_DWELL_MS 250U
+#define CERBERUS_WIFI_CAPTURE_PLAN_EAPOL_DWELL_MS 2000U
 
 enum {
     CERBERUS_WIFI_CAPTURE_PLAN_BOTH,
@@ -27,6 +28,10 @@ uint64_t cerberus_wifi_capture_plan_band_mask(uint8_t band);
 uint8_t cerberus_wifi_capture_plan_channel(unsigned index);
 uint64_t cerberus_wifi_capture_plan_channel_bit(uint8_t channel);
 bool cerberus_wifi_capture_plan_mask_valid(uint64_t mask);
+bool cerberus_wifi_capture_plan_dwell_valid(uint16_t dwell_ms);
+/* SAE keeps its 250 ms dwell. Passive EAPOL, with optional beacon context,
+ * uses 2000 ms; neither family may silently inherit the other's timing. */
+bool cerberus_wifi_capture_plan_mode_valid(uint8_t mode_mask, uint16_t dwell_ms);
 bool cerberus_wifi_capture_plan_valid(const cerberus_wifi_capture_plan_t *);
 /* Adds a unique BSSID and unions its observed channel hint. Repeated BSSIDs
  * on different channels keep one target. Failure never modifies the plan. */

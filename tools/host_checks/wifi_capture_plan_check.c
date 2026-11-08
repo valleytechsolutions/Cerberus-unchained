@@ -1,5 +1,6 @@
 #undef NDEBUG
 #include "wifi_capture_plan.h"
+#include "cerberus_protocol.h"
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
@@ -14,6 +15,15 @@ static void rejected_unchanged(cerberus_wifi_capture_plan_t *plan,
 
 int main(void)
 {
+    for(unsigned dwell=0;dwell<=UINT16_MAX;++dwell)
+        assert(cerberus_wifi_capture_plan_dwell_valid((uint16_t)dwell)==(dwell==250U||dwell==2000U));
+    const uint16_t dwells[]={0,249,250,251,1999,2000,2001,UINT16_MAX};
+    for(unsigned mode=0;mode<=UINT8_MAX;++mode)for(unsigned d=0;d<sizeof(dwells)/sizeof(*dwells);++d){
+        bool expected=(mode==CERBERUS_WIFI_CAPTURE_MODE_SAE_COMMIT&&dwells[d]==250U)||
+            ((mode==CERBERUS_WIFI_CAPTURE_MODE_EAPOL||mode==(CERBERUS_WIFI_CAPTURE_MODE_EAPOL|
+                CERBERUS_WIFI_CAPTURE_MODE_BEACON))&&dwells[d]==2000U);
+        assert(cerberus_wifi_capture_plan_mode_valid((uint8_t)mode,dwells[d])==expected);
+    }
     static const uint8_t channels[] = {
         1,2,3,4,5,6,7,8,9,10,11,12,13,14,36,40,44,48,52,56,60,64,
         100,104,108,112,116,120,124,128,132,136,140,144,149,153,157,161,165,169,173,177
@@ -107,6 +117,11 @@ int main(void)
     for (unsigned i = 0U; i < sizeof(channels); ++i)
         assert(cerberus_wifi_capture_plan_matches(&plan, address, channels[i]));
     assert(!cerberus_wifi_capture_plan_matches(&plan, address, 32U));
+    plan.dwell_ms=CERBERUS_WIFI_CAPTURE_PLAN_EAPOL_DWELL_MS;
+    assert(cerberus_wifi_capture_plan_valid(&plan));
+    assert(cerberus_wifi_capture_plan_add_target(&plan,address,36U));
+    assert(plan.dwell_ms==2000U&&plan.target_count==1U&&plan.channel_mask==all);
+    rejected_unchanged(&plan,zero,36U);
     printf("PASS: capture plan channels, bands, target union and unchanged rejection (%zu bytes)\n", sizeof(plan));
     return 0;
 }

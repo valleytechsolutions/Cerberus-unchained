@@ -77,12 +77,14 @@ esp_err_t cerberus_s3_capture_start_options_generation(
     if (start_error != ESP_OK) return start_error;
     options = *request;
     assert(options.observer && options.observer_context);
-    assert(options.mode_mask == CERBERUS_WIFI_CAPTURE_MODE_EAPOL);
-    assert(options.filter_bssid && !options.hopping && !memcmp(options.bssid, ap, 6U));
+    assert(options.mode_mask == (CERBERUS_WIFI_CAPTURE_MODE_EAPOL | CERBERUS_WIFI_CAPTURE_MODE_BEACON));
+    if (options.plan) assert(options.hopping && !options.filter_bssid && !options.channel);
+    else assert(!options.hopping && (!options.filter_bssid || !memcmp(options.bssid, ap, 6U)));
     capture = (cerberus_s3_capture_status_t){
         .generation = ++next_generation, .state = CERBERUS_S3_CAPTURE_RUNNING,
         .busy = true, .channel = options.channel, .mode_mask = options.mode_mask,
-        .filter_bssid = true, .save_pcap = options.save_pcap,
+        .filter_bssid = options.filter_bssid, .save_pcap = options.save_pcap,
+        .hopping = options.hopping, .planned = options.plan != NULL,
     };
     *generation = capture.generation;
     if (finish_during_start) {
@@ -150,6 +152,110 @@ static void send_m1(uint32_t generation, uint32_t sequence, uint8_t station,
     assert(!memcmp(frame, saved, sizeof(frame)));
 }
 
+static void observe(uint32_t generation, uint32_t sequence, uint64_t source_us,
+    uint8_t channel, const uint8_t *frame, size_t length)
+{
+    cerberus_s3_capture_observation_t metadata = {.generation=generation,.sequence=sequence,
+        .observed_us=source_us,.channel=channel,.rssi_dbm=-39};
+    options.observer(&metadata,frame,length,options.observer_context);
+}
+
+static size_t beacon(uint8_t frame[160], const uint8_t bssid[6])
+{
+    memset(frame,0,160); frame[0]=0x80; memset(frame+4,0xff,6);
+    memcpy(frame+10,bssid,6); memcpy(frame+16,bssid,6);
+    frame[34]=0x11; frame[36]=0; frame[37]=4;
+    memcpy(frame+38,"A\0\r\xff",4); frame[42]=3; frame[43]=1; frame[44]=36;
+    return 45;
+}
+
+static void planned_and_context(void)
+{
+    const uint8_t other_ap[6]={0x22,1,2,3,4,5};
+    cerberus_wifi_capture_plan_t plan;
+    cerberus_wifi_capture_plan_clear(&plan);
+    plan.dwell_ms=CERBERUS_WIFI_CAPTURE_PLAN_EAPOL_DWELL_MS;
+    assert(cerberus_wifi_capture_plan_add_target(&plan,ap,6));
+    assert(cerberus_wifi_capture_plan_add_target(&plan,other_ap,36));
+    const cerberus_wifi_capture_plan_t frozen=plan;
+    cerberus_s3_eapol_options_t request={.plan=&plan};
+    unsigned old_starts=starts;
+    request.channel=6; assert(cerberus_s3_eapol_start_options(&request)==ESP_ERR_INVALID_ARG);
+    request.channel=0; request.filter_bssid=true;
+    assert(cerberus_s3_eapol_start_options(&request)==ESP_ERR_INVALID_ARG);
+    request.filter_bssid=false; plan.dwell_ms=250;
+    assert(cerberus_s3_eapol_start_options(&request)==ESP_ERR_INVALID_ARG);
+    plan=frozen; firmware=86;
+    assert(cerberus_s3_eapol_start_options(&request)==ESP_ERR_NOT_SUPPORTED);
+    assert(starts==old_starts&&!live); firmware=CERBERUS_WIFI_EAPOL_PLAN_MIN_FIRMWARE;
+    assert(cerberus_s3_eapol_start_options(&request)==ESP_OK);
+    assert(options.hopping&&options.plan&&options.plan!=&plan&&!options.filter_bssid&&!options.save_pcap);
+    assert(state().planned&&state().capture.planned&&state().capture.hopping&&state().channel==0);
+    uint32_t generation=state().generation;
+    memset(&plan,0,sizeof(plan));
+    cerberus_s3_eapol_status_t current=state();
+    assert(!memcmp(&current.plan,&frozen,sizeof(frozen)));
+    assert(!memcmp(options.plan,&frozen,sizeof(frozen)));
+    uint8_t frame[160]; size_t length;
+    local_clock=70000000; length=m1_frame(frame,1,1); observe(generation,1,1000,6,frame,length);
+    local_clock+=500000; memcpy(frame+10,other_ap,6); observe(generation,2,2000,36,frame,length);
+    assert(state().summary.count==2&&state().summary.keys==2);
+    cerberus_s3_eapol_row_t rows[4]; cerberus_s3_eapol_context_row_t contexts[4];
+    cerberus_s3_eapol_page_t page;
+    assert(cerberus_s3_eapol_page(0,rows,2,&page)==ESP_OK&&page.copied==2);
+    assert(!memcmp(rows[0].evidence.bssid,ap,6)&&!memcmp(rows[1].evidence.bssid,other_ap,6));
+    assert(!memcmp(rows[0].evidence.station,rows[1].evidence.station,6));
+    local_clock+=500000; length=beacon(frame,ap); observe(generation,3,3000,6,frame,length);
+    assert(state().summary.keys==2&&state().summary.beacons==1&&state().summary.context_count==1);
+    assert(cerberus_s3_eapol_page(0,rows,2,&page)==ESP_OK);
+    assert(rows[0].last_received_age_ms==1000&&rows[1].last_received_age_ms==500);
+    assert(cerberus_s3_eapol_context_page(0,contexts,2,&page)==ESP_OK&&page.copied==1);
+    assert(contexts[0].evidence.sequence==3&&contexts[0].evidence.last_us==3000);
+    assert(contexts[0].last_received_age_ms==0&&contexts[0].evidence.channel==6&&contexts[0].evidence.advertised_channel==36);
+    assert(contexts[0].evidence.ssid_length==4&&!memcmp(contexts[0].evidence.ssid,"A\0\r\xff",4));
+    const cerberus_s3_eapol_context_row_t saved_context=contexts[0];
+    local_clock+=250000; observe(generation,3,3000,6,frame,length);
+    observe(generation+1,4,4000,6,frame,length);
+    observe(generation,4,4000,14,frame,length);
+    assert(state().summary.sequence_rejected==1&&state().rejected_provenance==2);
+    assert(cerberus_s3_eapol_context_page(0,contexts,2,&page)==ESP_OK);
+    assert(contexts[0].last_received_age_ms==250&&!memcmp(&saved_context.evidence,&contexts[0].evidence,sizeof(saved_context.evidence)));
+    observe(generation,4,1000,6,frame,length); assert(state().summary.clock_rejected==1);
+    local_clock+=250000; observe(generation,5,4000,6,frame,length);
+    assert(cerberus_s3_eapol_context_page(0,contexts,2,&page)==ESP_OK);
+    assert(contexts[0].last_received_age_ms==0&&contexts[0].first_received_age_ms==500);
+    assert(contexts[0].evidence.frames==2&&contexts[0].evidence.first_sequence==3);
+    local_clock+=250000; length=m1_frame(frame,1,1); observe(generation,6,5000,6,frame,length);
+    assert(cerberus_s3_eapol_page(0,rows,2,&page)==ESP_OK&&rows[0].last_received_age_ms==0);
+    assert(rows[1].last_received_age_ms==1250&&state().summary.keys==3);
+    assert(cerberus_s3_eapol_context_page(0,contexts,2,&page)==ESP_OK&&contexts[0].last_received_age_ms==250);
+    local_clock=-1;
+    assert(cerberus_s3_eapol_context_page(0,contexts,2,&page)==ESP_OK&&contexts[0].last_received_age_ms==UINT32_MAX);
+    local_clock=72000000;
+    assert(cerberus_s3_eapol_context_page(1,contexts,2,&page)==ESP_OK&&!page.copied&&page.total==1);
+    memset(contexts,0x5a,sizeof(contexts)); memset(&page,0x5a,sizeof(page)); fail_lock=true;
+    assert(cerberus_s3_eapol_context_page(0,contexts,2,&page)==ESP_ERR_TIMEOUT);
+    assert(!contexts[0].generation&&!page.generation); fail_lock=false;
+    assert(cerberus_s3_eapol_context_page(0,contexts,5,&page)==ESP_ERR_INVALID_ARG);
+    assert(cerberus_s3_eapol_context_page(0,NULL,1,&page)==ESP_ERR_INVALID_ARG);
+    assert(cerberus_s3_eapol_context_page(0,NULL,0,&page)==ESP_OK&&page.total==1);
+    cerberus_s3_eapol_stop(); assert(state().capture.busy&&cerberus_s3_eapol_release()==ESP_ERR_INVALID_STATE);
+    finish(); assert(state().summary.keys==3&&state().summary.context_count==1&&!state().capture.busy);
+    plan=frozen; fail_alloc=true;
+    assert(cerberus_s3_eapol_start_options(&request)==ESP_ERR_NO_MEM); fail_alloc=false;
+    assert(state().generation==generation&&state().summary.beacons==2&&state().summary.keys==3);
+    request.save_pcap=true; assert(cerberus_s3_eapol_start_options(&request)==ESP_OK);
+    assert(options.save_pcap&&!state().summary.count&&!state().summary.context_count);
+    finish(); assert(cerberus_s3_eapol_release()==ESP_OK&&!live);
+    /* A fixed channel may deliberately include all infrastructure BSSIDs. */
+    request=(cerberus_s3_eapol_options_t){.channel=6};
+    assert(cerberus_s3_eapol_start_options(&request)==ESP_OK&&!options.filter_bssid&&!options.plan);
+    generation=state().generation; length=m1_frame(frame,1,1); memcpy(frame+10,other_ap,6);
+    observe(generation,1,100,6,frame,length);
+    assert(state().summary.count==1&&!state().filter_bssid&&!state().planned);
+    finish(); assert(cerberus_s3_eapol_release()==ESP_OK&&!live);
+}
+
 int main(void)
 {
     cerberus_s3_eapol_status_t status;
@@ -167,7 +273,9 @@ int main(void)
     assert(!starts && !status_queries);
     assert(cerberus_s3_eapol_start(6U, ap, false) == ESP_ERR_NOT_SUPPORTED);
     assert(!allocated && !starts);
-    firmware = CERBERUS_WIFI_EAPOL_MIN_FIRMWARE;
+    firmware = 86U;
+    assert(cerberus_s3_eapol_start(6U, ap, false) == ESP_ERR_NOT_SUPPORTED && !allocated);
+    firmware = CERBERUS_WIFI_EAPOL_PLAN_MIN_FIRMWARE;
     peer_error = ESP_ERR_TIMEOUT;
     assert(cerberus_s3_eapol_start(6U, ap, false) == ESP_ERR_TIMEOUT && !allocated);
     peer_error = ESP_OK;
@@ -302,7 +410,8 @@ int main(void)
     assert(cerberus_s3_eapol_release() == ESP_OK && !live && capture.busy);
     finish();
     assert(cerberus_s3_eapol_release() == ESP_OK && !state().generation);
-    assert(allocated == freed && largest_store < 32768U);
-    printf("EAPOL session: scoped ownership, retained evidence, source/delivery clocks, cap85, errors; %zu-byte PSRAM store\n", largest_store);
+    planned_and_context();
+    assert(allocated == freed && largest_store <= 6144U);
+    printf("EAPOL session: scoped ownership, retained evidence, source/delivery clocks, cap87, errors; %zu-byte PSRAM store\n", largest_store);
     return 0;
 }

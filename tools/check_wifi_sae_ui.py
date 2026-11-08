@@ -40,18 +40,21 @@ at = ui.index("        bool capture_visible =")
 end = ui.index("        bool pinescan_visible =", at)
 routes += "static void route_tick(uint32_t now_ms,bool screen_asleep){\n" + ui[at:end] + "}\n"
 at = ui.index("static void handle_wifi_tap(uint16_t x, uint16_t y)\n{")
-routes += "static void route_tap(uint16_t x,uint16_t y){\n" + block("if (wifi_mode == UI_WIFI_MODE_CAPTURE) {", at) + "\n}\n"
+routes += "static void route_tap(uint16_t x,uint16_t y){\n" + block("if (wifi_mode == UI_WIFI_MODE_AUTH)", at) + "\n" + block("if (wifi_mode == UI_WIFI_MODE_CAPTURE) {", at) + "\n}\n"
 at = ui.index("if (capture_back())")
 routes += "static void route_back(void){\n" + ui[at:ui.index("            } else if", at)] + "}\n"
 live = (root / "s3_main/main/sentinel_live_ui.h").read_text()
-entry = ui[ui.index("        case 12: sae_ui_open"):].split("\n",1)[0]
+entry = ui[ui.index("        case 12: wifi_mode = UI_WIFI_MODE_AUTH;"):].split("\n",1)[0]
 routes += "static void route_menu(uint16_t x,uint16_t y){switch(sentinel_hub_hit_test(SENTINEL_HUB_WIFI,x,y)){\n" + entry + "\ndefault:break;}}\n"
 at = ui.index("} else if (current_page == UI_PAGE_WIFI && wifi_mode == UI_WIFI_MODE_LIST && wifi_attack_selecting)")
 routes += "static void route_picker_back(void){\n" + block("if (sae_ui_selecting)",at) + "\n}\n"
 # Compile the actual selection-purpose branch and label expression.
-label = live[live.index("live_view.tools_label=sae_ui_selecting"):].split("\n",1)[0]
-done = live[live.index("if(sae_ui_selecting)sae_ui_selection_done();"):].split("\n",1)[0]
+label = live[live.index("live_view.tools_label=(sae_ui_selecting || eapol_ui_selecting)"):].split("\n",1)[0]
+done_at = live.index("if(sae_ui_selecting)sae_ui_selection_done();")
+done = live[done_at:live.index("\n", live.index("else if(eapol_ui_selecting)eapol_ui_selection_done();", done_at))]
 routes += "static void route_picker_done(void){" + done + "}\nstatic const char *route_picker_label(void){" + label + "return live_view.tools_label;}\n"
+routes += "static void route_auth_back(void){\n" + block("if (current_page == UI_PAGE_WIFI && wifi_mode != UI_WIFI_MODE_MENU)", ui.index("if (capture_back())")) + "\n}\n"
+routes += "static const char *route_auth_back_label(void){const char *back_label=\"TARGET\";\n" + block("if (current_page == UI_PAGE_WIFI && wifi_mode != UI_WIFI_MODE_MENU)") + "\nreturn back_label;}\n"
 (out / "sae_routes.h").write_text(routes)
 assert '#include "wifi_sae_ui.h"' in ui
 assert "!ap_busy() && !capture_busy()" in ui
@@ -67,9 +70,11 @@ picker = block("static bool live_wifi_paint_map_current(", source=live) + "\n"
 picker += block("static esp_err_t live_paint(", source=live) + "\n"
 picker += block("static bool wifi_target_toggle_selection(", source=target) + "\n"
 picker += "static void route_picker_row(unsigned row){unsigned action=SENTINEL_VIEW_ROW0+row;unsigned tool=SENTINEL_SCAN_WIFI;uint16_t index=(uint16_t)row;\n"
-picker += block("if (tool == SENTINEL_SCAN_WIFI && (!wifi_attack_selecting || sae_ui_selecting))", source=live) + "\n"
+picker += block("if (tool == SENTINEL_SCAN_WIFI && (!wifi_attack_selecting || (sae_ui_selecting || eapol_ui_selecting)))", source=live) + "\n"
 picker += block("if(wifi_attack_selecting){", source=live) + "\n}\n"
 (out / "sae_picker.h").write_text(picker)
+
+(out / "sae_picker_begin.h").write_text(block("static void auth_monitor_picker_begin(void)", source=live))
 
 env = dict(os.environ, ZIG_GLOBAL_CACHE_DIR=str(out / "zig-global"), ZIG_LOCAL_CACHE_DIR=str(out / "zig-local"))
 exe = out / ("sae-ui.exe" if os.name == "nt" else "sae-ui")

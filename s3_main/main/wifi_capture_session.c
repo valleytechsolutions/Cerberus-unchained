@@ -385,8 +385,8 @@ esp_err_t cerberus_s3_capture_start_options_generation(
     if (!options || !options->mode_mask ||
         (options->mode_mask & ~CERBERUS_WIFI_CAPTURE_MODE_ALL) != 0U ||
         (options->plan && (!options->hopping ||
-            options->mode_mask != CERBERUS_WIFI_CAPTURE_MODE_SAE_COMMIT ||
-            !cerberus_wifi_capture_plan_valid(options->plan))) ||
+            !cerberus_wifi_capture_plan_valid(options->plan) ||
+            !cerberus_wifi_capture_plan_mode_valid(options->mode_mask, options->plan->dwell_ms))) ||
         (options->hopping ? (options->channel != 0U || options->filter_bssid ||
             (!options->plan && options->mode_mask != CERBERUS_WIFI_CAPTURE_MODE_BEACON)) :
             (options->channel == 0U || (options->channel > 14U &&

@@ -14,6 +14,7 @@ static esp_err_t capture_terminal_reason;
 static bool capture_planned,capture_plan_dwell_pending;
 static uint8_t capture_plan_next_index;
 static uint64_t capture_plan_mask;
+static uint16_t capture_plan_dwell_ms;
 static esp_err_t capture_plan_first_error;
 static cerberus_wifi_capture_hop_status_payload_t capture_plan_hop;
 
@@ -64,7 +65,7 @@ static esp_err_t capture_plan_next(void)
     if(capture_plan_dwell_pending&&capture_plan_mask&&
        !(capture_plan_mask&(capture_plan_mask-1U))){
         if(capture_plan_hop.completed_sweeps!=UINT16_MAX)++capture_plan_hop.completed_sweeps;
-        capture_next_hop_ms=(uint32_t)(esp_timer_get_time()/1000LL)+CERBERUS_WIFI_CAPTURE_PLAN_DWELL_MS;
+        capture_next_hop_ms=(uint32_t)(esp_timer_get_time()/1000LL)+capture_plan_dwell_ms;
         return ESP_OK;
     }
     capture_plan_dwell_pending=false;
@@ -100,7 +101,7 @@ static esp_err_t capture_plan_next(void)
         if(error!=ESP_OK)return error;
         capture_plan_hop.applied_mask|=bit;
         capture_plan_dwell_pending=true;
-        capture_next_hop_ms=(uint32_t)(esp_timer_get_time()/1000LL)+CERBERUS_WIFI_CAPTURE_PLAN_DWELL_MS;
+        capture_next_hop_ms=(uint32_t)(esp_timer_get_time()/1000LL)+capture_plan_dwell_ms;
         return ESP_OK;
     }
     return ESP_ERR_INVALID_STATE;
@@ -182,6 +183,7 @@ esp_err_t cerberus_wifi_capture_start(const cerberus_wifi_capture_start_request_
     capture_planned=(request->flags&CERBERUS_WIFI_CAPTURE_FLAG_PLAN)!=0U;
     capture_plan_dwell_pending=false;capture_plan_next_index=0U;
     capture_plan_mask=cerberus_wifi_capture_service_plan_mask();
+    capture_plan_dwell_ms=cerberus_wifi_capture_service_plan_dwell_ms();
     capture_plan_first_error=ESP_OK;
     capture_plan_hop=(cerberus_wifi_capture_hop_status_payload_t){
         .generation=capture_planned?request->generation:0U};

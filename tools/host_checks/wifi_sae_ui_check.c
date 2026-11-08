@@ -19,15 +19,20 @@ static unsigned checks,allocations,freed,starts,stops,releases,old_stops,generic
 static bool oom,masked,hold_stop,prior_live,prior_dual,prior_capture,c5_online=true;
 static esp_err_t start_error,read_error,page_error,release_error;
 static uint32_t now_ms;
-enum {UI_PAGE_WIFI,UI_PAGE_OTHER,UI_PAGE_FIELD_MENU,SENTINEL_SCAN_NONE};
+enum {UI_PAGE_WIFI,UI_PAGE_OTHER,UI_PAGE_FIELD_MENU,SENTINEL_SCAN_NONE,SENTINEL_SCAN_WIFI};
 static unsigned current_page=UI_PAGE_WIFI;
 static ui_wifi_mode_t wifi_mode=UI_WIFI_MODE_TARGET;
 static struct {uint32_t firmware_version;} c5_status={86};
 static cerberus_c5_wifi_result_t wifi_selected_result;
 static uint8_t wifi_selected_index;
-static bool wifi_selection_valid,wifi_attack_selecting,sae_ui_selecting,dual_wifi_return_to_view;
+static bool wifi_selection_valid,wifi_attack_selecting,sae_ui_selecting,eapol_ui_selecting,dual_wifi_return_to_view;
 static struct {const char *tools_label,*hint;} live_view;
 static int live_session,live_ble_session;
+static unsigned picker_begins;
+static uint32_t live_last_poll;
+static bool picker_paused;
+static void sentinel_scan_session_select_snapshot(int*s,unsigned tool){(void)s;CHECK(tool==SENTINEL_SCAN_WIFI);++picker_begins;}
+static void sentinel_scan_session_pause(int*s,bool pause){(void)s;picker_paused=pause;}
 static cerberus_s3_sae_status_t model;
 static cerberus_s3_sae_row_t rows[16];
 static cerberus_s3_capture_status_t generic;
@@ -75,7 +80,8 @@ void cerberus_s3_capture_stop(void){++generic_stops;generic.busy=false;generic.s
 static bool eapol_ui_is_open(void){return false;}
 static bool eapol_ui_busy(void){return false;}
 static bool eapol_ui_pending(void){return false;}
-static void eapol_ui_open(void){CHECK(false);}
+static void eapol_ui_open(bool menu){(void)menu;CHECK(false);}
+static void eapol_ui_selection_done(void){CHECK(false);}
 static void eapol_ui_close(bool back){(void)back;CHECK(false);}
 static void eapol_ui_start(void){CHECK(false);}
 static esp_err_t eapol_ui_draw(void){CHECK(false);return ESP_FAIL;}
@@ -89,12 +95,13 @@ static void sae_ui_close(bool back);
 static void sae_ui_start(void);
 static esp_err_t sae_ui_draw(void);
 static void sae_ui_tap(uint16_t x,uint16_t y);
+#include "sae_picker_begin.h"
 #include "wifi_capture_ui.h"
 #include "wifi_sae_ui.h"
 #define SENTINEL_VIEW_VISIBLE_ROWS 4U
-enum {SENTINEL_SCAN_WIFI,SENTINEL_VIEW_ROW0};
+enum {SENTINEL_VIEW_ROW0};
 #include "sae_picker_types.h"
-static live_scan_record_t live_records[1];
+static live_scan_record_t live_records[SENTINEL_SCAN_WIFI+1];
 static live_wifi_paint_map_t live_wifi_built,live_wifi_painted;
 static uint64_t wifi_relation_publication;
 static uint8_t wifi_relation_generation;
@@ -114,8 +121,8 @@ static esp_err_t draw_current_page(void){return draw_detail_page();}
 #include "sae_routes.h"
 static esp_err_t draw_detail_page(void)
 {drawn_size=0;drawn[0]=0;esp_err_t e=cerberus_display_fill_rect(0,0,320,480,UI_BACKGROUND);
- if(!e)e=draw_centered(20,"WI-FI TOOLS",UI_TEXT,2);if(!e&&wifi_mode==UI_WIFI_MODE_CAPTURE)e=capture_draw();
- return e?e:cerberus_ui_widget_draw_button((cerberus_ui_rect_t){8,420,304,44},sae_ui_is_open()?sae_ui_back_label():"TARGET",2,true,UI_WIDGET_THEME);}
+ if(!e)e=draw_centered(20,"WI-FI TOOLS",UI_TEXT,2);if(!e&&wifi_mode==UI_WIFI_MODE_CAPTURE)e=capture_draw();if(!e&&wifi_mode==UI_WIFI_MODE_AUTH)e=auth_monitor_draw();
+ return e?e:cerberus_ui_widget_draw_button((cerberus_ui_rect_t){8,420,304,44},sae_ui_is_open()?sae_ui_back_label():route_auth_back_label(),2,true,UI_WIDGET_THEME);}
 static void tick(unsigned n,bool asleep){for(unsigned i=0;i<n;++i){now_ms+=25;route_tick(now_ms,asleep);}}
 static void reset(void)
 {CHECK(!sae_ui_is_open()&&!sae_ui&&!model.capture.busy);memset(&generic,0,sizeof(generic));memset(&model,0,sizeof(model));memset(rows,0,sizeof(rows));
@@ -125,11 +132,11 @@ static void reset(void)
  current_page=UI_PAGE_WIFI;wifi_mode=UI_WIFI_MODE_CAPTURE;wifi_selected_result=(cerberus_c5_wifi_result_t){.ssid="Field Kit",.channel=6,.rssi=-35};
  memcpy(wifi_selected_result.bssid,ap,6);wifi_selected_index=7;wifi_selection_valid=true;capture_enter();}
 static void enter(bool menu)
-{reset();if(menu){wifi_mode=UI_WIFI_MODE_MENU;route_menu(270,380);}else{capture_mode_index=4;CHECK(draw_detail_page()==ESP_OK);}
+{reset();if(menu){wifi_mode=UI_WIFI_MODE_MENU;route_menu(270,380);CHECK(wifi_mode==UI_WIFI_MODE_AUTH&&!sae_ui_is_open()&&!starts);CHECK(draw_detail_page()==ESP_OK);route_tap(100,270);}else{capture_mode_index=4;CHECK(draw_detail_page()==ESP_OK);}
  CHECK(sae_ui_is_open()&&!starts&&!old_stops);tick(2,false);}
 static void start(void){route_tap(100,390);tick(2,false);CHECK(starts==1&&model.capture.busy&&!model.capture.save_pcap);}
 static void leave(void)
-{bool menu=sae_ui_from_menu;route_back();tick(3,false);CHECK(!sae_ui_is_open()&&!sae_ui&&!model.capture.busy&&wifi_mode==(menu?UI_WIFI_MODE_MENU:UI_WIFI_MODE_TARGET));}
+{bool menu=sae_ui_from_menu;route_back();tick(3,false);CHECK(!sae_ui_is_open()&&!sae_ui&&!model.capture.busy&&wifi_mode==(menu?UI_WIFI_MODE_AUTH:UI_WIFI_MODE_TARGET));}
 static void choose_scope(unsigned scope)
 {for(unsigned i=0;i<6&&sae_ui->scope!=scope;++i)route_tap(100,230);CHECK(sae_ui->scope==scope);}
 static void tests(void)
@@ -154,7 +161,7 @@ static void tests(void)
  enter(true);choose_scope(SAE_SCOPE_SELECTED);route_tap(100,260);route_picker_back();CHECK(wifi_mode==UI_WIFI_MODE_CAPTURE&&!sae_ui_selecting);leave();
  enter(true);choose_scope(SAE_SCOPE_SELECTED);route_tap(100,260);
  picker_bank.wifi[0]=wifi_selected_result;picker_bank.wifi[1]=wifi_selected_result;picker_bank.wifi[1].bssid[5]=0x99;
- live_records[0]=(live_scan_record_t){.captured=true,.saved_generation=7,.count=2};wifi_relation_generation=7;wifi_relation_publication=100;
+ live_records[SENTINEL_SCAN_WIFI]=(live_scan_record_t){.captured=true,.saved_generation=7,.count=2};wifi_relation_generation=7;wifi_relation_publication=100;
  live_wifi_built=(live_wifi_paint_map_t){.publication=100,.token=1,.generation=7,.bank_count=2,.count=2,.indexes={1,0},.valid=true};
  picker_paint_error=ESP_OK;CHECK(live_paint(true)==ESP_OK);route_picker_row(0);CHECK(wifi_target_count==1&&wifi_targets[0].ap.bssid[5]==0x99);
  wifi_relation_publication=101;route_picker_row(1);CHECK(wifi_target_count==1&&picker_refreshes>0); /* Reused generation, changed publication. */
@@ -168,7 +175,7 @@ static void tests(void)
  enter(true);prior_live=prior_dual=prior_capture=true;route_tap(100,390);tick(4,false);CHECK(!starts&&sae_ui_pending());route_back();route_tap(100,390);
  prior_live=prior_dual=prior_capture=false;tick(3,false);CHECK(!starts&&!sae_ui_is_open());
  enter(true);start();hold_stop=true;route_tap(100,390);route_back();tick(4,false);CHECK(sae_ui_is_open()&&model.capture.busy);route_tap(100,230);route_tap(100,390);CHECK(starts==1);
- hold_stop=false;cerberus_s3_sae_stop();tick(3,false);CHECK(!sae_ui_is_open()&&wifi_mode==UI_WIFI_MODE_MENU);
+ hold_stop=false;cerberus_s3_sae_stop();tick(3,false);CHECK(!sae_ui_is_open()&&wifi_mode==UI_WIFI_MODE_AUTH);
  enter(true);start();model.summary.observations=7;route_tap(100,390);tick(2,false);CHECK(sae_ui->status.summary.observations==7&&!model.capture.busy);route_tap(100,390);tick(2,false);CHECK(starts==2&&!model.summary.observations);leave();
  enter(true);start();ignored_stops=1;route_tap(100,390);CHECK(model.capture.busy&&sae_ui_pending());tick(2,false);CHECK(!model.capture.busy&&!sae_ui_pending());leave();
  enter(true);start();ignored_stops=2;route_back();tick(1,false);CHECK(model.capture.busy&&sae_ui_is_open());tick(2,false);CHECK(!model.capture.busy&&!sae_ui_is_open());
@@ -180,11 +187,11 @@ static void tests(void)
  enter(false);route_tap(100,160);tick(3,false);CHECK(!sae_ui_is_open()&&capture_mode_index==0);route_tap(100,380);CHECK(generic_starts==1);route_tap(100,380);route_back();
  enter(true);c5_status.firmware_version=85;route_tap(100,390);tick(3,false);CHECK(!starts&&draw_detail_page()==ESP_OK&&strstr(drawn,"CAPABILITY 86"));leave();
  enter(true);start_error=ESP_ERR_NO_MEM;route_tap(100,390);tick(3,false);CHECK(!model.capture.busy&&draw_detail_page()==ESP_OK&&strstr(drawn,"ESP_ERR_NO_MEM"));leave();
- reset();oom=true;route_menu(270,380);CHECK(sae_ui_is_open()&&!sae_ui&&draw_detail_page()==ESP_OK);route_back();CHECK(!sae_ui_is_open());
- reset();oom=true;route_menu(270,380);oom=false;route_tap(100,390);tick(3,false);CHECK(starts==1);leave();
+ reset();oom=true;route_menu(270,380);route_tap(100,270);CHECK(sae_ui_is_open()&&!sae_ui&&draw_detail_page()==ESP_OK);route_back();CHECK(!sae_ui_is_open());
+ reset();oom=true;route_menu(270,380);route_tap(100,270);oom=false;route_tap(100,390);tick(3,false);CHECK(starts==1);leave();
  enter(true);const uint16_t misses[][2]={{11,390},{308,390},{12,381},{12,412},{156,360},{163,360}};
  for(unsigned i=0;i<sizeof(misses)/sizeof(misses[0]);++i)route_tap(misses[i][0],misses[i][1]);CHECK(!starts&&!sae_ui_pending()&&sae_ui->view==SAE_VIEW_OPTIONS);leave();
- enter(true);start();route_launcher();tick(3,false);CHECK(!sae_ui_is_open()&&wifi_mode==UI_WIFI_MODE_MENU);CHECK(allocations==freed);
+ enter(true);start();route_launcher();tick(3,false);CHECK(!sae_ui_is_open()&&wifi_mode==UI_WIFI_MODE_AUTH);CHECK(allocations==freed);route_auth_back();CHECK(wifi_mode==UI_WIFI_MODE_MENU&&!sae_ui_is_open());
 }
 static void save(const char*folder,const char*name)
 {char path[1024];snprintf(path,sizeof(path),"%s/%s.ppm",folder,name);FILE*f=fopen(path,"wb");CHECK(f);fprintf(f,"P6\n320 480\n255\n");

@@ -1,5 +1,6 @@
 #include "wifi_capture_plan.h"
 #include "wifi_packet_count.h"
+#include "cerberus_protocol.h"
 #include <string.h>
 
 _Static_assert(CERBERUS_WIFI_CAPTURE_PLAN_CHANNELS == CERBERUS_WIFI_PACKET_COUNT_CHANNELS,
@@ -29,6 +30,19 @@ uint64_t cerberus_wifi_capture_plan_channel_bit(uint8_t channel)
 bool cerberus_wifi_capture_plan_mask_valid(uint64_t mask)
 { return cerberus_wifi_packet_count_mask_valid(mask); }
 
+bool cerberus_wifi_capture_plan_dwell_valid(uint16_t dwell_ms)
+{ return dwell_ms == CERBERUS_WIFI_CAPTURE_PLAN_DWELL_MS ||
+    dwell_ms == CERBERUS_WIFI_CAPTURE_PLAN_EAPOL_DWELL_MS; }
+
+bool cerberus_wifi_capture_plan_mode_valid(uint8_t mode_mask, uint16_t dwell_ms)
+{
+    if (mode_mask == CERBERUS_WIFI_CAPTURE_MODE_SAE_COMMIT)
+        return dwell_ms == CERBERUS_WIFI_CAPTURE_PLAN_DWELL_MS;
+    return (mode_mask == CERBERUS_WIFI_CAPTURE_MODE_EAPOL ||
+        mode_mask == (CERBERUS_WIFI_CAPTURE_MODE_EAPOL | CERBERUS_WIFI_CAPTURE_MODE_BEACON)) &&
+        dwell_ms == CERBERUS_WIFI_CAPTURE_PLAN_EAPOL_DWELL_MS;
+}
+
 uint64_t cerberus_wifi_capture_plan_band_mask(uint8_t band)
 {
     const uint64_t all = (UINT64_C(1) << CERBERUS_WIFI_CAPTURE_PLAN_CHANNELS) - 1U;
@@ -41,7 +55,7 @@ uint64_t cerberus_wifi_capture_plan_band_mask(uint8_t band)
 bool cerberus_wifi_capture_plan_valid(const cerberus_wifi_capture_plan_t *plan)
 {
     if (!plan || !cerberus_wifi_capture_plan_mask_valid(plan->channel_mask) ||
-        plan->dwell_ms != CERBERUS_WIFI_CAPTURE_PLAN_DWELL_MS ||
+        !cerberus_wifi_capture_plan_dwell_valid(plan->dwell_ms) ||
         plan->target_count > CERBERUS_WIFI_CAPTURE_PLAN_MAX_TARGETS) return false;
     for (unsigned i = 0U; i < plan->target_count; ++i) {
         if (!unicast(plan->bssids[i])) return false;
@@ -56,7 +70,7 @@ bool cerberus_wifi_capture_plan_add_target(cerberus_wifi_capture_plan_t *plan,
 {
     uint64_t bit = cerberus_wifi_capture_plan_channel_bit(channel);
     if (!plan || !unicast(bssid) || !bit ||
-        plan->dwell_ms != CERBERUS_WIFI_CAPTURE_PLAN_DWELL_MS ||
+        !cerberus_wifi_capture_plan_dwell_valid(plan->dwell_ms) ||
         plan->target_count > CERBERUS_WIFI_CAPTURE_PLAN_MAX_TARGETS ||
         (plan->channel_mask && !cerberus_wifi_capture_plan_mask_valid(plan->channel_mask))) return false;
     /* Check the existing targets before changing any field. A partially built

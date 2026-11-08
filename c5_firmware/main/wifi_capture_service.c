@@ -17,6 +17,7 @@ static int32_t last_error;
 static uint8_t state;
 static atomic_bool receiving;
 static atomic_uint callback_inflight;
+static atomic_uint context_skipped;
 static atomic_uchar receive_channel;
 static atomic_uint receive_token;
 static uint32_t last_admission_token;
@@ -62,7 +63,7 @@ esp_err_t cerberus_wifi_capture_service_plan_stage(
     if(!request)error=ESP_ERR_INVALID_ARG;
     else if(!memcmp(request,&query,sizeof(query))){} /* Read-only staging query. */
     else if(!request->generation||request->reserved||
-        request->dwell_ms!=CERBERUS_WIFI_CAPTURE_PLAN_DWELL_MS||
+        !cerberus_wifi_capture_plan_dwell_valid(request->dwell_ms)||
         request->target_count>CERBERUS_WIFI_CAPTURE_PLAN_MAX_TARGETS||
         !cerberus_wifi_capture_plan_mask_valid(request->channel_mask))error=ESP_ERR_INVALID_ARG;
     else if(request->generation==staged_generation){
@@ -74,6 +75,7 @@ esp_err_t cerberus_wifi_capture_service_plan_stage(
     else{
         cerberus_wifi_capture_plan_clear(&staged_plan);
         staged_plan.channel_mask=request->channel_mask;
+        staged_plan.dwell_ms=request->dwell_ms;
         staged_plan.target_count=request->target_count;
         staged_generation=request->generation;staged_present=0U;
     }
@@ -111,6 +113,10 @@ uint64_t cerberus_wifi_capture_service_plan_mask(void)
 {return (current_request.flags&CERBERUS_WIFI_CAPTURE_FLAG_PLAN)&&
     current_request.generation==staged_generation?staged_plan.channel_mask:0U;}
 
+uint16_t cerberus_wifi_capture_service_plan_dwell_ms(void)
+{return (current_request.flags&CERBERUS_WIFI_CAPTURE_FLAG_PLAN)&&
+    current_request.generation==staged_generation?staged_plan.dwell_ms:0U;}
+
 static bool valid_channel(uint8_t channel)
 {return (channel>=1U&&channel<=14U)||(channel>=32U&&channel<=177U);}
 
@@ -132,9 +138,12 @@ esp_err_t cerberus_wifi_capture_service_start(
 {
     bool hopping=request&&(request->flags&CERBERUS_WIFI_CAPTURE_FLAG_HOP)!=0U;
     bool planned=request&&(request->flags&CERBERUS_WIFI_CAPTURE_FLAG_PLAN)!=0U;
+    bool plan_mode=request&&(cerberus_wifi_capture_plan_mode_valid(request->mode_mask,
+        CERBERUS_WIFI_CAPTURE_PLAN_DWELL_MS)||cerberus_wifi_capture_plan_mode_valid(
+        request->mode_mask,CERBERUS_WIFI_CAPTURE_PLAN_EAPOL_DWELL_MS));
     if(!request||!request->generation||
        (hopping?(request->channel!=0U||
-           request->mode_mask!=(planned?CERBERUS_WIFI_CAPTURE_MODE_SAE_COMMIT:CERBERUS_WIFI_CAPTURE_MODE_BEACON)||
+           (planned?!plan_mode:request->mode_mask!=CERBERUS_WIFI_CAPTURE_MODE_BEACON)||
            request->flags!=(CERBERUS_WIFI_CAPTURE_FLAG_HOP|(planned?CERBERUS_WIFI_CAPTURE_FLAG_PLAN:0U))):
            (planned||!valid_channel(request->channel)))||
        !request->mode_mask||(request->mode_mask&~CERBERUS_WIFI_CAPTURE_MODE_ALL)||
@@ -148,6 +157,8 @@ esp_err_t cerberus_wifi_capture_service_start(
         staged_present!=plan_target_mask(staged_plan.target_count)||
         !cerberus_wifi_capture_plan_valid(&staged_plan)):
         request->generation<=staged_generation)return ESP_ERR_INVALID_STATE;
+    if(planned&&!cerberus_wifi_capture_plan_mode_valid(request->mode_mask,
+        staged_plan.dwell_ms))return ESP_ERR_INVALID_ARG;
     if(atomic_load_explicit(&receiving,memory_order_acquire)||
        atomic_load_explicit(&callback_inflight,memory_order_seq_cst)||
        request->generation<=last_generation)return ESP_ERR_INVALID_STATE;
@@ -164,6 +175,7 @@ esp_err_t cerberus_wifi_capture_service_start(
     current_request=*request;
     last_generation=request->generation;
     last_acked_sequence=0;
+    atomic_store_explicit(&context_skipped,0U,memory_order_relaxed);
     atomic_store_explicit(&deadline_ms,0U,memory_order_relaxed);
     last_error=ESP_OK;
     state=CERBERUS_WIFI_CAPTURE_RUNNING;
@@ -263,8 +275,28 @@ void cerberus_wifi_capture_service_receive(const uint8_t *frame,size_t length,
        !cerberus_wifi_capture_filter_match(request->mode_mask,
            (request->flags&CERBERUS_WIFI_CAPTURE_FLAG_BSSID)!=0U,
            request->bssid,frame,length))goto done;
-    if((request->flags&CERBERUS_WIFI_CAPTURE_FLAG_PLAN)&&
-       !cerberus_wifi_capture_plan_matches(&staged_plan,frame+16U,channel))goto done;
+    if(request->flags&CERBERUS_WIFI_CAPTURE_FLAG_PLAN){
+        /* Infrastructure EAPOL identifies its BSSID by DS direction, not
+         * addr3. Do not turn WDS or direct-link peers into AP observations. */
+        if((request->mode_mask&CERBERUS_WIFI_CAPTURE_MODE_EAPOL)&&
+           ((frame[0]>>2U)&3U)==2U&&((frame[1]&3U)==0U||(frame[1]&3U)==3U))goto done;
+        if(!cerberus_wifi_capture_plan_matches(&staged_plan,
+            cerberus_wifi_capture_filter_bssid(frame,length),channel))goto done;
+    }
+    if(request->mode_mask==(CERBERUS_WIFI_CAPTURE_MODE_EAPOL|CERBERUS_WIFI_CAPTURE_MODE_BEACON)&&
+       frame[0]==0x80U){
+        /* Context may occupy only an empty ring, leaving the second slot for
+         * EAPOL in fixed and planned sessions. RX is the sole producer;
+         * concurrent ACKs can only reduce occupancy. Never evict or mutate a
+         * pinned record. Standalone beacon and RAW capture stay unchanged. */
+        cerberus_wifi_capture_ring_stats_t stats;
+        cerberus_wifi_capture_ring_stats(capture_ring,&stats);
+        if(stats.pending){
+            unsigned skipped=atomic_load_explicit(&context_skipped,memory_order_relaxed);
+            if(skipped<UINT16_MAX)atomic_store_explicit(&context_skipped,skipped+1U,memory_order_relaxed);
+            goto done;
+        }
+    }
     cerberus_wifi_pcap_metadata_t metadata={
         .channel=channel,.rssi_dbm=rssi_dbm,.rssi_known=true,
         .frame_has_fcs=false,.time_kind=CERBERUS_WIFI_PCAP_TIME_MONOTONIC,
@@ -294,7 +326,8 @@ void cerberus_wifi_capture_service_status(cerberus_wifi_capture_status_payload_t
     out->accepted=stats.accepted;
     out->dropped_full=stats.dropped_full;
     uint64_t other=(uint64_t)stats.dropped_stopped+stats.dropped_stale+
-        stats.dropped_oversize+stats.dropped_truncated+stats.dropped_invalid;
+        stats.dropped_oversize+stats.dropped_truncated+stats.dropped_invalid+
+        atomic_load_explicit(&context_skipped,memory_order_relaxed);
     out->dropped_other=other>UINT16_MAX?UINT16_MAX:(uint16_t)other;
 }
 

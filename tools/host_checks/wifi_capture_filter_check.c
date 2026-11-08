@@ -97,6 +97,19 @@ int main(void)
 {
     check_sae_commit();
     check_beacon();
+    uint8_t addresses[40]={0};
+    assert(!cerberus_wifi_capture_filter_bssid(NULL,sizeof(addresses)));
+    for(size_t length=0;length<24;++length)
+        assert(!cerberus_wifi_capture_filter_bssid(addresses,length));
+    assert(cerberus_wifi_capture_filter_bssid(addresses,24)==addresses+16);
+    addresses[0]=0x08;
+    for(unsigned ds=0;ds<4;++ds){
+        addresses[1]=(uint8_t)ds;
+        const uint8_t *expected=ds==0?addresses+16:ds==1?addresses+4:ds==2?addresses+10:NULL;
+        assert(cerberus_wifi_capture_filter_bssid(addresses,sizeof(addresses))==expected);
+    }
+    addresses[0]=0xd4;
+    assert(!cerberus_wifi_capture_filter_bssid(addresses,sizeof(addresses)));
     const uint8_t ap[6]={1,2,3,4,5,6};
     uint8_t frame[64]={0};
     assert(!cerberus_wifi_capture_filter_match(CERBERUS_WIFI_CAPTURE_MODE_RAW,false,ap,frame,1));

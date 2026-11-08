@@ -18,6 +18,7 @@ esp_err_t cerberus_wifi_capture_service_plan_target(
     const cerberus_wifi_capture_target_request_t *,bool radio_held,
     cerberus_wifi_capture_plan_status_payload_t *);
 uint64_t cerberus_wifi_capture_service_plan_mask(void);
+uint16_t cerberus_wifi_capture_service_plan_dwell_ms(void);
 esp_err_t cerberus_wifi_capture_service_start(
     const cerberus_wifi_capture_start_request_t *request);
 void cerberus_wifi_capture_service_stop(esp_err_t reason);

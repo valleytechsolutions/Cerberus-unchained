@@ -166,7 +166,7 @@ esp_err_t c5_spi_link_wifi_capture_plan_stage(const cerberus_wifi_capture_plan_r
 {
     assert(!lock_depth && plan_supported && expected.plan && r && out && !r->reserved);
     assert(r->channel_mask==expected.plan->channel_mask && r->target_count==expected.plan->target_count);
-    assert(r->dwell_ms==250U);++plan_stages;
+    assert(r->dwell_ms==expected.plan->dwell_ms);++plan_stages;
     if(staged.generation!=r->generation)staged=(cerberus_wifi_capture_plan_status_payload_t){
         .generation=r->generation,.channel_mask=r->channel_mask,.target_count=r->target_count,
         .state=r->target_count?CERBERUS_WIFI_CAPTURE_PLAN_STAGING:CERBERUS_WIFI_CAPTURE_PLAN_READY};
@@ -396,6 +396,26 @@ static void plan_cases(void)
     }
     reset_case();planned_options(&plan);staged.generation=UINT32_MAX;
     assert(cerberus_s3_capture_start_options(&expected)==ESP_ERR_INVALID_STATE && !allocations);
+
+    /* EAPOL plans keep their two-second dwell and copied target scope through
+     * staging, start, observation and drain. Wrong family/dwell fails preflight. */
+    plan.dwell_ms=CERBERUS_WIFI_CAPTURE_PLAN_EAPOL_DWELL_MS;
+    reset_case();planned_options(&plan);
+    assert(cerberus_s3_capture_start_options(&expected)==ESP_ERR_INVALID_ARG && !task_creates && !allocations);
+    for(unsigned context=0U;context<2U;++context){
+        reset_case();planned_options(&plan);
+        expected.mode_mask=CERBERUS_WIFI_CAPTURE_MODE_EAPOL |
+            (context?CERBERUS_WIFI_CAPTURE_MODE_BEACON:0U);
+        frozen=plan;
+        assert(cerberus_s3_capture_start_options(&expected)==ESP_OK);
+        memset(&plan,0,sizeof(plan));expected.plan=&frozen;
+        state=run_capture();
+        assert(state.state==CERBERUS_S3_CAPTURE_COMPLETE && observed==1U && plan_stages==1U && plan_targets==1U);
+        plan=frozen;
+    }
+    plan.dwell_ms=CERBERUS_WIFI_CAPTURE_PLAN_DWELL_MS;
+    reset_case();planned_options(&plan);expected.mode_mask=CERBERUS_WIFI_CAPTURE_MODE_EAPOL;
+    assert(cerberus_s3_capture_start_options(&expected)==ESP_ERR_INVALID_ARG && !task_creates && !allocations);
 
     /* Abandoned staged IDs also fence a later legacy fixed-channel capture. */
     reset_case();plan_supported=true;staged.generation=20000U;stop_after=100U;

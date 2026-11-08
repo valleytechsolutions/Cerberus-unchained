@@ -37,6 +37,8 @@ subprocess.run([sys.executable, "-m", "ziglang", "cc", "-std=c11", "-O1",
     "-I", str(root / "s3_main/main"), "-I", str(root / "shared"),
     str(root / "tools/host_checks/wifi_eapol_session_check.c"),
     str(root / "s3_main/main/wifi_eapol_session.c"),
-    str(root / "shared/wifi_eapol_analysis.c"), "-o", str(exe)],
+    str(root / "shared/wifi_eapol_analysis.c"),
+    str(root / "shared/wifi_capture_plan.c"), str(root / "shared/wifi_packet_count.c"),
+    str(root / "shared/wifi_beacon_analysis.c"), "-o", str(exe)],
     check=True, env=env)
 subprocess.run([str(exe)], check=True, timeout=30)

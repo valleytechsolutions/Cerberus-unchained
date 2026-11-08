@@ -1,120 +1,144 @@
 # Passive EAPOL monitor
 
-Rev164 adds an EAPOL report to the existing selected-AP capture page. Open
-**Scan -> Wi-Fi -> an AP -> CAPTURE THIS AP**, cycle the capture mode to
-**EAPOL MONITOR**, then press **START**. The selected BSSID and channel are
-frozen for the run. Opening the page starts no receiver.
+Rev167 extends the selected-AP monitor with a direct entry at **Scan -> Wi-Fi
+-> TOOLS -> AUTH RX -> EAPOL MONITOR**. The same AUTH RX menu also opens
+**SAE MONITOR**. Opening either monitor or its AP picker starts no receiver.
+The picker shows the held inventory; **SCAN** explicitly requests a new sweep.
+**DONE** and Back return to the owning monitor without starting capture.
 
-**SAVE PCAP OFF** is the default. The report works without an SD card. Enable
-**SAVE PCAP ON** before Start to save the received frames as well. The summary
-shows observed M1-M4 patterns, correlated exchanges, PMKID-bearing frames,
-other EAPOL traffic, malformed frames and retry/peer-limit counts. **PEERS**
-opens a two-row paged view of station evidence, channel, last RSSI and S3
-delivery age. **STOP** retains the report; **RESTART** begins a new report.
+For one AP, open **CAPTURE THIS AP** from its tools and cycle to **EAPOL
+MONITOR**. This route starts with THIS AP selected and restores the original
+AP and scan-return destination after Back. The menu route defaults to ALL.
 
-Back, leaving the page and sleep cancel pending Start requests and stop the
-owned session. Navigation and memory release wait for the receiver, final
-frame drain and any open capture file to close. An error during cleanup does
-not turn into an idle state. Waking the screen does not restart reception.
+| Scope | Receive plan |
+| --- | --- |
+| ALL | All 42 canonical candidate channels, all BSSIDs |
+| 2.4 GHZ | Channels 1-14, all BSSIDs |
+| 5 GHZ | The 28 canonical 5 GHz candidates, all BSSIDs |
+| FIXED CHANNEL | One chosen canonical channel, all BSSIDs |
+| SELECTED APS | Up to 32 exact BSSIDs and the union of their selected channel hints |
+| THIS AP | The copied AP BSSID and channel; available from the AP route |
 
-Rev165 retries a pending Stop if the service mutex was temporarily busy. A
-missed first request no longer leaves Back waiting indefinitely for release.
-Host cases cover both the Stop button and leaving through Back; physical
-navigation under load remains an acceptance check.
+**START** freezes the scope before releasing earlier scan owners. Planned
+EAPOL reception uses a **2,000 ms dwell after successful receiver arming**.
+A one-channel plan keeps receiving without cycling the receiver off. Channel
+coverage reports attempted and successfully applied channels; the driver and
+country configuration decide whether a candidate can be tuned. Selected
+channels are historical hints, not proof that an AP remains on that channel.
+SAE retains its separate 250 ms dwell.
 
-## What the report establishes
+**SAVE PCAP OFF** is the default and needs no SD card. The summary reports
+observed M1-M4 patterns, correlated exchanges, PMKID-bearing frames, other
+EAPOL, malformed input, retries, bounded-table drops and radio coverage.
+**PEERS** pages through AP-and-station pairs. **BEACONS** presents separately
+observed beacon information. **STOP** retains the report; **RESTART** begins a
+new report. Options edited after Stop affect only the next run.
+
+Back, hidden navigation and sleep cancel pending Starts and stop the owned
+session. Receiver drain and any open capture file must close before release.
+A missed Stop is retried; a cleanup error does not become an idle state.
+Waking the display does not restart reception.
+
+## Evidence and limits
 
 The parser accepts complete, CRC-verified 802.11 frames up to 4,096 bytes from
-the selected infrastructure BSSID and channel. It checks direction, ordinary/QoS header
-length, fragmentation, protection, LLC/EAPOL boundaries, descriptor layout
-and clear key-data element bounds before classifying a Key frame. Non-Key
-EAPOL, unsupported layouts and malformed input are accounted separately.
+the frozen scope. Infrastructure BSSID selection follows frame direction:
+management address 3, ToDS address 1, and FromDS address 2. It does not treat
+a station or payload address as the BSSID. WDS/direct-link data cannot supply
+infrastructure EAPOL evidence. Header lengths, fragmentation, protection,
+LLC/EAPOL boundaries, descriptor layout and clear key-data element bounds
+are checked before classification.
 
-M1-M4 are **observed field patterns**. A correlated exchange requires an
-ordered sequence for one station, compatible descriptor/MIC layouts,
-matching replay counters and publicly transmitted nonces, within a
-15-second C5 source-time window. RSN M3 requires the Secure bit; legacy WPA
-has its own allowed pattern. Repeated radio receptions remain observations
-but do not count the same exchange again. A repeated SPI frame sequence
-does not refresh evidence or its displayed delivery age.
+M1-M4 are observed field patterns. A correlated exchange requires an ordered
+sequence for one **BSSID + station pair on one channel**, compatible
+descriptor/MIC layouts, matching replay counters and publicly transmitted
+nonces, within a 15-second C5 source-time window. A station seen at another AP
+has a separate row. Frames from different channels cannot complete the same
+in-progress exchange. RSN M3 requires the Secure bit; legacy WPA has its own
+allowed pattern. Retries remain observations without counting the same
+exchange again. Repeated SPI delivery does not refresh evidence or age.
 
-An observed exchange does not verify the MIC, prove successful authentication,
-establish possession of a credential or authenticate the physical AP/client.
-The bounded model retains public nonces for correlation; it does not retain
-MIC bytes, PMKID values or full frame payloads. Optional PCAP saving retains
-the received frames through the existing capture writer.
+This does not verify the MIC, prove successful authentication or possession
+of a credential, or authenticate the physical AP/client. The bounded model
+retains public nonces for correlation, not MIC bytes, PMKID values or full
+payloads. Optional PCAP saving retains received frames through the existing
+writer. PMKID counts indicate a bounded clear key-data element with that
+selector. Encrypted key data is counted without inspecting its contents;
+ambiguous descriptor-version-zero layouts cannot establish a correlated
+exchange or PMKID claim. No solicitation, AP join or credential recovery is
+performed by this monitor.
 
-PMKID counts mean that a correctly bounded, clear EAPOL Key Data element
-with the PMKID selector was observed. Encrypted key data is counted without
-trying to inspect its contents. An ambiguous descriptor-version-zero
-16/24-byte MIC layout cannot produce a correlated exchange or PMKID claim.
-This does not scan association-frame RSN elements, decrypt traffic, recover
-credentials, transmit solicitation frames or join the AP.
+The independent **16-BSSID beacon context cache** retains exact SSID bytes
+and length, observed channel, an advertised channel when present, capability
+bits, RSSI and source provenance. Beacon parsing rejects malformed tails.
+Names are display-sanitized and address masking follows the privacy setting.
+These public fields are observations, not a derived security-suite or device
+identity claim. A beacon never creates a station exchange, completes one,
+or refreshes an EAPOL row's delivery age.
 
-## Radio, storage and memory ownership
+## Radio, storage and memory
 
-The **C5 owns RF reception** on the selected 2.4 or 5 GHz channel. The **S3
-owns verified transport, parsing, correlation, the report and optional SD
-writing**. There is one receiver stream, not two copies of the same RF work.
-This mode does not add a local S3 RF worker or channel hopping.
+The **C5 owns passive RF reception and the channel schedule**. The **S3 owns
+frozen selection, verified transport, analysis, report navigation and optional
+SD writes**. This uses one RF stream, the existing capture worker, lease and
+two-slot frame ring. It adds no RF worker or queue. New scoped EAPOL requires
+C5 capability **87**; older fixed raw EAPOL and SAE wire contracts remain
+separate at 85 and 86 respectively. Mode/dwell mismatches fail before Start.
 
-Capability **85** is required by both the UI and programmatic session entry.
-The C5 snapshots a private per-arm admission token and signed callback time
-before other receive consumers run. Admission opens only after the SDK
-successfully enables reception on the channel. The token advances on each
-arm, including rearming within the same capture generation, and exhaustion
-fails closed. Old-token, unarmed, pre-arm, negative and unrepresentable
-timestamp callbacks cannot be relabeled as new evidence.
-This uses the existing capture commands, worker, lease and two-slot frame
-ring; it adds no queue or per-frame copy.
+Beacon context is lower priority: a beacon is admitted only while the frame
+ring is empty, leaving the second slot available to EAPOL. Occupied-slot
+skips are included in the aggregate `dropped_other` counter. Pinned frames
+are never evicted or overwritten. This applies to both planned and fixed
+EAPOL-plus-beacon capture; it is bounded context, not complete beacon coverage.
 
-The S3 reuses `wifi_capture_session.c` and its once-per-generation/sequence
-observer. A new run reserves an exact generation; a lost Start response is
-resolved by the capture owner rather than replaying a new Start. Stop uses
-that generation and cannot stop another capture. Failed restarts preserve
-the previous report. Optional file writes and analysis counts stay separate.
+The C5's per-arm token and signed callback time fence remain in force. Old,
+unarmed, pre-arm, negative or unrepresentable callback provenance is rejected.
+A new run reserves an exact generation; lost Start acknowledgement is resolved
+by its owner. Stop cannot end another generation. Failed restarts preserve
+the prior report, and the S3 observer ingests each verified sequence once.
 
-At rev165, the report holds at most **16 stations** in a **3,696-byte optional
-PSRAM store under the host ABI**. This is an allocation size, not measured device
-headroom. The optional UI store adds **520 bytes**, including its frozen AP
-identity and two copied peer rows. Rev165 adds 32 bytes to each of the
-session and UI stores for shared channel-plan telemetry; the rev164 sizes
-were 3,664 and 488 bytes, respectively. An in-progress exchange is protected from
-replacement within its correlation window. Once the table is full, eligible old rows may be replaced;
-otherwise the new peer is counted as dropped. These counts and counter
-saturation remain explicit. Row admission sequences distinguish replacement
-from an update, even when a station reappears at the same source timestamp.
-Page reads copy at most four rows under the evidence mutex; the UI uses two.
+The analysis store holds at most **16 AP/station pairs** and **16 beacon
+contexts**. Under the host ABI, the optional session allocation is **5,576
+bytes** and the optional UI allocation is **1,216 bytes**. These are allocation
+sizes, not measured device headroom. In-progress exchanges are protected from
+replacement within their correlation window. Full tables report replacement
+or dropped-new-row counts, and saturation remains explicit. Page reads copy
+at most four rows under a mutex; the screen uses two.
 
-C5 callback times are source-relative and are not translated into S3 or UTC
-time. Displayed ages say when a row reached the S3, not when its RF signal
-arrived. Unknown or saturated delivery age is not displayed as zero. Scan-list
-RSSI is historical and never supplies a new monitor sample.
+C5 callback time stays source-relative. Displayed ages describe delivery to
+the S3, with separate clocks for EAPOL and beacon rows. Unknown, rewound or
+saturated ages never appear as zero. Historical scan RSSI is not a new sample.
 
-Saved files use the existing PCAPNG writer, with C5 interface identity and
-radiotap channel/RSSI. Without a verified C5-to-UTC mapping, the writer emits
-Simple Packet Blocks with **no frame timestamps**. The page states this when
-PCAP saving is selected. GPS presence does not silently convert C5 callback
-time into UTC. C5 received/dropped counts, SD-written counts and the final
-filename describe different stages; none is a promise of lossless capture.
+Saved PCAPNG uses C5 interface identity and radiotap channel/RSSI. Without a
+verified C5-to-UTC mapping, Simple Packet Blocks carry **no frame timestamps**.
+GPS does not silently supply that mapping. Received, dropped and SD-written
+counts measure different stages; recording is not claimed lossless.
 
-## Upstream reference
+## Upstream reference and remaining work
 
-The milestone's `develop` check on 2026-11-08 still resolved to
-`79cc6bcba1db6679baee1dab2b0c1ad5010e6363`. Relevant reachable upstream paths are:
+The 2026-11-08 `develop` comparison still resolved to
+`79cc6bcba1db6679baee1dab2b0c1ad5010e6363`:
 
-- [EAPOL/PMKID Scan menu](https://github.com/justcallmekoko/ESP32Marauder/blob/79cc6bcba1db6679baee1dab2b0c1ad5010e6363/esp32_marauder/MenuFunctions.cpp#L5182), which starts `WIFI_SCAN_EAPOL`.
-- [The `sniffpmkid` CLI handler](https://github.com/justcallmekoko/ESP32Marauder/blob/79cc6bcba1db6679baee1dab2b0c1ad5010e6363/esp32_marauder/CommandLine.cpp#L1045), including channel and selected-list options.
-- [`RunEapolScan()`](https://github.com/justcallmekoko/ESP32Marauder/blob/79cc6bcba1db6679baee1dab2b0c1ad5010e6363/esp32_marauder/WiFiScan.cpp#L5206), [`getCompleteEapol()` and the callback](https://github.com/justcallmekoko/ESP32Marauder/blob/79cc6bcba1db6679baee1dab2b0c1ad5010e6363/esp32_marauder/WiFiScan.cpp#L10458).
+- [EAPOL/PMKID menu](https://github.com/justcallmekoko/ESP32Marauder/blob/79cc6bcba1db6679baee1dab2b0c1ad5010e6363/esp32_marauder/MenuFunctions.cpp#L5182) opens targetless monitoring.
+- [`sniffpmkid` CLI](https://github.com/justcallmekoko/ESP32Marauder/blob/79cc6bcba1db6679baee1dab2b0c1ad5010e6363/esp32_marauder/CommandLine.cpp#L1045) exposes fixed-channel and selected-list choices.
+- [EAPOL callback](https://github.com/justcallmekoko/ESP32Marauder/blob/79cc6bcba1db6679baee1dab2b0c1ad5010e6363/esp32_marauder/WiFiScan.cpp#L10458) gathers phase and beacon context; [passive channel scheduling](https://github.com/justcallmekoko/ESP32Marauder/blob/79cc6bcba1db6679baee1dab2b0c1ad5010e6363/esp32_marauder/WiFiScan.cpp#L13028) uses a two-second interval.
 
-The pinned callback records M1-M4 flags per AP; its complete counter combines
-those four flags without per-station exchange correlation. Its persistent
-ForcePMKID setting can enable transmission even through the nominal EAPOL
-scan entry. Cerberus's monitor remains receive-only. Fixed selected-AP analysis
-does not establish parity with upstream channel hopping, multi-AP selection,
-CLI options or active EAPOL workflows.
+Upstream can enable transmission through the persistent ForcePMKID setting;
+this passive monitor does not inherit that behavior. Upstream's per-AP phase
+flags do not perform the AP/station/channel correlation described above.
+Selected-channel union is a Cerberus optimization; upstream passive selected
+capture filters BSSIDs while hopping its general channel set. Cerberus's 42
+candidate channels also do not claim equivalence to all 51 upstream entries.
 
-## Validation boundary
+Rev167 source and focused fixtures cover the new scopes, independent evidence,
+priority admission and menu lifecycle. Full checkpoint validation is recorded
+below when completed. Physical acceptance still needs controlled AP/client
+traffic, comparison with an independent capture, both-band reception, PCAP
+readback, repeated Stop/Back/next-scan transitions, sleep/wake, SD failures and
+sustained loaded memory/stack measurements. Zero exchanges can be normal on
+an idle network. Full upstream option/CLI parity remains open.
+
+## Historical rev164 validation
 
 All 184 registered host suites passed on 1,422 unchanged inputs at source
 `345ba46f1fc1220c99dabc8e9ae5d11220bac9d1`. All five native targets passed,

@@ -34,7 +34,7 @@ typedef struct {
     uint8_t channel, mode_mask;
     bool filter_bssid, hopping, save_pcap;
     uint8_t bssid[6];
-    /* Optional planned SAE scope, copied before this call returns. Requires
+    /* Optional planned authentication scope, copied before this call returns. Requires
      * hopping, channel zero and no single-BSSID filter. */
     const cerberus_wifi_capture_plan_t *plan;
     cerberus_s3_capture_observer_t observer;
@@ -63,8 +63,9 @@ typedef struct {
  * A manual Stop or leaving the page ends the session; no duration is imposed. */
 esp_err_t cerberus_s3_capture_start(uint8_t channel, uint8_t mode_mask,
     const uint8_t bssid[6], bool filter_bssid);
-/* Unplanned hopping is generic beacon-only. Planned SAE uses capability 86
- * with a frozen channel mask and optional exact BSSID list. Both use channel
+/* Unplanned hopping is generic beacon-only. Planned SAE uses capability 86;
+ * planned EAPOL uses 87. Each freezes its channel mask and optional BSSID list.
+ * Plans use channel
  * zero and no single-BSSID flag. The plan is copied into owned PSRAM. Without
  * save_pcap no SD access/lease is required. One shared worker; buffers are
  * allocated in PSRAM only for its lifetime. Stop/Back callers must retain

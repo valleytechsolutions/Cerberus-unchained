@@ -85,6 +85,19 @@ int main(void)
     assert(c5_spi_link_wifi_capture_plan_target(&target,&status)==ESP_ERR_NOT_SUPPORTED);
     assert(c5_spi_link_wifi_capture_hop_status(100,&hop)==ESP_ERR_NOT_SUPPORTED);
     assert(gate_calls==4&&!wire_calls);zeroed(&status,sizeof(status));zeroed(&hop,sizeof(hop));
+    reset();plan.dwell_ms=2000U;
+    assert(c5_spi_link_wifi_capture_plan_stage(&plan,&status)==ESP_ERR_NOT_SUPPORTED);
+    assert(gate_calls==1&&!wire_calls);zeroed(&status,sizeof(status));
+    firmware=87U;
+    assert(c5_spi_link_wifi_capture_plan_stage(&plan,&status)==ESP_OK);
+    assert(gate_calls==2&&wire_calls==1&&!memcmp(last_request.payload,&plan,sizeof(plan)));
+    /* A cached newer capability cannot authorize a downgraded peer. */
+    firmware=86U;
+    assert(c5_spi_link_wifi_capture_plan_stage(&plan,&status)==ESP_ERR_NOT_SUPPORTED);
+    assert(gate_calls==3&&wire_calls==1);zeroed(&status,sizeof(status));
+    plan.dwell_ms=1999U;
+    assert(c5_spi_link_wifi_capture_plan_stage(&plan,&status)==ESP_ERR_INVALID_ARG&&gate_calls==3);
+    plan.dwell_ms=250U;
     reset();gate_delay=5000;wire_delay=14000;
     assert(c5_spi_link_wifi_capture_plan_stage(&plan,&status)==ESP_OK);
     assert(!memcmp(last_request.payload,&plan,sizeof(plan))&&gate_deadline==wire_deadline&&!locked);
@@ -140,6 +153,6 @@ int main(void)
     reset();plan.reserved=1;assert(c5_spi_link_wifi_capture_plan_stage(&plan,&status)==ESP_ERR_INVALID_ARG&&!gate_calls);plan.reserved=0;
     target.index=32;assert(c5_spi_link_wifi_capture_plan_target(&target,&status)==ESP_ERR_INVALID_ARG&&!gate_calls);
     assert(c5_spi_link_wifi_capture_hop_status(0,&hop)==ESP_ERR_INVALID_ARG&&!gate_calls);
-    puts("S3 planned capture link: fresh capability86 gate, exact full frames/identity/readiness,32target masks, structured hop errors,20ms budget, no replay and cleared failures passed.");
+    puts("S3 planned capture link: fresh capability86/87 dwell gate, exact full frames/identity/readiness,32target masks, structured hop errors,20ms budget, no replay and cleared failures passed.");
     return 0;
 }

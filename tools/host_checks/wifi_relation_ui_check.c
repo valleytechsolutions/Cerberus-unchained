@@ -62,7 +62,7 @@ static void relation_text(uint16_t x,uint16_t y,const char *text,uint8_t scale)
     else if(!strcmp(text,"BACK TO CLIENTS"))++body_back_labels;
 }
 static bool ui_capability_blocked,learning_tool_active,wifi_attack_selecting,wifi_selection_valid=true;
-static bool sae_ui_selecting;
+static bool sae_ui_selecting, eapol_ui_selecting;
 static const char *ui_capability_blocked_reason;
 static unsigned ble_mode,ieee802154_mode;
 static unsigned dashboard_mode,file_mode,qr_mode,usb_mode,log_mode,settings_mode,self_test_mode,script_mode;

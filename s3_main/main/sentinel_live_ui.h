@@ -60,6 +60,15 @@ static uint8_t live_activity[16][CERBERUS_IEEE802154_ACTIVITY_FRAME_TYPE_COUNT];
 static int8_t live_energy[16];
 static uint16_t live_page[SENTINEL_SCAN_TOOL_COUNT];
 static uint32_t live_last_poll, live_frame;
+/* Opening an AP picker only presents the held inventory. SCAN is explicit,
+ * including when there is no earlier inventory or the old desired tool matches. */
+static void auth_monitor_picker_begin(void)
+{
+    sentinel_scan_session_select_snapshot(&live_session, SENTINEL_SCAN_WIFI);
+    sentinel_scan_session_pause(&live_session, true);
+    live_last_poll = 0U;
+}
+
 static bool live_radio_busy;
 static bool live_owned_wifi_observation;
 static bool live_ble_observation_valid;
@@ -175,7 +184,7 @@ static esp_err_t live_paint(bool full)
 {
     const bool ordinary_wifi = current_page == UI_PAGE_WIFI && wifi_mode == UI_WIFI_MODE_LIST &&
         !wifi_attack_selecting;
-    const bool painted_wifi = ordinary_wifi || (sae_ui_selecting && current_page == UI_PAGE_WIFI && wifi_mode == UI_WIFI_MODE_LIST);
+    const bool painted_wifi = ordinary_wifi || ((sae_ui_selecting || eapol_ui_selecting) && current_page == UI_PAGE_WIFI && wifi_mode == UI_WIFI_MODE_LIST);
     const bool wifi_bindable = painted_wifi && live_wifi_paint_map_current(&live_wifi_built);
     if (ble_discovery_presenting()) ble_discovery_live->painted_count = 0U;
     esp_err_t error = full ? sentinel_scan_view_draw(&live_view, live_frame) :
@@ -547,7 +556,7 @@ static void live_make_view(void)
     }
     const bool ordinary_wifi = tool == SENTINEL_SCAN_WIFI && current_page == UI_PAGE_WIFI &&
         wifi_mode == UI_WIFI_MODE_LIST && !wifi_attack_selecting;
-    const bool painted_wifi = ordinary_wifi || (tool == SENTINEL_SCAN_WIFI && sae_ui_selecting &&
+    const bool painted_wifi = ordinary_wifi || (tool == SENTINEL_SCAN_WIFI && (sae_ui_selecting || eapol_ui_selecting) &&
         current_page == UI_PAGE_WIFI && wifi_mode == UI_WIFI_MODE_LIST);
     memset(&live_wifi_built, 0, sizeof(live_wifi_built));
     if (painted_wifi && live_wifi_view_token != UINT64_MAX)
@@ -632,8 +641,9 @@ static void live_make_view(void)
             live_view.age_label = live_ble_recent_only ? "WITHIN 30S >" : "ALL AGES >";
     }
     if(tool==SENTINEL_SCAN_WIFI){
-        live_view.tools_label=sae_ui_selecting?"DONE":wifi_attack_selecting?"ATTACKS":"TOOLS";
-        live_view.tools_disabled=wifi_attack_selecting&&!wifi_target_count;
+        live_view.tools_label=(sae_ui_selecting || eapol_ui_selecting)?"DONE":wifi_attack_selecting?"ATTACKS":"TOOLS";
+        live_view.tools_disabled=wifi_attack_selecting&&!wifi_target_count&&
+            !(sae_ui_selecting || eapol_ui_selecting);
         live_view.selection_mode=wifi_attack_selecting;live_view.selection_count=wifi_target_count;
     }
     if (tool == SENTINEL_SCAN_WIFI) live_view.count_label = "NETWORKS STORED";
@@ -665,7 +675,7 @@ static void live_make_view(void)
             /* The explicit action target selector keeps its original order. */
             live_wifi_filtered_count = cerberus_s3_wifi_observation_indexes(
                 NULL, record->count, false, 0U, live_wifi_indexes, sizeof(live_wifi_indexes));
-            if (sae_ui_selecting) {
+            if ((sae_ui_selecting || eapol_ui_selecting)) {
                 live_wifi_built.publication = wifi_relation_publication;
                 live_wifi_built.generation = record->saved_generation;
                 live_wifi_built.bank_count = (uint8_t)record->count;
@@ -1186,6 +1196,7 @@ static void handle_live_scan_tap(uint16_t x, uint16_t y)
     } else if (action == SENTINEL_VIEW_TOOLS) {
         if (current_page == UI_PAGE_WIFI) {
             if(sae_ui_selecting)sae_ui_selection_done();
+            else if(eapol_ui_selecting)eapol_ui_selection_done();
             else if(wifi_attack_selecting&&wifi_target_count)wifi_target_open_attacks();
             else wifi_mode=UI_WIFI_MODE_MENU;
         }
@@ -1213,7 +1224,7 @@ static void handle_live_scan_tap(uint16_t x, uint16_t y)
         if (tool == SENTINEL_SCAN_BLE) {
             if (index >= live_ble_filtered_count) return;
             index = live_ble_indexes[index];
-        } else if (tool == SENTINEL_SCAN_WIFI && (!wifi_attack_selecting || sae_ui_selecting)) {
+        } else if (tool == SENTINEL_SCAN_WIFI && (!wifi_attack_selecting || (sae_ui_selecting || eapol_ui_selecting))) {
             unsigned row = (unsigned)(action - SENTINEL_VIEW_ROW0);
             if (!live_wifi_paint_map_current(&live_wifi_painted) ||
                 live_wifi_painted.token != live_wifi_built.token ||

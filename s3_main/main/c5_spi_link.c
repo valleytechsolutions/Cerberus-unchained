@@ -1065,7 +1065,9 @@ static bool wifi_capture_status_channel_valid(const cerberus_wifi_capture_status
     if (!status->channel)
         return status->state != CERBERUS_WIFI_CAPTURE_RUNNING ||
             status->mode_mask == CERBERUS_WIFI_CAPTURE_MODE_BEACON ||
-            status->mode_mask == CERBERUS_WIFI_CAPTURE_MODE_SAE_COMMIT;
+            status->mode_mask == CERBERUS_WIFI_CAPTURE_MODE_SAE_COMMIT ||
+            cerberus_wifi_capture_plan_mode_valid(status->mode_mask,
+                CERBERUS_WIFI_CAPTURE_PLAN_EAPOL_DWELL_MS);
     if (status->mode_mask == CERBERUS_WIFI_CAPTURE_MODE_BEACON)
         return cerberus_wifi_packet_monitor_channel_valid(status->channel);
     /* Preserve the existing fixed-channel request range for legacy modes. */
@@ -1100,10 +1102,13 @@ esp_err_t c5_spi_link_wifi_capture_start(
     memset(status,0,sizeof(*status));
     bool hopping=(request->flags&CERBERUS_WIFI_CAPTURE_FLAG_HOP)!=0U;
     bool planned=(request->flags&CERBERUS_WIFI_CAPTURE_FLAG_PLAN)!=0U;
+    bool plan_mode=cerberus_wifi_capture_plan_mode_valid(request->mode_mask,
+        CERBERUS_WIFI_CAPTURE_PLAN_DWELL_MS)||cerberus_wifi_capture_plan_mode_valid(
+        request->mode_mask,CERBERUS_WIFI_CAPTURE_PLAN_EAPOL_DWELL_MS);
     if(planned&&(!hopping||request->flags!=(CERBERUS_WIFI_CAPTURE_FLAG_HOP|CERBERUS_WIFI_CAPTURE_FLAG_PLAN)||
-       request->mode_mask!=CERBERUS_WIFI_CAPTURE_MODE_SAE_COMMIT))return ESP_ERR_INVALID_ARG;
-    if(hopping&&(request->channel!=0U||request->mode_mask!=(planned?
-       CERBERUS_WIFI_CAPTURE_MODE_SAE_COMMIT:CERBERUS_WIFI_CAPTURE_MODE_BEACON)||
+       !plan_mode))return ESP_ERR_INVALID_ARG;
+    if(hopping&&(request->channel!=0U||(planned?!plan_mode:
+       request->mode_mask!=CERBERUS_WIFI_CAPTURE_MODE_BEACON)||
        (request->flags&CERBERUS_WIFI_CAPTURE_FLAG_BSSID)!=0U))return ESP_ERR_INVALID_ARG;
     cerberus_c5_status_t device;
     esp_err_t err=c5_spi_link_get_status(&device);
@@ -1111,6 +1116,9 @@ esp_err_t c5_spi_link_wifi_capture_start(
     if(device.firmware_version<CERBERUS_WIFI_CAPTURE_MIN_FIRMWARE)
         return ESP_ERR_NOT_SUPPORTED;
     if(planned&&device.firmware_version<CERBERUS_WIFI_CAPTURE_PLAN_MIN_FIRMWARE)
+        return ESP_ERR_NOT_SUPPORTED;
+    if(planned&&(request->mode_mask&CERBERUS_WIFI_CAPTURE_MODE_EAPOL)&&
+       device.firmware_version<CERBERUS_WIFI_EAPOL_PLAN_MIN_FIRMWARE)
         return ESP_ERR_NOT_SUPPORTED;
     if((request->mode_mask&CERBERUS_WIFI_CAPTURE_MODE_SAE_COMMIT)!=0U &&
        device.firmware_version<CERBERUS_WIFI_CAPTURE_SAE_MIN_FIRMWARE)

@@ -1,3 +1,24 @@
+/* The menu is an idle chooser. Each monitor owns its Start/Stop lifecycle. */
+static esp_err_t auth_monitor_draw(void)
+{
+    ESP_RETURN_ON_ERROR(draw_centered(72, "AUTH MONITORS", UI_TEXT, 2), TAG, "auth title");
+    ESP_RETURN_ON_ERROR(draw_centered(108, "PASSIVE WI-FI AUTHENTICATION EVIDENCE", UI_MUTED, 1), TAG, "auth scope");
+    ESP_RETURN_ON_ERROR(cerberus_ui_widget_draw_button((cerberus_ui_rect_t){12,148,296,56},
+        "EAPOL MONITOR", 2, true, UI_WIDGET_THEME), TAG, "EAPOL entry");
+    ESP_RETURN_ON_ERROR(draw_centered(220, "KEY EXCHANGE PATTERNS / AP CONTEXT", UI_MUTED, 1), TAG, "EAPOL scope");
+    ESP_RETURN_ON_ERROR(cerberus_ui_widget_draw_button((cerberus_ui_rect_t){12,258,296,56},
+        "SAE MONITOR", 2, true, UI_WIDGET_THEME), TAG, "SAE entry");
+    ESP_RETURN_ON_ERROR(draw_centered(330, "OBSERVED WPA3 AUTHENTICATION FRAMES", UI_MUTED, 1), TAG, "SAE scope");
+    return draw_centered(374, "CHOOSE SCOPE, THEN START", UI_MUTED, 1);
+}
+
+static void auth_monitor_tap(uint16_t x, uint16_t y)
+{
+    if (x < 12U || x >= 308U) return;
+    if (y >= 148U && y < 204U) eapol_ui_open(true);
+    else if (y >= 258U && y < 314U) sae_ui_open(true);
+}
+
 /* Included by ui.c before wifi_target_ui.h. The AP identity comes from the
  * selected scan card; selecting a row never starts capture automatically. */
 static cerberus_c5_wifi_result_t capture_target;
@@ -22,7 +43,7 @@ static const char *const capture_mode_names[] = {
 static uint32_t capture_required_firmware(void)
 {
     if (capture_modes[capture_mode_index] == CERBERUS_WIFI_CAPTURE_MODE_EAPOL)
-        return CERBERUS_WIFI_EAPOL_MIN_FIRMWARE;
+        return CERBERUS_WIFI_EAPOL_PLAN_MIN_FIRMWARE;
     return capture_modes[capture_mode_index] == CERBERUS_WIFI_CAPTURE_MODE_SAE_COMMIT ?
         CERBERUS_WIFI_CAPTURE_PLAN_MIN_FIRMWARE : CERBERUS_WIFI_CAPTURE_MIN_FIRMWARE;
 }
@@ -60,7 +81,7 @@ static void capture_start(void)
         sae_ui_start(); return;
     }
     if (eapol_ui_is_open() || capture_modes[capture_mode_index] == CERBERUS_WIFI_CAPTURE_MODE_EAPOL) {
-        if (!eapol_ui_is_open()) eapol_ui_open();
+        if (!eapol_ui_is_open()) eapol_ui_open(false);
         eapol_ui_start(); return;
     }
     capture_message[0] = '\0';
@@ -84,7 +105,7 @@ static esp_err_t capture_draw(void)
         sae_ui_open(false);
     if (sae_ui_is_open()) return sae_ui_draw();
     if (capture_modes[capture_mode_index] == CERBERUS_WIFI_CAPTURE_MODE_EAPOL && !eapol_ui_is_open())
-        eapol_ui_open();
+        eapol_ui_open(false);
     if (eapol_ui_is_open()) return eapol_ui_draw();
     cerberus_s3_capture_status_t state;
     cerberus_s3_capture_status(&state);
@@ -144,7 +165,7 @@ static void capture_tap(uint16_t x, uint16_t y)
         capture_mode_index = (uint8_t)((capture_mode_index + 1U) %
             (sizeof(capture_modes) / sizeof(capture_modes[0])));
         if (capture_modes[capture_mode_index] == CERBERUS_WIFI_CAPTURE_MODE_EAPOL)
-            eapol_ui_open();
+            eapol_ui_open(false);
         else if (capture_modes[capture_mode_index] == CERBERUS_WIFI_CAPTURE_MODE_SAE_COMMIT)
             sae_ui_open(false);
     } else if (sae_ui_is_open()) {

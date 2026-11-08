@@ -96,7 +96,15 @@ static esp_err_t esp_wifi_set_channel(uint8_t channel,wifi_second_chan_t second)
     return e;
 }
 static esp_err_t esp_wifi_set_promiscuous_filter(const wifi_promiscuous_filter_t *filter)
-{assert(!hop_expected||filter->filter_mask==WIFI_PROMIS_FILTER_MASK_MGMT);return operation(FILTER);}
+{
+    if(hop_expected){
+        unsigned expected=current_request.mode_mask&CERBERUS_WIFI_CAPTURE_MODE_EAPOL?
+            WIFI_PROMIS_FILTER_MASK_DATA:WIFI_PROMIS_FILTER_MASK_MGMT;
+        if(current_request.mode_mask&CERBERUS_WIFI_CAPTURE_MODE_BEACON)expected|=WIFI_PROMIS_FILTER_MASK_MGMT;
+        assert(filter->filter_mask==expected);
+    }
+    return operation(FILTER);
+}
 static esp_err_t esp_wifi_set_promiscuous(bool enable)
 {
     verify_paused();esp_err_t e=operation(enable?ENABLE:DISABLE);

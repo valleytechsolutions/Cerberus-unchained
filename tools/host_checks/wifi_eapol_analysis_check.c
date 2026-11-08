@@ -185,8 +185,163 @@ static void maximum_key_data(void)
     CHECK(cerberus_wifi_eapol_observe(&table,&meta,large,CERBERUS_WIFI_EAPOL_FRAME_MAX)==-1);
     CHECK(table.summary.malformed==3&&table.summary.pmkid_elements==1);
 }
+
+static cerberus_wifi_capture_plan_t plan(bool selected)
+{
+    cerberus_wifi_capture_plan_t p;
+    cerberus_wifi_capture_plan_clear(&p);
+    p.dwell_ms = CERBERUS_WIFI_CAPTURE_PLAN_EAPOL_DWELL_MS;
+    if (selected) CHECK(cerberus_wifi_capture_plan_add_target(&p, ap, 6));
+    else p.channel_mask = cerberus_wifi_capture_plan_band_mask(CERBERUS_WIFI_CAPTURE_PLAN_BOTH);
+    CHECK(cerberus_wifi_capture_plan_valid(&p));
+    return p;
+}
+
+static void replace_ap(const uint8_t bssid[6])
+{
+    /* Addr3 deliberately stays unchanged: infrastructure DS direction is the
+     * BSSID proof, not the final source/destination address. */
+    memcpy(frame + ((frame[1] & 3U) == 2U ? 10U : 4U), bssid, 6U);
+}
+
+static void planned_peers(void)
+{
+    const uint8_t second_ap[6] = {4,3,4,5,6,7};
+    cerberus_wifi_capture_plan_t p = plan(true), frozen = p;
+    CHECK(cerberus_wifi_eapol_init_options(&table, 0, false, NULL, &p));
+    p.bssids[0][0] = 0x44; p.channel_mask = 1U;
+    CHECK(!memcmp(&frozen, &table.plan, sizeof(frozen)));
+    meta = (cerberus_wifi_eapol_observation_t){.channel=6,.rssi=-52};
+    size_t n = build(1,1,2,2,16,1,0); replace_ap(second_ap);
+    CHECK(feed(n) == -1 && table.summary.scope_rejected == 1 && !table.summary.count);
+    CHECK(feed(build(1,1,2,2,16,1,0)) == 0);
+    meta.channel = 36; CHECK(feed(build(2,1,2,2,16,1,0)) == -1);
+    CHECK(table.summary.scope_rejected == 2 && table.records[0].keys == 1);
+    p = plan(false);
+    CHECK(!cerberus_wifi_eapol_init_options(&table, 6, false, NULL, &p));
+    CHECK(!cerberus_wifi_eapol_init_options(&table, 0, true, ap, &p));
+    p.dwell_ms = CERBERUS_WIFI_CAPTURE_PLAN_DWELL_MS;
+    CHECK(!cerberus_wifi_eapol_init_options(&table, 0, false, NULL, &p));
+    CHECK(!cerberus_wifi_eapol_init_options(&table, 0, false, NULL, NULL));
+    CHECK(!cerberus_wifi_eapol_init_options(&table, 15, false, NULL, NULL));
+
+    /* One station associated with two APs owns two independent correlations. */
+    p = plan(false); CHECK(cerberus_wifi_eapol_init_options(&table, 0, false, NULL, &p));
+    meta = (cerberus_wifi_eapol_observation_t){.channel=6,.rssi=-52};
+    for (unsigned phase=1; phase<=4; ++phase) {
+        for (unsigned network=0; network<2; ++network) {
+            n = build(phase,1,2,2,16,phase<=2?10:11,0);
+            if (network) replace_ap(second_ap);
+            CHECK(feed(n) == (int)network);
+        }
+    }
+    CHECK(table.summary.count == 2 && table.summary.exchanges == 2);
+    CHECK(!memcmp(table.records[0].bssid,ap,6) && !memcmp(table.records[1].bssid,second_ap,6));
+    CHECK(!memcmp(table.records[0].station,table.records[1].station,6));
+    CHECK(table.records[0].exchanges == 1 && table.records[1].exchanges == 1);
+    CHECK(cerberus_wifi_eapol_init_options(&table, 6, false, NULL, NULL));
+    meta = (cerberus_wifi_eapol_observation_t){.channel=6,.rssi=-52};
+    for (unsigned phase=1; phase<=4; ++phase) {
+        n = build(phase,1,2,2,16,phase<=2?10:11,0);
+        if (phase % 2U == 0U) replace_ap(second_ap);
+        CHECK(feed(n) >= 0);
+    }
+    CHECK(table.summary.count == 2 && !table.summary.exchanges);
+
+    /* A reused BSSID/station on another channel cannot supply missing phases. */
+    CHECK(cerberus_wifi_eapol_init_options(&table, 0, false, NULL, &p));
+    meta = (cerberus_wifi_eapol_observation_t){.channel=6,.rssi=-52};
+    CHECK(feed(build(1,1,2,2,16,10,0)) == 0);
+    meta.channel = 36; CHECK(feed(build(2,1,2,2,16,10,0)) == 0);
+    meta.channel = 6;
+    CHECK(feed(build(3,1,2,2,16,11,0)) == 0);
+    CHECK(feed(build(4,1,2,2,16,11,0)) == 0 && !table.summary.exchanges);
+    meta.channel = 36;
+    for (unsigned phase=1; phase<=4; ++phase) CHECK(feed(build(phase,1,2,2,16,phase<=2?20:21,0)) == 0);
+    CHECK(table.summary.exchanges == 1 && table.records[0].channel == 36);
+    CHECK(table.records[0].gaps > 0);
+    /* A group address cannot become an AP in an unfiltered plan. */
+    n = build(1,1,2,2,16,30,0); frame[10] |= 1U;
+    CHECK(feed(n) == -1 && table.summary.count == 1);
+}
+
+static size_t beacon(const uint8_t bssid[6], const uint8_t *ssid, size_t length)
+{
+    memset(frame, 0, sizeof(frame)); frame[0] = 0x80;
+    memset(frame + 4, 0xff, 6); memcpy(frame + 10, bssid, 6); memcpy(frame + 16, bssid, 6);
+    frame[34] = 0x34; frame[35] = 0x12; frame[36] = 0; frame[37] = (uint8_t)length;
+    if (length) memcpy(frame + 38, ssid, length);
+    return 38U + length;
+}
+
+static cerberus_wifi_eapol_result_t feed_full(size_t length)
+{
+    ++meta.sequence; meta.observed_us += 100;
+    return cerberus_wifi_eapol_observe_full(&table, &meta, frame, length);
+}
+
+static void beacon_context(void)
+{
+    const uint8_t binary[] = {'A',0,'\r',0xff};
+    init(); size_t n = build(1,1,2,2,16,1,0); CHECK(feed(n) == 0);
+    cerberus_wifi_eapol_record_t key_before = table.records[0];
+    n = beacon(ap, binary, sizeof(binary)); frame[10] ^= 2U;
+    frame[n++] = 3; frame[n++] = 1; frame[n++] = 36;
+    cerberus_wifi_eapol_result_t result = feed_full(n);
+    CHECK(result.peer_index == -1 && result.context_index == 0);
+    CHECK(table.summary.keys == 1 && table.summary.count == 1 && table.summary.beacons == 1);
+    CHECK(!memcmp(&key_before,&table.records[0],sizeof(key_before)));
+    CHECK(table.contexts[0].ssid_length == sizeof(binary) && !memcmp(table.contexts[0].ssid,binary,sizeof(binary)));
+    CHECK(table.contexts[0].channel == 6 && table.contexts[0].advertised_channel == 36);
+    CHECK(table.contexts[0].capabilities == 0x1234 && !table.contexts[0].hidden_like);
+    CHECK(table.contexts[0].transmitter[0] != table.contexts[0].bssid[0]);
+    cerberus_wifi_eapol_context_t frozen = table.contexts[0], copied;
+    CHECK(cerberus_wifi_eapol_context_copy(&table,0,&copied) && !memcmp(&copied,&frozen,sizeof(copied)));
+    result = cerberus_wifi_eapol_observe_full(&table,&meta,frame,n);
+    CHECK(result.peer_index == -1 && result.context_index == -1 && table.summary.sequence_rejected == 1);
+    CHECK(!memcmp(&frozen,&table.contexts[0],sizeof(frozen)));
+    /* Full IE validation: no partial SSID claim escapes a malformed tail. */
+    frame[n++] = 3; frame[n++] = 1; frame[n++] = 6;
+    result = feed_full(n); CHECK(result.context_index == -1 && table.summary.beacon_malformed == 1);
+    CHECK(!memcmp(&frozen,&table.contexts[0],sizeof(frozen)));
+    n = beacon(ap,NULL,0); result = feed_full(n);
+    CHECK(result.context_index == 0 && table.contexts[0].hidden_like && !table.contexts[0].ssid_length);
+    CHECK(!memcmp(&key_before,&table.records[0],sizeof(key_before)));
+    const uint8_t hidden[] = {0,0,0}; n = beacon(ap,hidden,sizeof(hidden)); CHECK(feed_full(n).context_index == 0);
+    CHECK(table.contexts[0].hidden_like && table.contexts[0].ssid_length == sizeof(hidden));
+    CHECK(table.contexts[0].first_sequence == frozen.first_sequence && table.contexts[0].frames == 3);
+    meta.rssi = 127; CHECK(feed_full(n).context_index == 0);
+    CHECK(!table.contexts[0].rssi_valid); meta.rssi = -55;
+    n = build(2,1,2,2,16,1,0); frozen = table.contexts[0]; CHECK(feed(n) == 0);
+    CHECK(!memcmp(&frozen,&table.contexts[0],sizeof(frozen)));
+    memset(&copied,0x5a,sizeof(copied)); CHECK(!cerberus_wifi_eapol_context_copy(&table,16,&copied));
+    cerberus_wifi_eapol_context_t zero = {0}; CHECK(!memcmp(&copied,&zero,sizeof(zero)));
+
+    cerberus_wifi_capture_plan_t p = plan(true);
+    CHECK(cerberus_wifi_eapol_init_options(&table,0,false,NULL,&p));
+    meta = (cerberus_wifi_eapol_observation_t){.channel=6,.rssi=-52};
+    uint8_t other_ap[6]; memcpy(other_ap,ap,6); other_ap[0] = 4;
+    CHECK(feed_full(beacon(other_ap,binary,sizeof(binary))).context_index == -1);
+    CHECK(table.summary.scope_rejected == 1 && !table.summary.context_count);
+    p = plan(false); CHECK(cerberus_wifi_eapol_init_options(&table,0,false,NULL,&p));
+    for (unsigned i=0; i<CERBERUS_WIFI_EAPOL_MAX_CONTEXTS; ++i) {
+        other_ap[5] = (uint8_t)i;
+        CHECK(feed_full(beacon(other_ap,binary,sizeof(binary))).context_index == (int)i);
+    }
+    CHECK(!table.summary.count && !table.summary.keys && !table.summary.exchanges);
+    other_ap[5] = 99; CHECK(feed_full(beacon(other_ap,binary,sizeof(binary))).context_index == -1);
+    CHECK(table.summary.context_count == 16 && table.summary.beacon_dropped == 1);
+    other_ap[5] = 0; table.contexts[0].frames = UINT32_MAX;
+    CHECK(feed_full(beacon(other_ap,binary,sizeof(binary))).context_index == 0);
+    CHECK(table.summary.saturated && table.contexts[0].frames == UINT32_MAX);
+    frozen = table.contexts[0]; n = beacon(other_ap,binary,sizeof(binary));
+    ++meta.sequence; meta.observed_us = 0;
+    CHECK(cerberus_wifi_eapol_observe_full(&table,&meta,frame,n).context_index == -1);
+    CHECK(table.summary.clock_rejected == 1 && !memcmp(&frozen,&table.contexts[0],sizeof(frozen)));
+}
 int main(void)
 {
     exchanges();layouts_and_pmkid();boundaries();capacity_and_saturation();maximum_key_data();
+    planned_peers();beacon_context();
     printf("Passive EAPOL analysis: %u checks; %zu-byte bounded table\n",checks,sizeof(table));return 0;
 }

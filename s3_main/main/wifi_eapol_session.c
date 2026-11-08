@@ -8,16 +8,16 @@
 #include <string.h>
 
 typedef struct {
+    uint32_t first_sequence;
+    uint64_t first_received_ms, last_received_ms;
+} eapol_delivery_t;
+
+typedef struct {
     cerberus_wifi_eapol_table_t table;
     cerberus_s3_capture_status_t capture;
     uint32_t generation, rejected_provenance;
-    uint8_t bssid[6], channel;
-    struct {
-        uint8_t station[6];
-        uint32_t first_sequence;
-        uint64_t first_received_ms, last_received_ms;
-        bool valid;
-    } delivery[CERBERUS_WIFI_EAPOL_MAX_PEERS];
+    eapol_delivery_t delivery[CERBERUS_WIFI_EAPOL_MAX_PEERS];
+    eapol_delivery_t context_delivery[CERBERUS_WIFI_EAPOL_MAX_CONTEXTS];
 } eapol_store_t;
 
 static SemaphoreHandle_t eapol_mutex;
@@ -34,6 +34,16 @@ static uint32_t delivery_age(uint64_t now, uint64_t then)
     if (now == UINT64_MAX || then == UINT64_MAX || now < then) return UINT32_MAX;
     uint64_t age = now - then;
     return age >= UINT32_MAX ? UINT32_MAX : (uint32_t)age;
+}
+
+static void receive_delivery(eapol_delivery_t *delivery, uint32_t first_sequence)
+{
+    uint64_t received = local_ms();
+    if (delivery->first_sequence != first_sequence) {
+        delivery->first_sequence = first_sequence;
+        delivery->first_received_ms = received;
+    }
+    delivery->last_received_ms = received;
 }
 
 static esp_err_t take_eapol(void)
@@ -70,7 +80,9 @@ static void receive_eapol(const cerberus_s3_capture_observation_t *metadata,
         return;
     }
     if (!metadata->generation || metadata->generation != store->generation ||
-        metadata->channel != store->channel ||
+        (store->table.planned ? !(store->table.plan.channel_mask &
+            cerberus_wifi_capture_plan_channel_bit(metadata->channel)) :
+            metadata->channel != store->table.channel) ||
         metadata->observed_us > UINT64_C(0xffffffffffff)) {
         if (store->rejected_provenance != UINT32_MAX) ++store->rejected_provenance;
         xSemaphoreGive(eapol_mutex);
@@ -80,20 +92,14 @@ static void receive_eapol(const cerberus_s3_capture_observation_t *metadata,
         .observed_us = metadata->observed_us, .sequence = metadata->sequence,
         .channel = metadata->channel, .rssi = metadata->rssi_dbm,
     };
-    int index = cerberus_wifi_eapol_observe(&store->table, &observation, frame, length);
-    if (index >= 0 && index < (int)CERBERUS_WIFI_EAPOL_MAX_PEERS) {
-        const cerberus_wifi_eapol_record_t *record = &store->table.records[index];
-        uint64_t received = local_ms();
-        if (!store->delivery[index].valid ||
-            store->delivery[index].first_sequence != record->first_sequence ||
-            memcmp(store->delivery[index].station, record->station, 6U)) {
-            memcpy(store->delivery[index].station, record->station, 6U);
-            store->delivery[index].first_sequence = record->first_sequence;
-            store->delivery[index].first_received_ms = received;
-            store->delivery[index].valid = true;
-        }
-        store->delivery[index].last_received_ms = received;
-    }
+    cerberus_wifi_eapol_result_t result = cerberus_wifi_eapol_observe_full(
+        &store->table, &observation, frame, length);
+    if (result.peer_index >= 0 && result.peer_index < (int)CERBERUS_WIFI_EAPOL_MAX_PEERS)
+        receive_delivery(&store->delivery[result.peer_index],
+            store->table.records[result.peer_index].first_sequence);
+    if (result.context_index >= 0 && result.context_index < (int)CERBERUS_WIFI_EAPOL_MAX_CONTEXTS)
+        receive_delivery(&store->context_delivery[result.context_index],
+            store->table.contexts[result.context_index].first_sequence);
     xSemaphoreGive(eapol_mutex);
 }
 
@@ -103,12 +109,20 @@ esp_err_t cerberus_s3_eapol_init(void)
     return eapol_mutex ? ESP_OK : ESP_ERR_NO_MEM;
 }
 
-esp_err_t cerberus_s3_eapol_start(uint8_t channel, const uint8_t bssid[6], bool save_pcap)
+static bool valid_options(const cerberus_s3_eapol_options_t *options)
 {
     static const uint8_t zero[6];
-    if (!bssid || (bssid[0] & 1U) || !memcmp(bssid, zero, 6U) ||
-        !channel || (channel > 14U && (channel < 32U || channel > 177U)))
-        return ESP_ERR_INVALID_ARG;
+    if (!options) return false;
+    if (options->plan) return !options->channel && !options->filter_bssid &&
+        cerberus_wifi_capture_plan_valid(options->plan) &&
+        options->plan->dwell_ms == CERBERUS_WIFI_CAPTURE_PLAN_EAPOL_DWELL_MS;
+    return cerberus_wifi_capture_plan_channel_bit(options->channel) &&
+        (!options->filter_bssid || (!(options->bssid[0] & 1U) && memcmp(options->bssid, zero, 6U)));
+}
+
+esp_err_t cerberus_s3_eapol_start_options(const cerberus_s3_eapol_options_t *options)
+{
+    if (!valid_options(options)) return ESP_ERR_INVALID_ARG;
     esp_err_t error = take_eapol();
     if (error != ESP_OK) return error;
     cerberus_s3_capture_status_t current;
@@ -119,7 +133,7 @@ esp_err_t cerberus_s3_eapol_start(uint8_t channel, const uint8_t bssid[6], bool 
     }
     cerberus_c5_status_t peer = {0};
     error = c5_spi_link_get_status(&peer);
-    if (error == ESP_OK && peer.firmware_version < CERBERUS_WIFI_EAPOL_MIN_FIRMWARE)
+    if (error == ESP_OK && peer.firmware_version < CERBERUS_WIFI_EAPOL_PLAN_MIN_FIRMWARE)
         error = ESP_ERR_NOT_SUPPORTED;
     if (error != ESP_OK) {
         xSemaphoreGive(eapol_mutex);
@@ -131,27 +145,30 @@ esp_err_t cerberus_s3_eapol_start(uint8_t channel, const uint8_t bssid[6], bool 
         xSemaphoreGive(eapol_mutex);
         return ESP_ERR_NO_MEM;
     }
-    if (!cerberus_wifi_eapol_init(&pending->table, bssid, channel)) {
+    if (!cerberus_wifi_eapol_init_options(&pending->table, options->channel,
+            options->filter_bssid, options->bssid, options->plan)) {
         heap_caps_free(pending);
         xSemaphoreGive(eapol_mutex);
         return ESP_ERR_INVALID_ARG;
     }
-    memcpy(pending->bssid, bssid, 6U);
-    pending->channel = channel;
-    cerberus_s3_capture_options_t options = {
-        .channel = channel, .mode_mask = CERBERUS_WIFI_CAPTURE_MODE_EAPOL,
-        .filter_bssid = true, .save_pcap = save_pcap,
+    cerberus_s3_capture_options_t capture = {
+        .channel = options->channel,
+        .mode_mask = CERBERUS_WIFI_CAPTURE_MODE_EAPOL | CERBERUS_WIFI_CAPTURE_MODE_BEACON,
+        .filter_bssid = options->filter_bssid, .save_pcap = options->save_pcap,
+        .hopping = options->plan != NULL,
+        .plan = options->plan ? &pending->table.plan : NULL,
         .observer = receive_eapol, .observer_context = pending,
     };
-    memcpy(options.bssid, bssid, 6U);
+    if (options->filter_bssid) memcpy(capture.bssid, options->bssid, 6U);
     uint32_t generation = 0U;
-    error = cerberus_s3_capture_start_options_generation(&options, &generation);
+    error = cerberus_s3_capture_start_options_generation(&capture, &generation);
     if (error == ESP_OK) {
         pending->generation = generation;
         pending->capture = (cerberus_s3_capture_status_t){
             .state = CERBERUS_S3_CAPTURE_STARTING, .generation = generation,
-            .busy = true, .channel = channel, .mode_mask = options.mode_mask,
-            .filter_bssid = true, .save_pcap = save_pcap,
+            .busy = true, .channel = capture.channel, .mode_mask = capture.mode_mask,
+            .filter_bssid = capture.filter_bssid, .save_pcap = capture.save_pcap,
+            .hopping = capture.hopping, .planned = capture.plan != NULL,
         };
         refresh_capture(pending);
         eapol_store_t *previous = eapol_store;
@@ -162,6 +179,16 @@ esp_err_t cerberus_s3_eapol_start(uint8_t channel, const uint8_t bssid[6], bool 
     } else heap_caps_free(pending);
     xSemaphoreGive(eapol_mutex);
     return error;
+}
+
+esp_err_t cerberus_s3_eapol_start(uint8_t channel, const uint8_t bssid[6], bool save_pcap)
+{
+    if (!bssid) return ESP_ERR_INVALID_ARG;
+    cerberus_s3_eapol_options_t options = {
+        .channel = channel, .filter_bssid = true, .save_pcap = save_pcap,
+    };
+    memcpy(options.bssid, bssid, 6U);
+    return cerberus_s3_eapol_start_options(&options);
 }
 
 void cerberus_s3_eapol_stop(void)
@@ -187,8 +214,11 @@ esp_err_t cerberus_s3_eapol_status(cerberus_s3_eapol_status_t *out)
         out->summary = eapol_store->table.summary;
         out->generation = eapol_store->generation;
         out->rejected_provenance = eapol_store->rejected_provenance;
-        memcpy(out->bssid, eapol_store->bssid, 6U);
-        out->channel = eapol_store->channel;
+        memcpy(out->bssid, eapol_store->table.bssid, 6U);
+        out->channel = eapol_store->table.channel;
+        out->plan = eapol_store->table.plan;
+        out->planned = eapol_store->table.planned;
+        out->filter_bssid = eapol_store->table.filter_bssid;
     }
     xSemaphoreGive(eapol_mutex);
     return ESP_OK;
@@ -211,14 +241,39 @@ esp_err_t cerberus_s3_eapol_page(uint16_t offset, cerberus_s3_eapol_row_t *rows,
             cerberus_s3_eapol_row_t *row = &rows[page->copied++];
             row->evidence = store->table.records[i];
             row->generation = store->generation;
-            row->first_received_age_ms = store->delivery[i].valid ?
+            row->first_received_age_ms = store->delivery[i].first_sequence ?
                 delivery_age(now, store->delivery[i].first_received_ms) : UINT32_MAX;
-            row->last_received_age_ms = store->delivery[i].valid ?
+            row->last_received_age_ms = store->delivery[i].first_sequence ?
                 delivery_age(now, store->delivery[i].last_received_ms) : UINT32_MAX;
         }
     }
     xSemaphoreGive(eapol_mutex);
     return ESP_OK;
+}
+
+esp_err_t cerberus_s3_eapol_context_page(uint16_t offset,
+    cerberus_s3_eapol_context_row_t *rows, size_t capacity,
+    cerberus_s3_eapol_page_t *page)
+{
+    if (page) memset(page, 0, sizeof(*page));
+    if (rows && capacity <= 4U) memset(rows, 0, capacity * sizeof(*rows));
+    if (!page || (capacity && !rows) || capacity > 4U) return ESP_ERR_INVALID_ARG;
+    esp_err_t error = take_eapol();
+    if (error != ESP_OK) return error;
+    if (eapol_store) {
+        eapol_store_t *store = eapol_store;
+        page->generation = store->generation; page->total = store->table.summary.context_count;
+        uint64_t now = local_ms();
+        for (uint16_t i = offset; i < page->total && page->copied < capacity; ++i) {
+            cerberus_s3_eapol_context_row_t *row = &rows[page->copied++];
+            row->evidence = store->table.contexts[i]; row->generation = store->generation;
+            row->first_received_age_ms = store->context_delivery[i].first_sequence ?
+                delivery_age(now, store->context_delivery[i].first_received_ms) : UINT32_MAX;
+            row->last_received_age_ms = store->context_delivery[i].first_sequence ?
+                delivery_age(now, store->context_delivery[i].last_received_ms) : UINT32_MAX;
+        }
+    }
+    xSemaphoreGive(eapol_mutex); return ESP_OK;
 }
 
 esp_err_t cerberus_s3_eapol_release(void)
