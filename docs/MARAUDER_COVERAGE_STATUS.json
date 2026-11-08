@@ -1,6 +1,6 @@
 {
   "format": 1,
-  "checkpoint": "rev152-development",
+  "checkpoint": "rev153-development",
   "scope": "Marauder develop was rechecked on 2026-11-08 UTC at 79cc6bcba1db6679baee1dab2b0c1ad5010e6363. Rev149 is the installed GPS-wait and RSSI-extrema baseline: the user confirmed waiting, Stop cancellation and layout; a later read-only console capture confirms live located recording without a reported service error. Rev150 adds a source implementation of GPS track and POI recording with host-tested formatting, worker, storage and UI boundaries. Rev151 adds an optional PSRAM RSSI cache to avoid redundant journal appends while retaining the same final CSV rows. Physical GPX acceptance, final compacted CSV readback, sustained RF/GPS performance, expansion hardware and complete upstream parity remain open. Earlier provider acknowledgement is distinct from provider-side processing; uploads remain manual. Rev152 fixes a reproduced Wardriving/Packet Monitor SPI command collision, centralizes Wardriving command assignments and requires C5 capability 78 for the corrected paths. Paired installation and physical monitor/PCAP acceptance remain pending.",
   "status_definitions": {
     "partial": "A related Cerberus workflow exists, but upstream option/behavior parity or hardware acceptance remains open.",
@@ -1967,7 +1967,7 @@
         44,
         48
       ],
-      "next_gap": "Rev150 implements track/POI GPX recording beside the existing GPS Data/NMEA view; host formatter, worker, storage and UI checks pass. Physical GPX/SD readback, custom touchscreen names, CLI parity, geofencing, generated NMEA, PPS synchronization and ATGM336H remain open."
+      "next_gap": "Rev150 implements track/POI GPX recording beside GPS Data/NMEA. Rev153 adds tested native S3/C5 pause/resume and a five-area GPS boundary policy (docs/WARDRIVE_GEOFENCES.md); persisted editing, dual-radio coordinator, expansion handling and CLI integration are still pending. No geofence menu or active filtering is exposed. Physical GPX/SD readback, custom touchscreen POI names, generated NMEA, PPS synchronization and ATGM336H remain open."
     },
     {
       "name": "dynamic_menu_options",

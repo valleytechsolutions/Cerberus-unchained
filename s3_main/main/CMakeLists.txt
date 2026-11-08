@@ -24,6 +24,7 @@ idf_component_register(
         "wardrive_recent.c"
         "wardrive_gps_core.c"
         "gps_gpx.c"
+        "wardrive_geofence.c"
         "gps_recorder.c"
         "wardrive_gps_uart.c"
         "wardrive_service.c"

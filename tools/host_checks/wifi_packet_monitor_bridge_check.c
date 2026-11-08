@@ -14,7 +14,7 @@ static bool response_ready, event_batch_cache_valid;
 static unsigned wardrive_calls;
 esp_err_t cerberus_wardrive_radio_exchange(uint8_t command, const cerberus_wd_request_t *query, void *reply)
 {
-    assert(command >= CERBERUS_WD_START && command <= CERBERUS_WD_RELEASE);
+    assert(command >= CERBERUS_WD_START && command <= CERBERUS_WD_RESUME);
     assert(query && query->session && received_transfer_bytes == 64U);
     ++wardrive_calls;
     memset(reply, 0, sizeof(cerberus_wd_status_t));
@@ -65,7 +65,7 @@ static esp_err_t spi_request_response_passive(const void *data, void *discarded,
     (void)discarded;
     const cerberus_spi_frame_t *q = data;
     cerberus_spi_frame_t *r = output;
-    bool wardrive = q->command >= CERBERUS_WD_START && q->command <= CERBERUS_WD_RELEASE;
+    bool wardrive = q->command >= CERBERUS_WD_START && q->command <= CERBERUS_WD_RESUME;
     assert(link_locked && (size == sizeof(*q) || size == 64U) && cerberus_protocol_frame_is_valid(q));
     assert((uint32_t)(deadline - clock_ms) <= (wardrive ? 30U : 20U));
     ++exchanges;
@@ -616,7 +616,7 @@ static void dispatch_families(void)
     bridge_reset();
     cerberus_wd_request_t query = {.session = UINT64_C(0x123456789abcdef0)};
     cerberus_spi_frame_t request;
-    for (unsigned command = CERBERUS_WD_START; command <= CERBERUS_WD_RELEASE; ++command) {
+    for (unsigned command = CERBERUS_WD_START; command <= CERBERUS_WD_RESUME; ++command) {
         assert(cerberus_protocol_prepare_frame(&request, (cerberus_spi_command_t)command,
             9U, &query, sizeof(query)));
         received_transfer_bytes = 64U;
@@ -664,6 +664,15 @@ static void dispatch_families(void)
     }
     assert(c5_spi_link_wardrive(CERBERUS_WD_START, &query, &status) == ESP_OK);
     assert(status.session == query.session && wardrive_calls == before + 1U);
+    before = wardrive_calls;
+    assert(c5_spi_link_wardrive(CERBERUS_WD_PAUSE, &query, &status) == ESP_ERR_NOT_SUPPORTED);
+    assert(c5_spi_link_wardrive(CERBERUS_WD_RESUME, &query, &status) == ESP_ERR_NOT_SUPPORTED);
+    assert(wardrive_calls == before); /* Capability 78 can record, but cannot pause. */
+    firmware = CERBERUS_WD_PAUSE_MIN_FIRMWARE;
+    assert(c5_spi_link_wardrive(CERBERUS_WD_START, &query, &status) == ESP_OK);
+    assert(c5_spi_link_wardrive(CERBERUS_WD_PAUSE, &query, &status) == ESP_OK);
+    assert(c5_spi_link_wardrive(CERBERUS_WD_RESUME, &query, &status) == ESP_OK);
+    assert(wardrive_calls == before + 3U && status.session == query.session);
     faults = 1U;
     assert(c5_spi_link_wardrive(CERBERUS_WD_STATUS, &query, &status) == ESP_ERR_INVALID_RESPONSE);
     assert(!status.session);

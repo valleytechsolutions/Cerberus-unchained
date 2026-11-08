@@ -31,6 +31,9 @@ static cerberus_wd_status_t wd_status;
 static uint64_t wd_retired_session;
 static uint32_t wd_last_contact,wd_epoch;
 static bool wd_worker,wd_stop,wd_accepting;
+/* A resume received before the worker handles pause must still cross the RF
+ * shutdown barrier. Otherwise a previous BLE callback keeps its old epoch. */
+static bool wd_pause_requested,wd_pause_pending;
 static bool wd_promiscuous,wd_ble_active;
 #if CONFIG_IDF_TARGET_ESP32S3
 static bool wd_wifi_initialized,wd_wifi_started,wd_wifi_callback;
@@ -63,6 +66,21 @@ static bool wd_cancelled(void)
         wd_stop=true;
     }
     bool stop=wd_stop;portEXIT_CRITICAL(&wd_lock);return stop;
+}
+static bool wd_pause_needed(void)
+{
+    portENTER_CRITICAL(&wd_lock);
+    bool pause=wd_pause_requested||wd_pause_pending;
+    portEXIT_CRITICAL(&wd_lock);return pause;
+}
+static void wd_receiving(uint8_t phase,uint8_t channel)
+{
+    portENTER_CRITICAL(&wd_lock);
+    if(!wd_stop&&!wd_pause_requested&&!wd_pause_pending){
+        wd_status.phase=phase;wd_status.channel=channel;
+        wd_status.state=CERBERUS_WD_RUNNING;wd_accepting=true;
+    }
+    portEXIT_CRITICAL(&wd_lock);
 }
 static void wd_enqueue(const cerberus_wd_record_t *row,uint32_t epoch)
 {
@@ -114,15 +132,16 @@ static int wd_gap(struct ble_gap_event *event,void *arg)
 }
 static esp_err_t wd_ble_begin(void)
 {
+    portENTER_CRITICAL(&wd_lock);uint32_t epoch=wd_epoch;portEXIT_CRITICAL(&wd_lock);
     uint8_t address_type=0;int rc=ble_hs_id_infer_auto(0,&address_type);
     if(rc)return ESP_ERR_INVALID_STATE;
 #if CONFIG_IDF_TARGET_ESP32C5 && MYNEWT_VAL(BLE_EXT_ADV)
     /* C5 covers 1M and coded PHY. S3 adds an independent continuous 1M receiver. */
     const struct ble_gap_ext_disc_params p={.itvl=160,.window=80,.passive=1};
-    rc=ble_gap_ext_disc(address_type,0,0,0,0,0,&p,&p,wd_gap,(void *)(uintptr_t)wd_epoch);
+    rc=ble_gap_ext_disc(address_type,0,0,0,0,0,&p,&p,wd_gap,(void *)(uintptr_t)epoch);
 #else
     const struct ble_gap_disc_params p={.itvl=64,.window=64,.passive=1,.filter_duplicates=0};
-    rc=ble_gap_disc(address_type,BLE_HS_FOREVER,&p,wd_gap,(void *)(uintptr_t)wd_epoch);
+    rc=ble_gap_disc(address_type,BLE_HS_FOREVER,&p,wd_gap,(void *)(uintptr_t)epoch);
 #endif
     if(rc)return ESP_FAIL;
     wd_ble_active=true;return ESP_OK;
@@ -134,6 +153,29 @@ static esp_err_t wd_ble_end(void)
     if(rc!=0&&rc!=BLE_HS_EALREADY)return ESP_FAIL;
     if(ble_gap_disc_active())return ESP_ERR_NOT_FINISHED;
     wd_ble_active=false;return ESP_OK;
+}
+static esp_err_t wd_quiet(void)
+{
+    esp_err_t e=wd_ble_end();if(e!=ESP_OK)return e;
+    if(wd_promiscuous){e=esp_wifi_set_promiscuous(false);if(e!=ESP_OK)return e;wd_promiscuous=false;}
+    return ESP_OK;
+}
+static esp_err_t wd_pause_wait(void)
+{
+    /* Keep the initialized drivers, leases and FIFO. Pausing neither publishes
+     * a completed recording nor lets another operation claim either radio. */
+    esp_err_t e;
+    while((e=wd_quiet())==ESP_ERR_NOT_FINISHED&&!wd_cancelled())
+        vTaskDelay(pdMS_TO_TICKS(20U)?pdMS_TO_TICKS(20U):1U);
+    if(e==ESP_ERR_NOT_FINISHED&&wd_cancelled())return ESP_OK;
+    if(e!=ESP_OK)return e;
+    portENTER_CRITICAL(&wd_lock);
+    wd_pause_pending=false;wd_status.phase=CERBERUS_WD_PHASE_NONE;wd_status.channel=0;
+    if(!wd_stop)wd_status.state=CERBERUS_WD_PAUSED;
+    portEXIT_CRITICAL(&wd_lock);
+    while(!wd_cancelled()&&wd_pause_needed())
+        vTaskDelay(pdMS_TO_TICKS(20U)?pdMS_TO_TICKS(20U):1U);
+    return ESP_OK;
 }
 static esp_err_t wd_prepare(uint8_t mode)
 {
@@ -173,8 +215,7 @@ static esp_err_t wd_prepare(uint8_t mode)
 }
 static esp_err_t wd_cleanup(void)
 {
-    esp_err_t e=wd_ble_end();if(e!=ESP_OK)return e;
-    if(wd_promiscuous){e=esp_wifi_set_promiscuous(false);if(e!=ESP_OK)return e;wd_promiscuous=false;}
+    esp_err_t e=wd_quiet();if(e!=ESP_OK)return e;
 #if CONFIG_IDF_TARGET_ESP32S3
     if(wd_wifi_callback){e=esp_wifi_set_promiscuous_rx_cb(NULL);if(e!=ESP_OK)return e;wd_wifi_callback=false;}
     if(wd_wifi_started){e=esp_wifi_stop();if(e!=ESP_OK)return e;wd_wifi_started=false;}
@@ -204,7 +245,7 @@ static void wd_wait_window(uint32_t started,uint32_t duration)
 {
     /* A 5 ms delay rounds to zero with the board's 100 Hz scheduler. Always
      * block for at least one tick so GPS, SPI and the SD writer can run. */
-    while(!wd_cancelled()&&(uint32_t)(wd_now()-started)<duration)
+    while(!wd_cancelled()&&!wd_pause_needed()&&(uint32_t)(wd_now()-started)<duration)
         vTaskDelay(pdMS_TO_TICKS(5U) ? pdMS_TO_TICKS(5U) : 1U);
 }
 static void wd_run(void *unused)
@@ -219,9 +260,12 @@ static void wd_run(void *unused)
     bool mixed=false; /* C5 stays on 5 GHz in combined mode. */
 #endif
     while(e==ESP_OK&&!wd_cancelled()){
+        if(wd_pause_needed()){
+            e=wd_pause_wait();if(e!=ESP_OK||wd_cancelled())break;
+        }
         if(mode!=CERBERUS_WD_BLE){
             unsigned tuned=0;
-            for(unsigned i=0;i<sizeof(channels)&&!wd_cancelled();++i){
+            for(unsigned i=0;i<sizeof(channels)&&!wd_cancelled()&&!wd_pause_needed();++i){
                 portENTER_CRITICAL(&wd_lock);wd_accepting=false;wd_status.channel=0;portEXIT_CRITICAL(&wd_lock);
                 e=esp_wifi_set_channel(channels[i],WIFI_SECOND_CHAN_NONE);
                 if(e!=ESP_OK){
@@ -230,22 +274,20 @@ static void wd_run(void *unused)
                 }
                 ++tuned;
                 if(!wd_promiscuous){e=esp_wifi_set_promiscuous(true);if(e!=ESP_OK)break;wd_promiscuous=true;}
-                portENTER_CRITICAL(&wd_lock);wd_status.phase=CERBERUS_WD_PHASE_WIFI;wd_status.channel=channels[i];
-                wd_status.state=CERBERUS_WD_RUNNING;wd_accepting=true;portEXIT_CRITICAL(&wd_lock);
+                wd_receiving(CERBERUS_WD_PHASE_WIFI,channels[i]);
                 wd_wait_window(wd_now(),CERBERUS_WD_DWELL_MS);
             }
-            if(!tuned&&!wd_cancelled())e=ESP_ERR_NOT_SUPPORTED;
-            if(e==ESP_OK&&!wd_cancelled()){
+            if(!tuned&&!wd_cancelled()&&!wd_pause_needed())e=ESP_ERR_NOT_SUPPORTED;
+            if(e==ESP_OK&&!wd_cancelled()&&!wd_pause_needed()){
                 portENTER_CRITICAL(&wd_lock);wd_status.valid_channels=(uint8_t)tuned;
                 wd_status.wifi_sweeps=wd_status.wifi_sweeps==UINT32_MAX?UINT32_MAX:wd_status.wifi_sweeps+1U;portEXIT_CRITICAL(&wd_lock);
             }
         }
-        if(e==ESP_OK&&!wd_cancelled()&&(mixed||mode==CERBERUS_WD_BLE)){
+        if(e==ESP_OK&&!wd_cancelled()&&!wd_pause_needed()&&(mixed||mode==CERBERUS_WD_BLE)){
             portENTER_CRITICAL(&wd_lock);wd_accepting=false;wd_status.channel=0;portEXIT_CRITICAL(&wd_lock);
             if(wd_promiscuous){e=esp_wifi_set_promiscuous(false);if(e!=ESP_OK)break;wd_promiscuous=false;}
             e=wd_ble_begin();if(e!=ESP_OK)break;
-            portENTER_CRITICAL(&wd_lock);wd_status.phase=CERBERUS_WD_PHASE_BLE;wd_status.state=CERBERUS_WD_RUNNING;
-            wd_accepting=true;portEXIT_CRITICAL(&wd_lock);
+            wd_receiving(CERBERUS_WD_PHASE_BLE,0);
             uint32_t began=wd_now(),accounted=began;
             do{
                 wd_wait_window(wd_now(),mixed?CERBERUS_WD_BLE_WINDOW_MS:100U);
@@ -253,11 +295,11 @@ static void wd_run(void *unused)
                 uint32_t elapsed=now-accounted;
                 wd_status.ble_ms=UINT32_MAX-wd_status.ble_ms<elapsed?UINT32_MAX:wd_status.ble_ms+elapsed;
                 portEXIT_CRITICAL(&wd_lock);accounted=now;
-                if(!wd_cancelled()&&!ble_gap_disc_active()){e=ESP_FAIL;break;}
-            }while(!mixed&&!wd_cancelled());
+                if(!wd_cancelled()&&!wd_pause_needed()&&!ble_gap_disc_active()){e=ESP_FAIL;break;}
+            }while(!mixed&&!wd_cancelled()&&!wd_pause_needed());
             (void)began;
             portENTER_CRITICAL(&wd_lock);wd_accepting=false;portEXIT_CRITICAL(&wd_lock);
-            if(e==ESP_OK)e=wd_ble_end();
+            if(e==ESP_OK&&!wd_pause_needed())e=wd_ble_end();
         }
     }
     wd_error(e);
@@ -270,7 +312,7 @@ static void wd_run(void *unused)
 esp_err_t cerberus_wardrive_radio_exchange(uint8_t command,const cerberus_wd_request_t *q,void *reply)
 {
     if(!q||!reply||!q->session||q->reserved[0]||q->reserved[1]||q->mode>CERBERUS_WD_BLE||q->discard>1||
-        command<CERBERUS_WD_START||command>CERBERUS_WD_RELEASE)return ESP_ERR_INVALID_ARG;
+        command<CERBERUS_WD_START||command>CERBERUS_WD_RESUME)return ESP_ERR_INVALID_ARG;
     memset(reply,0,54U);
     if(atomic_flag_test_and_set_explicit(&wd_command,memory_order_acquire))return ESP_ERR_NOT_FINISHED;
     esp_err_t e=ESP_OK;cerberus_wd_record_t *dispose=NULL;
@@ -289,6 +331,7 @@ esp_err_t cerberus_wardrive_radio_exchange(uint8_t command,const cerberus_wd_req
                 portENTER_CRITICAL(&wd_lock);memset(&wd_status,0,sizeof(wd_status));memset(&wd_ring,0,sizeof(wd_ring));
                 wd_status.session=q->session;wd_status.mode=q->mode;wd_status.state=CERBERUS_WD_STARTING;wd_status.held=1;
                 wd_ring.rows=rows;wd_ring.capacity=WD_QUEUE_CAPACITY;wd_stop=false;wd_accepting=false;
+                wd_pause_requested=false;wd_pause_pending=false;
                 wd_last_contact=wd_now();++wd_epoch;wd_worker=true;portEXIT_CRITICAL(&wd_lock);
                 if(xTaskCreate(wd_run,"wd_radio",4096,NULL,4,NULL)!=pdPASS){
                     portENTER_CRITICAL(&wd_lock);wd_worker=false;wd_status.held=0;wd_status.state=CERBERUS_WD_STOPPED;
@@ -303,6 +346,18 @@ esp_err_t cerberus_wardrive_radio_exchange(uint8_t command,const cerberus_wd_req
         wd_last_contact=wd_now();
         if(!cerberus_wd_ring_ack(&wd_ring,q->ack))e=ESP_ERR_INVALID_ARG;
         else if(command==CERBERUS_WD_STOP){wd_stop=true;wd_accepting=false;if(wd_worker)wd_status.state=CERBERUS_WD_STOPPING;}
+        else if(command==CERBERUS_WD_PAUSE||command==CERBERUS_WD_RESUME){
+            if(!wd_worker||wd_stop)e=ESP_ERR_INVALID_STATE;
+            else if(command==CERBERUS_WD_RESUME)wd_pause_requested=false;
+            else if(!wd_pause_requested){
+                if(!wd_pause_pending){
+                    if(wd_epoch==UINT32_MAX){wd_status.error=e=ESP_ERR_INVALID_STATE;wd_stop=true;}
+                    else {++wd_epoch;wd_pause_pending=true;}
+                }
+                wd_pause_requested=true;wd_accepting=false;
+                if(!wd_stop)wd_status.state=CERBERUS_WD_PAUSING;
+            }
+        }
         else if(command==CERBERUS_WD_RELEASE){
             if(wd_worker||wd_status.held||(wd_ring.count&&!q->discard))e=ESP_ERR_INVALID_STATE;
             else {dispose=wd_ring.rows;wd_ring.rows=NULL;wd_ring.count=0;}

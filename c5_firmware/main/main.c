@@ -171,7 +171,7 @@ static void prepare_v2_response(const cerberus_spi_frame_t *request)
     if (request->command != CERBERUS_SPI_COMMAND_EVENT_QUEUE_POP_BATCH) {
         event_batch_cache_valid = false;
     }
-    if(request->command>=CERBERUS_WD_START&&request->command<=CERBERUS_WD_RELEASE){
+    if(request->command>=CERBERUS_WD_START&&request->command<=CERBERUS_WD_RESUME){
         if(received_transfer_bytes!=64U||request->payload_length!=sizeof(cerberus_wd_request_t))return;
         cerberus_wd_request_t query;memcpy(&query,request->payload,sizeof(query));
         cerberus_wd_frame_t frame={.magic=CERBERUS_SPI_MAGIC,.version=CERBERUS_PROTOCOL_VERSION,

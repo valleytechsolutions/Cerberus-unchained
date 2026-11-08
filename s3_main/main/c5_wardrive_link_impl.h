@@ -2,7 +2,7 @@
  * A lost response retains the next head. The caller retries the same request. */
 esp_err_t c5_spi_link_wardrive(uint8_t command,const cerberus_wd_request_t *query,void *reply)
 {
-    if(!query||!reply||!query->session||command<CERBERUS_WD_START||command>CERBERUS_WD_RELEASE)
+    if(!query||!reply||!query->session||command<CERBERUS_WD_START||command>CERBERUS_WD_RESUME)
         return ESP_ERR_INVALID_ARG;
     memset(reply,0,54U);if(!link_mutex)return ESP_ERR_INVALID_STATE;
     int64_t began=esp_timer_get_time();if(began<0)return ESP_ERR_INVALID_STATE;
@@ -14,6 +14,8 @@ esp_err_t c5_spi_link_wardrive(uint8_t command,const cerberus_wd_request_t *quer
         peer_firmware_version=error==ESP_OK?device.firmware_version:0;
     }
     if(error==ESP_OK&&peer_firmware_version<CERBERUS_WD_MIN_FIRMWARE)error=ESP_ERR_NOT_SUPPORTED;
+    if(error==ESP_OK&&command>=CERBERUS_WD_PAUSE&&peer_firmware_version<CERBERUS_WD_PAUSE_MIN_FIRMWARE)
+        error=ESP_ERR_NOT_SUPPORTED;
     cerberus_wd_frame_t response={0};
     if(error==ESP_OK){
         cerberus_spi_frame_t request;uint8_t tx[64]={0},discarded[64]={0};uint8_t token=++sequence;

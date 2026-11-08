@@ -46,3 +46,8 @@ connected board. Those checks follow installation of the paired update.
 This routing fix takes priority over the audited but unimplemented geofence
 workflow. It also includes the rev150 GPX work and rev151 RSSI write filter;
 their outstanding physical checks remain outstanding.
+
+Later development reserves 189–190 for Wardriving PAUSE/RESUME, with capability
+79 required for those requests. The existing 184–188 commands retain their
+capability-78 gate. See [Geofence development](WARDRIVE_GEOFENCES.md) for the
+implemented radio/policy layers and the integration work that remains.
