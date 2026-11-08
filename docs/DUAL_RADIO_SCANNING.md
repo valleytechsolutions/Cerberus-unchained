@@ -1,24 +1,21 @@
 # Adaptive two-radio scanning
 
-## Current source work
-
-[Rev164 passive EAPOL monitoring](WIFI_EAPOL_MONITOR.md) adds per-station
-observed exchange evidence to the existing selected-AP capture page. C5
-capability 85 provides callback admission provenance; the S3 owns bounded
-analysis, reporting and optional PCAPNG writing. Analysis-only is the default,
-Stop retains the report, and navigation waits for exact receiver/file release.
-Implementation and focused host checks are recorded; the full matrix, native
-builds, packaging and installation are not yet recorded for rev164. Physical
-reception/navigation and full upstream parity remain open. These observed
-patterns do not verify authentication.
-
 ## Current installed checkpoint
 
-The latest installed checkpoint is [rev163 saved Bluetooth lookup](SAVED_BLE_LOOKUP.md):
-saved `.BLE` and Find My JSON details can explicitly reacquire an address on
-both receivers before entering Fox Hunt. All 181 host suites, five native
-targets, verified recovery backups/writes and paired idle boot checks passed.
-Physical reception/navigation and loaded performance remain open.
+The latest installed checkpoint is [rev164 passive EAPOL monitoring](WIFI_EAPOL_MONITOR.md).
+The existing selected-AP capture page now provides per-station observed
+exchange and clear PMKID-element evidence, with optional PCAPNG saving.
+C5 capability 85 fences callback admission for each receive interval; S3
+owns bounded analysis and exact-release reporting/navigation. All 184 host
+suites, five native targets, verified recovery backups/writes and paired
+idle boot checks passed. Physical RF/navigation, PCAP readback and sustained
+loaded performance remain open. Observed exchanges do not verify authentication.
+
+The earlier [rev163 saved Bluetooth lookup](SAVED_BLE_LOOKUP.md) lets saved
+`.BLE` and Find My JSON details explicitly reacquire an address on both
+receivers before entering Fox Hunt. Its checkpoint records 181 host suites,
+five native targets and paired idle installation checks; physical saved-tag
+reception/navigation and loaded performance remain open.
 
 The earlier [rev162 checkpoint](WIFI_FOX_HUNT.md) adds a
 selected-transmitter Wi-Fi Fox Hunt with passive C5 reception/search and

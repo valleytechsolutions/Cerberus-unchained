@@ -109,10 +109,14 @@ CLI options or active EAPOL workflows.
 
 ## Validation boundary
 
-This document currently records implementation and focused host checks only.
-The rev164 full host matrix, native builds, matched package and installation
-have not yet been recorded here. Rev163 remains the last installed checkpoint
-in [dual-radio development](DUAL_RADIO_SCANNING.md).
+All 184 registered host suites passed on 1,422 unchanged inputs at source
+`345ba46f1fc1220c99dabc8e9ae5d11220bac9d1`. All five native targets passed,
+including their native placement/link checks; the matched package passed its
+source and image checks. The separate 21-test CI shard verifier also passed.
+The first full host run found two fixture compile failures in unrelated Mesh
+and MAC callback boundaries. Those fixture boundaries were updated, and the
+entire 184-suite matrix passed afterward; production behavior was unchanged
+by that follow-up.
 
 Focused production fixtures cover parser boundaries, source sequence/time,
 per-station correlation and retries; exact session ownership, allocation
@@ -131,3 +135,39 @@ optional PCAP readback, repeated Stop/Back/next-scan transitions, sleep/wake,
 SD failure handling and sustained loaded memory/stack measurements. Zero
 observed exchanges can be normal when no relevant connection occurs. Neither
 full upstream parity nor authenticated-handshake verification is claimed.
+
+## Installed checkpoint
+
+Rev164 is installed from source `345ba46f1fc1220c99dabc8e9ae5d11220bac9d1`,
+tagged `checkpoint/rev164-passive-eapol`, with C5 capability 85. Package:
+`cerberus-unchained-0.1.0-dev.rev164-20261108T103133Z`.
+Manifest SHA-256:
+`34126ace1b6ccf82ba246dd03b4cc2944240ce765ec75867a78674d57d3da612`.
+
+Fresh rev163 S3/C5 recovery backups were checked against the installed
+baseline and verified against flash. All nine bridge/C5/S3 image writes
+verified. Both live application descriptors match the packaged version,
+project, SDK, compile time and full ELF hash. The card mounted, and saved
+home Wi-Fi, WiGLE and WDGWars profile readiness remained set. No connection
+or upload was requested.
+
+Two idle captures 50.9 seconds apart showed advancing uptimes and SPI
+exchanges, one C5 boot, and no additional listed transport errors. Four
+initial READY timeouts/fallbacks remained unchanged; mutex, READY-fall,
+READY-high and driver errors remained zero. S3 retained 134,092 internal
+free bytes, a 90,112-byte largest internal block, 1,426,140 free PSRAM bytes
+and ten tasks across those captures. C5 retained 52,996 free bytes.
+
+Compared with the captured rev163 baseline, S3 internal free memory is
+104 bytes lower and C5 free memory is 16 bytes lower. The largest S3 block,
+PSRAM and task counts match. The console stack low-water changed from 2,092
+to 924 bytes after diagnostics; it is not treated as constant or as loaded
+service acceptance. The optional EAPOL stores were not allocated during these
+idle checks. Restart allocates a replacement analysis store before retiring
+the previous stopped report, so its transient allocation exceeds one store.
+
+Application images occupy 2,432,592 of 7,340,032 S3 application bytes and
+1,748,160 of 2,031,616 C5 application bytes. Image fit and idle measurements
+do not establish sustained capture throughput or loaded memory headroom.
+Physical RF, touch navigation, PCAP readback, sleep/wake and subsequent-scan
+acceptance remain pending, as does full upstream feature parity.
