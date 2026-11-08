@@ -22,6 +22,7 @@ key bytes. Displayed ages use S3 delivery time; C5 source time is not treated
 as S3 time or UTC. Optional PCAPNG records have no frame timestamps under the
 current time-mapping contract.
 
-The implementation document records completed checks separately from pending
-build, installation and physical acceptance. This superseded proposal is not
-evidence of full upstream parity or device acceptance.
+The implementation document records the rev165 host/native checks, matched
+package and paired installation separately from pending physical RF and
+touchscreen acceptance. This superseded proposal is not evidence of full
+upstream parity or device acceptance.

@@ -2,14 +2,26 @@
 
 ## Current installed checkpoint
 
-The latest installed checkpoint is [rev164 passive EAPOL monitoring](WIFI_EAPOL_MONITOR.md).
-The existing selected-AP capture page now provides per-station observed
-exchange and clear PMKID-element evidence, with optional PCAPNG saving.
-C5 capability 85 fences callback admission for each receive interval; S3
-owns bounded analysis and exact-release reporting/navigation. All 184 host
-suites, five native targets, verified recovery backups/writes and paired
-idle boot checks passed. Physical RF/navigation, PCAP readback and sustained
-loaded performance remain open. Observed exchanges do not verify authentication.
+The latest installed checkpoint is [rev165 passive SAE monitoring](WIFI_SAE_MONITOR.md).
+Wi-Fi Tools and the selected-AP capture selector now open one SAE monitor
+with all-band, single-band, fixed-channel and selected-AP scopes. The C5
+keeps one receiver/lease across the plan; S3 owns frozen selection, public
+field analysis, stable rows and optional SD recording. Single-channel plans
+receive continuously. Both SAE and EAPOL retry a missed Stop through cleanup.
+
+Rev165 is installed from `517fa46` with capability 86 after 190 host suites,
+five native targets, matched packaging, fresh verified recovery backups and
+nine verified image writes. Both live build descriptors match the package.
+Two idle captures 57.9 seconds apart showed stable sampled heap/task counts,
+no new monitored SPI errors and one C5 boot. Saved upload-profile readiness
+remains set. Physical reception/navigation, PCAP readback and loaded
+performance remain pending; full Marauder parity is still open.
+
+The earlier [rev164 EAPOL monitor](WIFI_EAPOL_MONITOR.md) provides per-station
+observed exchange and clear PMKID-element evidence from a selected AP, with
+optional untimed PCAPNG. Capability 85 added per-arm callback admission.
+Its original checkpoint passed 184 host suites, five native targets and
+paired idle installation checks; it remains awaiting physical acceptance.
 
 The earlier [rev163 saved Bluetooth lookup](SAVED_BLE_LOOKUP.md) lets saved
 `.BLE` and Find My JSON details explicitly reacquire an address on both

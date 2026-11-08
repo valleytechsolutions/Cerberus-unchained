@@ -74,10 +74,12 @@ resolved by the capture owner rather than replaying a new Start. Stop uses
 that generation and cannot stop another capture. Failed restarts preserve
 the previous report. Optional file writes and analysis counts stay separate.
 
-The report holds at most **16 stations** in a **3,664-byte optional PSRAM
-store under the host ABI**. This is an allocation size, not measured device
-headroom. The optional UI store adds **488 bytes**, including its frozen AP
-identity and two copied peer rows. An in-progress exchange is protected from
+At rev165, the report holds at most **16 stations** in a **3,696-byte optional
+PSRAM store under the host ABI**. This is an allocation size, not measured device
+headroom. The optional UI store adds **520 bytes**, including its frozen AP
+identity and two copied peer rows. Rev165 adds 32 bytes to each of the
+session and UI stores for shared channel-plan telemetry; the rev164 sizes
+were 3,664 and 488 bytes, respectively. An in-progress exchange is protected from
 replacement within its correlation window. Once the table is full, eligible old rows may be replaced;
 otherwise the new peer is counted as dropped. These counts and counter
 saturation remain explicit. Row admission sequences distinguish replacement

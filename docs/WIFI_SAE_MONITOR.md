@@ -167,11 +167,53 @@ renderer and controls, both entry routes, copied AP plans, optional saving
 and Stop/Back/hidden cleanup. Planned capture/link/radio fixtures separately
 exercise staging, tuning and transfer behavior.
 
-At this checkpoint, **the full host matrix, native builds, matched package
-and installation have not yet been established for rev165**. Physical
-acceptance is also pending: controlled WPA3 traffic, independent capture
-comparison, selected/multi-AP scoping, both bands, PCAP readback,
+Rev165 passed **190 registered host suites** on **1,442 unchanged inputs**,
+all five native targets, the matched-image package checks and the 21 CI shard
+runner/verification tests. The native matrix includes S3, onboard C5, bridge,
+expansion WROOM and expansion XIAO; it does not establish acceptance of
+expansion hardware that is not attached.
+
+## Installed checkpoint
+
+The matched pair is installed from source
+`517fa46326c07ca0c9827e7a85b6cd4e9d2f2967` (capability 86, protocol 2).
+Package: `cerberus-unchained-0.1.0-dev.rev165-20261108T112435Z`.
+Manifest SHA-256:
+`b6db406dc55fb435c73bbb53ae9a20bfaa6315fdea2f7f7574b3f7e33a9ca218`.
+
+Fresh S3/C5 recovery backups matched the installed rev164 images and verified
+against flash. All nine bridge/C5/S3 image writes passed hash verification.
+Both running application descriptors and full ELF fingerprints match the
+packaged images. The device booted idle with its SD card mounted; saved home
+Wi-Fi, WiGLE and WDGWars profile readiness remained set, with no profile-load
+error. This readiness check makes no connection or service upload.
+
+Two idle captures **57.9 seconds apart** retained these measured values:
+
+| Measurement | Both rev165 captures |
+| --- | ---: |
+| S3 internal free | 133,852 bytes |
+| Largest S3 internal free block | 90,112 bytes |
+| S3 PSRAM free | 1,426,140 bytes |
+| S3 tasks | 10 |
+| C5 free snapshot | 52,740 bytes |
+
+Compared with the fresh rev164 baseline, S3 internal free is 240 bytes lower
+and C5 free is 256 bytes lower. Largest S3 block, PSRAM free and task count
+are unchanged. The shared capture telemetry also increases the optional
+EAPOL session/UI stores to 3,696/520 bytes under the host ABI; these are
+separate from the SAE allocations described above.
+
+C5 exchanges advanced from 90 to 369. Initial READY timeouts and legacy
+fallbacks remained at their four startup occurrences; mutex, READY fall/high
+and driver errors stayed zero. Both samples reported one C5 boot and no
+previous reset fault. The console stack low-water observation changed from
+2,092 to 1,052 bytes after diagnostics. These samples establish idle behavior,
+not loaded heap/stack bounds or sustained scan throughput.
+
+Physical acceptance remains pending: controlled WPA3 traffic, independent
+capture comparison, selected/multi-AP scoping, both bands, PCAP readback,
 Stop/Back/next-scan transitions, sleep, storage failures and sustained loaded
 memory/stack measurements. Zero observations without a relevant connection
-is inconclusive. Source and fixture results do not establish RF coverage or
-touchscreen acceptance.
+is inconclusive. The full Marauder port and active-feature acceptance remain
+open. No new RF job or live upload was started during this installation.
