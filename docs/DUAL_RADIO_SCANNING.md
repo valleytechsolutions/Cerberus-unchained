@@ -1,15 +1,21 @@
 # Adaptive two-radio scanning
 
-## Rev168 source candidate
+## Current installed checkpoint: rev168
 
 [FRAME CAPTURE](WIFI_CAPTURE_DESIGN.md) extends generic receive/recording with
 RAW, probe and disconnect scopes, live delivered-frame summaries and bounded
 recent disconnect evidence. C5 owns channel plans and control-subtype filter
 restoration; S3 owns frozen options, verified interpretation and optional SD
-writing. RX TOOLS shares one flat chooser with EAPOL and SAE. Build and
-installation evidence will be recorded after the candidate passes its gates.
+writing. RX TOOLS shares one flat chooser with EAPOL and SAE.
 
-## Current installed checkpoint: rev167
+Rev168 is installed from `3dd62a6` with capability 88 after all 197 host
+suites, five native targets, matched packaging, verified recovery backups
+and nine image writes. Both live descriptors match; two idle samples 51.2
+seconds apart showed no new monitored SPI errors. Physical reception,
+touchscreen navigation, PCAP readback and loaded performance remain open.
+See the frame-capture document for the bound package and idle counters.
+
+## Earlier rev167 installed checkpoint
 
 [Scoped passive EAPOL monitoring](WIFI_EAPOL_MONITOR.md) adds direct all-band,
 single-band, fixed-channel and selected-AP scopes. C5 owns two-second channel

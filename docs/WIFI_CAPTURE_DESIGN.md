@@ -6,10 +6,9 @@ and SAE monitors. The selected-AP **CAPTURE THIS AP** shortcut opens the same
 frame workspace with its AP and return destination copied. Opening a page
 starts no receiver.
 
-The candidate implementation and focused checks are described here. The
-installed baseline is rev167 until a later checkpoint section records the
-matched build and installation. Physical reception, recording readback and
-loaded throughput remain separate acceptance checks.
+Rev168 is installed; its matched build and idle installation evidence are
+recorded below. Physical reception, recording readback and loaded throughput
+remain separate acceptance checks.
 
 ## Controls and scopes
 
@@ -65,8 +64,8 @@ EAPOL claim. Retry bits count observations; they do not deduplicate captures.
 A bounded view retains **16 recent disconnect-evidence tuples** with BSSID,
 transmitter, receiver, subtype, channel, RSSI, C5 source timestamps and S3
 delivery ages. Matching tuples accumulate observations; new tuples replace
-the least recently seen
-slot and increment an explicit replacement count. Admission sequence changes
+the least recently seen slot and increment an explicit replacement count.
+Admission sequence changes
 reset row age when a slot is reused. Plaintext reason codes require a clear,
 complete, unfragmented body; otherwise the reason is unknown. Public frame
 addresses and reason fields do not identify a physical device or establish
@@ -163,3 +162,42 @@ both bands, comparison against an independent receiver, control-subtype
 coverage and restoration, PCAPNG readback, slow/full/removed SD behavior,
 repeated Stop/Back/next-scan and sleep/wake, and loaded heap/stack/throughput/drop
 measurements. Host fixtures and an idle boot cannot establish those outcomes.
+
+## Rev168 installed checkpoint
+
+Rev168 is installed from `3dd62a659325fcb6a3f3a1a1b22136fbdb6a8168`
+with C5 capability **88**. All **197 host
+suites** passed on **1,467 unchanged inputs**, followed by all five
+native targets and matched packaging. The first complete host run passed 195
+suites and found two extracted-fixture compile failures in SSID routes and
+Mesh UI. Their missing frame-workspace boundaries were added; the original
+failed receipt and log remain preserved.
+
+Package: `cerberus-unchained-0.1.0-dev.rev168-20261108T134638Z`.
+Manifest SHA-256: `a356bd4215f0f42c13ec7d504e9d5ebc54762fc568c8128ace75b8f54f26b090`.
+Application sizes: **2,486,176 S3 bytes**, **1,751,936 C5 bytes**, and
+**255,280 bridge bytes**. All 17 frozen installer helpers, fresh verified
+rev167 recovery backups and nine image writes were checked. Both live
+application descriptors match the packaged version and full ELF fingerprints.
+The SD card mounted during the idle checks.
+
+Two paired idle captures **51.2 seconds apart** showed advancing uptimes and
+SPI exchanges, one C5 boot, and no additional monitored transport errors.
+Initial READY timeouts/fallbacks remained 4/4.
+
+| Idle diagnostic | Boot | Settled |
+| --- | ---: | ---: |
+| S3 internal free bytes | 133,912 | 133,912 |
+| S3 largest internal block | 90,112 | 90,112 |
+| S3 free PSRAM bytes | 1,426,140 | 1,426,140 |
+| S3 tasks | 10 | 10 |
+| C5 snapshot free bytes | 52,724 | 52,724 |
+
+The console stack low-water observation was 2,048 then 1,040 bytes during
+diagnostics.
+These are sampled idle observations, not loaded memory or stack margins.
+
+This checkpoint establishes installation and idle boot/SD evidence. It does
+not establish physical RAW/Probe/disconnect reception, control-subtype
+coverage, touchscreen navigation, PCAPNG readback, SD fault handling or loaded
+throughput. The acceptance checks above and full Marauder parity remain open.
