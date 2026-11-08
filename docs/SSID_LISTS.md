@@ -1,13 +1,14 @@
 # SSID lists
 
-The rev166 candidate adds an editable, names-only workspace at **Tools ->
+Rev166 adds an editable, names-only workspace at **Tools ->
 Extras -> SSID Lists**. It keeps a working list in optional S3 PSRAM, supports
 explicit imports and saves new SD copies through the existing archive worker.
 Opening or editing a list does not acquire a radio or change scan results.
 
-This document describes the candidate source. The complete 194-suite host
-matrix, native builds and physical acceptance remain pending at this checkpoint;
-it does not claim that rev166 is installed. C5 capability remains 86.
+The matched rev166 pair is installed from source `15ad246` with C5 capability
+86. All 194 host suites, five native targets, package checks and paired idle
+boot checks passed. On-device editor, import and save/reopen acceptance remains
+pending; the installation checks below do not establish those behaviors.
 
 ## Using the workspace
 
@@ -135,10 +136,53 @@ reachable menu/CLI workflows, not that dormant label. This workspace supplies
 local list authoring and interchange; it is not a claim of complete CLI or
 transmission parity.
 
+## Build and installation checkpoint
+
+The final 194-suite run passed against 1,456 unchanged inputs at
+`15ad246deab3e954c10474c254556f7a5a435c8e`. All 21 shard-policy checks passed.
+The initial full run caught outdated Mesh file-route extraction and a missing
+AP-detail declaration in the baseline fixture; both fixtures were corrected
+before the passing run. Native S3, onboard C5, bridge, WROOM expansion and XIAO
+expansion builds passed with unchanged input bindings.
+
+Package `cerberus-unchained-0.1.0-dev.rev166-20261108T121708Z` has manifest
+SHA-256 `b50e4abb4f17a84b4ed040976deb5d48d745373d6d6a0cadd0b45051844aae2f`.
+The S3 application is 2,467,888 bytes, 18,576 bytes larger than rev165; C5 remains
+1,751,152 bytes. Both fit their existing application partitions. Fresh rev165
+recovery backups were read and digest-verified before all nine staged image
+writes were verified. NVS was not rewritten. Both live application descriptors
+and full ELF fingerprints match the package.
+
+Two idle captures 72.5 seconds apart showed:
+
+| Measurement | First capture | Second capture |
+| --- | ---: | ---: |
+| S3 internal free bytes | 133,820 | 133,820 |
+| Largest S3 internal free block | 90,112 | 90,112 |
+| S3 PSRAM free bytes | 1,426,140 | 1,426,140 |
+| C5 snapshot free bytes | 52,740 | 52,740 |
+| S3 task count | 10 | 10 |
+| SPI exchanges | 149 | 488 |
+
+S3 idle internal free memory is 32 bytes below the rev165 baseline; the other
+listed memory/task measurements are unchanged from that baseline. The editor
+workspace was not opened during these samples. C5 boot count stayed at one,
+with no previous-reset fault and no new monitored SPI errors. Initial-ready
+timeouts and legacy fallbacks stayed at four each; mutex, falling/high-ready
+and driver errors stayed zero. The console's observed stack low-water mark
+changed from 2,092 to 956 bytes during diagnostics; this is not a constant or
+a loaded-workload margin claim.
+
+SD remained mounted, and the saved home Wi-Fi, WiGLE and WDGWars readiness
+flags remained set without reading credential values. Wardrift remains
+unconfigured. No scan, transmission or service upload was started by this
+installation. Private captures, backups and bound receipts stay in ignored
+`artifacts/device-rev166-ssid-lists/`.
+
 ## Focused validation
 
-The following source-bound host fixtures passed before the complete candidate
-matrix. Counts are assertions within each fixture, not hardware tests.
+The following source-bound fixtures also passed in the complete host matrix.
+Counts are assertions within each fixture, not hardware tests.
 
 | Check | Assertions | Coverage |
 | --- | ---: | --- |

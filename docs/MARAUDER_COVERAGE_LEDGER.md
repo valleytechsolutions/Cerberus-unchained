@@ -1,6 +1,6 @@
 # Marauder coverage ledger
 
-Current editorial checkpoint: **rev166-ssid-lists-candidate**. This is a source/workflow audit, not a claim that all modes work or a completion percentage. [Dual-radio development](DUAL_RADIO_SCANNING.md) separates current source/host checks from installation and physical acceptance. [Rev93 contribution](CONTRIBUTION_REV93.md) retains its original contribution scope. [Earlier contribution evidence](CONTRIBUTION_REV81.md) keeps its original scope.
+Current editorial checkpoint: **rev166-ssid-lists-installed**. This is a source/workflow audit, not a claim that all modes work or a completion percentage. [Dual-radio development](DUAL_RADIO_SCANNING.md) separates current source/host checks from installation and physical acceptance. [Rev93 contribution](CONTRIBUTION_REV93.md) retains its original contribution scope. [Earlier contribution evidence](CONTRIBUTION_REV81.md) keeps its original scope.
 
 The inventory contains **95 mode symbols, 265 literal menu entries and 58 top-level CLI entries**. These overlap. Some symbols are control states or dormant legacy modes; labels alone do not prove reachable services.
 
