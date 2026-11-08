@@ -110,8 +110,11 @@ SD latency.
 
 Physical import/export and copy/reopen on SD, Stop/Back/sleep, privacy controls,
 repeated sessions, resource headroom under load and cross-device file transfer
-remain separate acceptance checks. Manual AP/SSID editing, load-to-live-list
-semantics, complete command/menu parity and broader backup/restore remain open.
+remain separate acceptance checks. Rev166 adds a separate [SSID Lists
+workspace](SSID_LISTS.md): **EDIT COPY** previews a loaded SSID document before
+explicit Append or Replace. Saving a working list creates a new file. Manual
+AP editing, live-list consumer semantics, complete command/menu parity and
+broader backup/restore remain open.
 
 ## Source relationship
 

@@ -15,7 +15,7 @@
 #define MALLOC_CAP_SPIRAM 4U
 #define MALLOC_CAP_8BIT 2U
 #define ESP_ERROR_CHECK(x) CHECK((x)==ESP_OK)
-typedef enum {UI_PAGE_WIFI,UI_PAGE_FILES,UI_PAGE_OTHER} ui_page_t;
+typedef enum {UI_PAGE_WIFI,UI_PAGE_FILES,UI_PAGE_OTHER,UI_PAGE_SSID_LISTS} ui_page_t;
 typedef enum {UI_WIFI_MODE_MENU,UI_WIFI_MODE_PROBE_SNIFF} ui_wifi_mode_t;
 static ui_page_t current_page;
 static ui_wifi_mode_t wifi_mode;
@@ -29,6 +29,17 @@ static cerberus_probe_sniff_snapshot_t io_copy;
 static char io_bytes[8193];
 static size_t io_length;
 static esp_err_t io_start_error;
+static esp_err_t ssid_import_error;
+static unsigned ssid_imports;
+static uint8_t imported_name[32],imported_length;
+static ui_page_t ssid_import_return_page;
+static esp_err_t ssid_lists_import_name(const uint8_t *bytes,size_t length,ui_page_t return_page)
+{
+    ++ssid_imports;CHECK(bytes&&length<=sizeof(imported_name)&&return_page==UI_PAGE_WIFI);
+    if(ssid_import_error)return ssid_import_error;
+    memset(imported_name,0,sizeof(imported_name));memcpy(imported_name,bytes,length);
+    imported_length=(uint8_t)length;ssid_import_return_page=return_page;current_page=UI_PAGE_SSID_LISTS;return ESP_OK;
+}
 static bool privacy_addresses_masked(void){return masked;}
 static int64_t esp_timer_get_time(void){return clock_us;}
 static void *heap_caps_calloc(size_t n,size_t size,unsigned caps)
@@ -72,7 +83,7 @@ static void until_published(bool frozen)
  CHECK(probe_sniff_ui&&probe_sniff_ui->scan.publication>before&&probe_sniff_ui->scan.published.frozen==frozen);}
 static void reset_ui(void)
 {CHECK(!probe_sniff_ui);source_reset();current_page=UI_PAGE_WIFI;wifi_mode=UI_WIFI_MODE_MENU;oom=masked=false;
- io_start_error=ESP_OK;io=(cerberus_ble_archive_io_status_t){0};c5_status.firmware_version=71;fail_after=0;
+ io_start_error=ssid_import_error=ESP_OK;io=(cerberus_ble_archive_io_status_t){0};c5_status.firmware_version=71;fail_after=0;
  drawn_size=0;drawn[0]=0;opened_name[0]=0;}
 static void exit_ui(void)
 {probe_sniff_close(true);for(unsigned i=0;i<1000U&&probe_sniff_ui;++i)step_ui(20,true);CHECK(!probe_sniff_ui&&!owned&&!exists);}
@@ -169,6 +180,47 @@ static void ppm(const char*folder,const char*name)
 {char path[1024];snprintf(path,sizeof(path),"%s/%s.ppm",folder,name);FILE*f=fopen(path,"wb");CHECK(f);
  fprintf(f,"P6\n320 480\n255\n");for(size_t i=0;i<320U*480U;++i){unsigned v=screen[i];
     fputc(((v>>11)&31U)*255U/31U,f);fputc(((v>>5)&63U)*255U/63U,f);fputc((v&31U)*255U/31U,f);}CHECK(!fclose(f));}
+static void copy_name_routes(void)
+{
+    static const uint8_t binary[]={'A',0,'\r',255};
+    begin_ui_rows(0U);packet(9,binary,sizeof(binary),false);until_published(false);CHECK(draw_detail_page()==ESP_OK);
+    probe_sniff_tap(20,155);CHECK(probe_sniff_ui->detail&&!probe_sniff_can_copy_name(probe_sniff_ui));
+    unsigned imports=ssid_imports;probe_sniff_tap(160,392);CHECK(ssid_imports==imports&&owned);
+    CHECK(draw_detail_page()==ESP_OK&&!strstr(drawn,"COPY NAME TO LIST"));
+    probe_sniff_start();until_published(true);
+    CHECK(!probe_sniff_can_copy_name(probe_sniff_ui)); /* The selected live sample stays historical. */
+    route_back();CHECK(draw_detail_page()==ESP_OK);probe_sniff_tap(20,155);
+    CHECK(probe_sniff_can_copy_name(probe_sniff_ui)&&!owned);
+    uint64_t selected_session=probe_sniff_ui->selected.session;
+    ++probe_sniff_ui->selected.session;probe_sniff_tap(160,392);CHECK(ssid_imports==imports);
+    probe_sniff_ui->selected.session=selected_session;
+    bool requested=probe_sniff_ui->scan.requested;probe_sniff_ui->scan.requested=true;
+    probe_sniff_tap(160,392);CHECK(ssid_imports==imports);probe_sniff_ui->scan.requested=requested;
+    uint64_t request_session=probe_sniff_ui->scan.request.session_id;
+    bool have_control=probe_sniff_ui->scan.have_control;
+    uint8_t flags=probe_sniff_ui->scan.remote.flags;
+    probe_sniff_ui->scan.request.session_id=selected_session;probe_sniff_ui->scan.have_control=true;
+    probe_sniff_ui->scan.remote.flags|=CERBERUS_PROBE_SNIFF_OWNED|CERBERUS_PROBE_SNIFF_RECEIVING;
+    probe_sniff_tap(160,392);CHECK(ssid_imports==imports);
+    probe_sniff_ui->scan.request.session_id=request_session;probe_sniff_ui->scan.have_control=have_control;
+    probe_sniff_ui->scan.remote.flags=flags;
+    CHECK(draw_detail_page()==ESP_OK&&strstr(drawn,"COPY NAME TO LIST"));
+    ssid_import_error=ESP_ERR_NO_MEM;probe_sniff_painted_t selected=probe_sniff_ui->selected;
+    probe_sniff_tap(160,392);CHECK(ssid_imports==imports+1U&&probe_sniff_ui&&!probe_sniff_ui->closing);
+    CHECK(current_page==UI_PAGE_WIFI&&wifi_mode==UI_WIFI_MODE_PROBE_SNIFF&&!memcmp(&selected,&probe_sniff_ui->selected,sizeof(selected)));
+    CHECK(draw_detail_page()==ESP_OK&&strstr(drawn,"COPY NAME: ESP_ERR_NO_MEM"));
+    ssid_import_error=ESP_OK;probe_sniff_tap(160,392);
+    CHECK(ssid_imports==imports+2U&&probe_sniff_ui->closing&&current_page==UI_PAGE_SSID_LISTS&&wifi_mode==UI_WIFI_MODE_MENU);
+    CHECK(imported_length==sizeof(binary)&&!memcmp(imported_name,binary,sizeof(binary))&&ssid_import_return_page==UI_PAGE_WIFI);
+    for(unsigned i=0;i<1000U&&probe_sniff_ui;++i)step_ui(20,false);
+    CHECK(!probe_sniff_ui&&!owned&&!exists&&!memcmp(imported_name,binary,sizeof(binary)));
+
+    begin_ui_rows(1U);probe_sniff_start();until_published(true);CHECK(draw_detail_page()==ESP_OK);
+    probe_sniff_tap(20,155);CHECK(probe_sniff_ui->detail&&probe_sniff_ui->selected.row.row.ssid_length==0U);
+    probe_sniff_tap(160,392);CHECK(current_page==UI_PAGE_SSID_LISTS&&imported_length==0U&&wifi_mode==UI_WIFI_MODE_MENU);
+    for(unsigned i=0;i<1000U&&probe_sniff_ui;++i)step_ui(20,false);
+    CHECK(!probe_sniff_ui&&!owned&&!exists&&allocations==freed);
+}
 static void previews(const char*folder)
 {
     begin_ui_rows(32U);CHECK(draw_detail_page()==ESP_OK);ppm(folder,"probe-requests");
@@ -190,4 +242,4 @@ static void previews(const char*folder)
     CHECK(sentinel_hub_hit_test(SENTINEL_HUB_WIFI,30,225)==10);ppm(folder,"probe-wifi-entry");
 }
 int main(int argc,char**argv)
-{CHECK(argc==2);ui_checks();pending_and_save_retry();previews(argv[1]);printf("Probe UI: %u checks; workspace %zu bytes.\n",checks,sizeof(probe_sniff_ui_store_t));return 0;}
+{CHECK(argc==2);ui_checks();pending_and_save_retry();copy_name_routes();previews(argv[1]);printf("Probe UI: %u checks; workspace %zu bytes.\n",checks,sizeof(probe_sniff_ui_store_t));return 0;}

@@ -96,6 +96,19 @@ static void wifi_interchange_tap(uint16_t x, uint16_t y)
 {
     wifi_interchange_action_t action = wifi_interchange_ui_tap(wifi_interchange_view, x, y);
     if (action == WIFI_INTERCHANGE_BACK) { wifi_interchange_close(true); return; }
+    if (action == WIFI_INTERCHANGE_EDIT_COPY) {
+        esp_err_t error = ssid_lists_import_document(&wifi_interchange_view->document.ssid,
+            wifi_interchange_from_archive ? wifi_archive_return_page : wifi_interchange_return_page);
+        if (error == ESP_OK) {
+            if (wifi_interchange_from_archive) {
+                wifi_mode = wifi_archive_return_mode;
+                wifi_archive_dispose();
+            }
+            wifi_interchange_dispose();
+        } else wifi_interchange_error(wifi_interchange_view, error);
+        ESP_ERROR_CHECK(draw_detail_page());
+        return;
+    }
     if (action == WIFI_INTERCHANGE_SAVE || action == WIFI_INTERCHANGE_EXPORT_AP || action == WIFI_INTERCHANGE_EXPORT_SSID) {
         wifi_interchange_ui_store_t *s = wifi_interchange_view;
         uint64_t job = 0;

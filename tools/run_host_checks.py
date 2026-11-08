@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the 190 registered host suites through integrated Wardriving uploads.
+"""Run the 194 registered host suites through integrated Wardriving uploads.
 
 The checked-in synthetic fixtures need no board, radio, or private captures.
 Generated fixtures, native executables, previews, logs, and the result receipt
@@ -24,6 +24,10 @@ ROOT = Path(__file__).resolve().parents[1]
 OUTPUT = ROOT / "artifacts" / "host-checks"
 
 CHECKS = (
+    'check_ssid_list.py',
+    'check_ssid_list_session.py',
+    'check_ssid_list_ui.py',
+    'check_ssid_list_routes.py',
     'check_wifi_capture_plan.py',
     'check_wifi_capture_plan_native.py',
     'check_wifi_capture_plan_link.py',
@@ -222,8 +226,8 @@ SERIAL_CHECKS = (
 
 def registered_checks() -> tuple[str, ...]:
     names = (*CHECKS, *SERIAL_CHECKS)
-    if len(names) != 190 or len(set(names)) != 190:
-        raise ValueError("Expected 190 unique suites; do not silently skip a suite")
+    if len(names) != 194 or len(set(names)) != 194:
+        raise ValueError("Expected 194 unique suites; do not silently skip a suite")
     return names
 
 
@@ -242,7 +246,7 @@ def selected_checks(shard_index: int | None = None,
         return names
     if (type(shard_index) is not int or type(shard_count) is not int or
             not 1 <= shard_count <= len(names) or not 0 <= shard_index < shard_count):
-        raise ValueError("Supply both --shard-index and --shard-count; index is zero-based and count is 1..190")
+        raise ValueError("Supply both --shard-index and --shard-count; index is zero-based and count is 1..194")
     return names[shard_index::shard_count]
 
 

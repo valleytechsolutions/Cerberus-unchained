@@ -7,7 +7,8 @@
 typedef enum { WIFI_INTERCHANGE_LIST, WIFI_INTERCHANGE_DETAIL, WIFI_INTERCHANGE_CHOICE,
     WIFI_INTERCHANGE_JOB, WIFI_INTERCHANGE_ERROR } wifi_interchange_page_t;
 typedef enum { WIFI_INTERCHANGE_NONE, WIFI_INTERCHANGE_REDRAW, WIFI_INTERCHANGE_BACK,
-    WIFI_INTERCHANGE_SAVE, WIFI_INTERCHANGE_EXPORT_AP, WIFI_INTERCHANGE_EXPORT_SSID } wifi_interchange_action_t;
+    WIFI_INTERCHANGE_SAVE, WIFI_INTERCHANGE_EXPORT_AP, WIFI_INTERCHANGE_EXPORT_SSID,
+    WIFI_INTERCHANGE_EDIT_COPY } wifi_interchange_action_t;
 typedef struct {
     union { cerberus_wifi_marauder_ap_t ap; cerberus_wifi_marauder_ssid_t ssid; } document;
     cerberus_wifi_marauder_ap_row_t selected;
@@ -222,8 +223,9 @@ static esp_err_t wifi_interchange_ui_draw(wifi_interchange_ui_store_t *s, esp_er
         snprintf(line, sizeof(line), "PAGE %u/%u", s->page + 1U, count ? (count + 3U) / 4U : 1U);
         ESP_RETURN_ON_ERROR(draw_centered(354, line, UI_MUTED, 1), TAG, "interchange page");
     }
-    ESP_RETURN_ON_ERROR(draw_button(8, 374, 148, 44, "PREV"), TAG, "interchange previous");
-    ESP_RETURN_ON_ERROR(draw_button(164, 374, 148, 44, "NEXT"), TAG, "interchange next");
+    ESP_RETURN_ON_ERROR(draw_button(8, 374, s->ap_json ? 148 : 96, 44, "PREV"), TAG, "interchange previous");
+    ESP_RETURN_ON_ERROR(draw_button(s->ap_json ? 164 : 112, 374, s->ap_json ? 148 : 96, 44, "NEXT"), TAG, "interchange next");
+    if (!s->ap_json) ESP_RETURN_ON_ERROR(draw_small_button(216, 374, 96, 44, "EDIT COPY"), TAG, "interchange edit");
     ESP_RETURN_ON_ERROR(wifi_interchange_footer(true), TAG, "interchange footer");
     if (s->view == WIFI_INTERCHANGE_LIST) s->paint_valid = true;
     return ESP_OK;
@@ -250,10 +252,11 @@ static wifi_interchange_action_t wifi_interchange_ui_tap(wifi_interchange_ui_sto
     }
     if (x >= 112U && x < 312U && y >= 426U && y < 470U) return WIFI_INTERCHANGE_SAVE;
     if (y >= 374U && y < 418U) {
+        if (!s->ap_json && x >= 216U && x < 312U) return WIFI_INTERCHANGE_EDIT_COPY;
         uint8_t *page = s->view == WIFI_INTERCHANGE_DETAIL ? &s->detail_page : &s->page;
         unsigned pages = s->view == WIFI_INTERCHANGE_DETAIL ? wifi_interchange_detail_pages(s) : (wifi_interchange_count(s) + 3U) / 4U;
-        if (x >= 8U && x < 156U) { if (*page) --*page; }
-        else if (x >= 164U && x < 312U) { if (*page + 1U < pages) ++*page; }
+        if (x >= 8U && x < (s->ap_json ? 156U : 104U)) { if (*page) --*page; }
+        else if (x >= (s->ap_json ? 164U : 112U) && x < (s->ap_json ? 312U : 208U)) { if (*page + 1U < pages) ++*page; }
         else return WIFI_INTERCHANGE_NONE;
         s->paint_valid = false; return WIFI_INTERCHANGE_REDRAW;
     }

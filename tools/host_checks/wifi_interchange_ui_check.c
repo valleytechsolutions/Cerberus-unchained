@@ -30,8 +30,10 @@ static esp_err_t button(uint16_t x,uint16_t y,uint16_t w,uint16_t h,const char *
 static esp_err_t draw_button(uint16_t x,uint16_t y,uint16_t w,uint16_t h,const char *s) { return button(x,y,w,h,s,2); }
 static esp_err_t draw_small_button(uint16_t x,uint16_t y,uint16_t w,uint16_t h,const char *s) { return button(x,y,w,h,s,1); }
 #include "wifi_archive_ui.h"
-typedef enum { UI_PAGE_FILES,UI_PAGE_WIFI_ARCHIVE,UI_PAGE_MAIN } ui_page_t;
+typedef enum { UI_PAGE_FILES,UI_PAGE_WIFI_ARCHIVE,UI_PAGE_MAIN,UI_PAGE_SSID_LISTS } ui_page_t;
 static ui_page_t current_page=UI_PAGE_FILES;
+static ui_page_t wifi_archive_return_page=UI_PAGE_FILES;
+static int wifi_mode,wifi_archive_return_mode;
 static wifi_archive_ui_store_t native_view,*wifi_archive_view;
 static unsigned allocations,frees,loads,saves,exports,copies,cancels,releases,draws,native_disposes,native_closes;
 static void *allocated;
@@ -48,6 +50,16 @@ static cerberus_ble_archive_io_status_t io;
 static cerberus_wifi_archive_t frozen_native;
 static cerberus_wifi_marauder_ap_t worker_ap,expected_ap;
 static cerberus_wifi_marauder_ssid_t worker_ssid,expected_ssid;
+static cerberus_wifi_marauder_ssid_t imported_ssid;
+static unsigned ssid_imports;
+static esp_err_t ssid_import_error;
+static ui_page_t ssid_import_return_page;
+static esp_err_t ssid_lists_import_document(const cerberus_wifi_marauder_ssid_t *document,ui_page_t return_page)
+{
+    ++ssid_imports;CHECK(document&&allocated&&cerberus_wifi_marauder_ssid_validate(document)==CERBERUS_WIFI_MARAUDER_OK);
+    if(ssid_import_error)return ssid_import_error;
+    imported_ssid=*document;ssid_import_return_page=return_page;current_page=UI_PAGE_SSID_LISTS;return ESP_OK;
+}
 static uint8_t encoded[CERBERUS_WIFI_MARAUDER_AP_MAX_BYTES];
 static size_t encoded_length;
 static uint64_t sequence,canceled_job,released_job;
@@ -82,7 +94,7 @@ void cerberus_ble_archive_io_release(uint64_t job) { ++releases;released_job=job
 #include "wifi_interchange_live_ui.h"
 #include "interchange_native_routes.h"
 static void clear_draw(void) { drawn_size=calls=fail_after=0;drawn[0]=0; }
-static esp_err_t draw_detail_page(void) { ++draws;clear_draw();return native_draw(); }
+static esp_err_t draw_detail_page(void) { ++draws;clear_draw();return current_page==UI_PAGE_SSID_LISTS?ESP_OK:native_draw(); }
 static esp_err_t draw_current_page(void) { return current_page==UI_PAGE_WIFI_ARCHIVE?draw_detail_page():ESP_OK; }
 /* Existing non-Wi-Fi Files actions are separate counted boundaries. */
 enum { UI_FILE_MODE_LIST,UI_FILE_MODE_DELETE_CONFIRM,UI_FILE_MODE_PACKAGE_INFO,UI_FILE_MODE_ACTIONS,UI_FILE_OPERATION_RENAME };
@@ -105,7 +117,8 @@ static void reset(void)
 { wifi_interchange_dispose();wifi_archive_view=NULL;memset(&native_view,0,sizeof(native_view));
     memset(&io,0,sizeof(io));memset(&worker_ap,0,sizeof(worker_ap));memset(&worker_ssid,0,sizeof(worker_ssid));
     memset(&file_selected_entry,0,sizeof(file_selected_entry));file_action_message[0]=0;
-    current_page=UI_PAGE_FILES;privacy_mask=oom=false;start_error=copy_error=ESP_OK;clear_draw(); }
+    current_page=UI_PAGE_FILES;wifi_archive_return_page=UI_PAGE_FILES;wifi_mode=wifi_archive_return_mode=0;
+    privacy_mask=oom=false;start_error=copy_error=ssid_import_error=ESP_OK;clear_draw(); }
 static void finish(void)
 {
     CHECK(io.worker_active);bool ap=io.format==CERBERUS_BLE_ARCHIVE_IO_FORMAT_AP_JSON;
@@ -282,11 +295,55 @@ static void lifetime(void)
     CHECK(wifi_interchange_tick(false));CHECK(strstr(drawn,"FAILED SAVE MAY LEAVE")&&strstr(drawn,"P00002.TMP"));
     CHECK(!strcmp(wifi_interchange_view->file_name,"P00001.LOG")&&!memcmp(&expected_ap,&wifi_interchange_view->document.ap,sizeof(expected_ap)));
 }
+static void edit_copy_routes(void)
+{
+    static const uint8_t bytes[]={'A',0,'\r',255,'\n','\n','A',0,'\r',255};
+    open_ssid(bytes,sizeof(bytes));CHECK(strstr(drawn,"EDIT COPY"));
+    cerberus_wifi_marauder_ssid_t original=wifi_interchange_view->document.ssid;
+    wifi_interchange_ui_store_t *source=wifi_interchange_view;
+    unsigned imports=ssid_imports,disposed=frees;
+    CHECK(wifi_interchange_ui_tap(source,215,395)==WIFI_INTERCHANGE_NONE);
+    CHECK(wifi_interchange_ui_tap(source,312,395)==WIFI_INTERCHANGE_NONE);
+    CHECK(wifi_interchange_ui_tap(source,250,418)==WIFI_INTERCHANGE_NONE);
+    ssid_import_error=ESP_ERR_NO_MEM;wifi_interchange_tap(216,374);
+    CHECK(ssid_imports==imports+1U&&wifi_interchange_view==source&&current_page==UI_PAGE_WIFI_ARCHIVE&&frees==disposed);
+    CHECK(source->has_document&&source->view==WIFI_INTERCHANGE_ERROR&&source->error==ESP_ERR_NO_MEM);
+    CHECK(!memcmp(&source->document.ssid,&original,sizeof(original)));
+    wifi_interchange_tap(100,395);ssid_import_error=ESP_OK;wifi_interchange_tap(311,417);
+    CHECK(ssid_imports==imports+2U&&!wifi_interchange_view&&!allocated&&frees==disposed+1U);
+    CHECK(current_page==UI_PAGE_SSID_LISTS&&ssid_import_return_page==UI_PAGE_FILES);
+    CHECK(!memcmp(&imported_ssid,&original,sizeof(original)));
+    memset(&worker_ssid,0,sizeof(worker_ssid));CHECK(!memcmp(&imported_ssid,&original,sizeof(original)));
+
+    static uint8_t many[64U*2U];for(unsigned i=0;i<64U;++i){many[i*2U]='n';many[i*2U+1U]='\n';}
+    open_ssid(many,sizeof(many));imports=ssid_imports;
+    wifi_interchange_tap(112,374);CHECK(wifi_interchange_view->page==1U);
+    wifi_interchange_tap(207,417);CHECK(wifi_interchange_view->page==2U);
+    CHECK(wifi_interchange_ui_tap(wifi_interchange_view,208,395)==WIFI_INTERCHANGE_NONE);
+    CHECK(wifi_interchange_ui_tap(wifi_interchange_view,104,395)==WIFI_INTERCHANGE_NONE);
+    wifi_interchange_tap(103,395);CHECK(wifi_interchange_view->page==1U&&ssid_imports==imports);
+    open_ap(8);imports=ssid_imports;wifi_interchange_tap(216,395);
+    CHECK(wifi_interchange_view->page==1U&&ssid_imports==imports&&!strstr(drawn,"EDIT COPY"));
+
+    reset();wifi_interchange_open_file("/CERBERUS/WIFI","busy.TXT",false);imports=ssid_imports;
+    wifi_interchange_tap(250,395);CHECK(ssid_imports==imports&&wifi_interchange_view->job_pending);
+    open_ssid((const uint8_t *)"",0);wifi_interchange_tap(250,395);
+    CHECK(current_page==UI_PAGE_SSID_LISTS&&imported_ssid.count==0U&&!imported_ssid.final_lf);
+
+    reset();seed_native(2);wifi_archive_return_page=UI_PAGE_MAIN;wifi_archive_return_mode=7;wifi_mode=9;
+    native_tap(260,440);wifi_interchange_tap(100,350);finish();CHECK(wifi_interchange_tick(false));
+    original=wifi_interchange_view->document.ssid;unsigned native_before=native_disposes;
+    ssid_import_error=ESP_ERR_NO_MEM;wifi_interchange_tap(250,395);
+    CHECK(wifi_archive_view==&native_view&&wifi_interchange_view&&native_disposes==native_before&&wifi_mode==9);
+    wifi_interchange_tap(100,395);ssid_import_error=ESP_OK;wifi_interchange_tap(250,395);
+    CHECK(!wifi_archive_view&&!wifi_interchange_view&&native_disposes==native_before+1U);
+    CHECK(ssid_import_return_page==UI_PAGE_MAIN&&wifi_mode==7&&!memcmp(&imported_ssid,&original,sizeof(original)));
+}
 int main(int argc,char **argv)
 {
     /* The unchanged native IO error path has its own complete controller suite. */
     (void)wifi_archive_ui_error;
-    CHECK(argc==2);routes(argv[1]);ap_pages(argv[1]);ssid_pages(argv[1]);export_workflow(argv[1]);lifetime();reset();
+    CHECK(argc==2);routes(argv[1]);ap_pages(argv[1]);ssid_pages(argv[1]);export_workflow(argv[1]);lifetime();edit_copy_routes();reset();
     CHECK(!allocated);printf("Wi-Fi interchange UI/routes: %u checks PASS; viewer=%zu, AP=%zu, SSID=%zu bytes.\n",checks,
         sizeof(wifi_interchange_ui_store_t),sizeof(cerberus_wifi_marauder_ap_t),sizeof(cerberus_wifi_marauder_ssid_t));return 0;
 }

@@ -59,6 +59,8 @@ idf_component_register(
         "wifi_archive.c"
         "wifi_archive_capture.c"
         "wifi_marauder.c"
+        "ssid_list.c"
+        "ssid_list_session.c"
         "probe_sniff_model.c"
         "probe_sniff_scan.c"
         "mesh_observation.c"

@@ -33,6 +33,7 @@
 #include "wifi_capture_session.h"
 #include "s3_wifi_owner.h"
 #include "s3_wifi_ssid_analysis.h"
+#include "wifi_marauder.h"
 #include "wifi_readout_diagnostics.h"
 #include "ui_widgets.h"
 #include "ui_time_service.h"
@@ -151,6 +152,7 @@ typedef enum {
     UI_PAGE_MAC_MONITOR,
     UI_PAGE_BLE_ARCHIVE,
     UI_PAGE_WIFI_ARCHIVE,
+    UI_PAGE_SSID_LIST,
     UI_PAGE_MESH_ARCHIVE,
 } ui_page_t;
 
@@ -408,6 +410,13 @@ static bool wifi_interchange_is_open(void);
 static esp_err_t wifi_interchange_draw(void);
 static void wifi_interchange_tap(uint16_t x, uint16_t y);
 static bool wifi_interchange_tick(bool asleep);
+static void ssid_lists_open(void);
+static esp_err_t ssid_lists_draw(void);
+static void ssid_lists_tap(uint16_t x, uint16_t y);
+static void ssid_lists_tick(bool asleep);
+static bool ssid_lists_pick_file(const char *path, const char *name);
+static esp_err_t ssid_lists_import_document(const cerberus_wifi_marauder_ssid_t *document, ui_page_t return_page);
+static esp_err_t ssid_lists_import_name(const uint8_t *bytes, size_t length, ui_page_t return_page);
 static esp_err_t ble_archive_draw(void);
 static bool airtag_json_is_file(const char *name);
 static bool airtag_json_is_open(void);
@@ -3008,7 +3017,7 @@ static esp_err_t draw_wifi_detail(void)
     }
 
     if (wifi_trust_error != ESP_OK) {
-        snprintf(line, sizeof(line), "TRUST UPDATE FAILED %s", esp_err_to_name(wifi_trust_error));
+        snprintf(line, sizeof(line), "DETAIL ACTION FAILED %s", esp_err_to_name(wifi_trust_error));
         ESP_RETURN_ON_ERROR(draw_centered(334, line, UI_BAD, 1), TAG, "Wi-Fi trust error failed");
     } else {
         ESP_RETURN_ON_ERROR(
@@ -8290,6 +8299,7 @@ static esp_err_t draw_detail_page(void)
     if (wardrive_logs_is_open()) return wardrive_logs_draw();
     if (current_page == UI_PAGE_BLE_ARCHIVE) return ble_archive_draw();
     if (current_page == UI_PAGE_WIFI_ARCHIVE) return wifi_archive_draw();
+    if (current_page == UI_PAGE_SSID_LIST) return ssid_lists_draw();
     if (current_page == UI_PAGE_WIFI && wifi_mode == UI_WIFI_MODE_CSI) return csi_draw(true);
     if (current_page == UI_PAGE_REMOTE_ID) return remote_id_draw(true);
     if (current_page == UI_PAGE_MAC_MONITOR) return mac_monitor_draw(true);
@@ -8521,6 +8531,10 @@ static esp_err_t draw_detail_page(void)
     if (current_page == UI_PAGE_BLE && ble_mode == UI_BLE_MODE_DETAIL) {
         ESP_RETURN_ON_ERROR(draw_button(8, UI_BACK_Y, 192, UI_BACK_HEIGHT, back_label), TAG, "BLE back");
         return draw_button(208, UI_BACK_Y, 104, UI_BACK_HEIGHT, "SAVE SD");
+    }
+    if (current_page == UI_PAGE_WIFI && wifi_mode == UI_WIFI_MODE_DETAIL && wifi_selection_valid) {
+        ESP_RETURN_ON_ERROR(draw_button(8, UI_BACK_Y, 148, UI_BACK_HEIGHT, back_label), TAG, "AP back");
+        return draw_button(164, UI_BACK_Y, 148, UI_BACK_HEIGHT, "COPY NAME");
     }
     if (!live_is_view() && live_page_tool() != SENTINEL_SCAN_NONE &&
         !(current_page == UI_PAGE_WIFI && wifi_mode == UI_WIFI_MODE_BASELINE)) {
@@ -10980,7 +10994,9 @@ static void handle_files_tap(uint16_t x, uint16_t y)
         } else if (index < file_entry_count && file_entries[index].is_directory) {
             navigate_file_directory(file_entries[index].name);
         } else if (index < file_entry_count) {
-            if (mesh_archive_is_file(file_entries[index].name)) {
+            if (ssid_lists_pick_file(file_path, file_entries[index].name)) {
+                return;
+            } else if (mesh_archive_is_file(file_entries[index].name)) {
                 mesh_archive_open_file(file_path, file_entries[index].name);
             } else if (wifi_archive_is_file(file_entries[index].name)) {
                 wifi_archive_open_file(file_path, file_entries[index].name);
@@ -11624,6 +11640,7 @@ static void handle_scripts_tap(uint16_t x, uint16_t y)
 #include "mesh_ui.h"
 #include "mesh_archive_ui.h"
 #include "wifi_archive_live_ui.h"
+#include "ssid_list_live_ui.h"
 #include "wifi_interchange_live_ui.h"
 #include "dual_ble_live_ui.h"
 #include "ble_analyzer_live_ui.h"
@@ -11768,6 +11785,7 @@ static void handle_tools_tap(uint16_t x, uint16_t y)
 
     ui_page_t page;
     switch (action) {
+    case SENTINEL_TOOLS_SSID_LISTS: ssid_lists_open(); return;
     case SENTINEL_TOOLS_SETTINGS: page = UI_PAGE_SETTINGS; break;
     case SENTINEL_TOOLS_FILES: page = UI_PAGE_FILES; break;
     case SENTINEL_TOOLS_LOGS: page = UI_PAGE_LOGS; break;
@@ -12210,6 +12228,17 @@ static void handle_tap(uint16_t x, uint16_t y)
         return;
     }
 
+    if (current_page == UI_PAGE_SSID_LIST) {
+        ssid_lists_tap(x, y);
+        return;
+    }
+    if (current_page == UI_PAGE_WIFI && wifi_mode == UI_WIFI_MODE_DETAIL && wifi_selection_valid &&
+        x >= 164U && x < 312U && y >= UI_BACK_Y && y < UI_BACK_Y + UI_BACK_HEIGHT) {
+        wifi_trust_error = ssid_lists_import_name((const uint8_t *)wifi_selected_result.ssid,
+            strnlen(wifi_selected_result.ssid, 32U), UI_PAGE_WIFI);
+        ESP_ERROR_CHECK(draw_detail_page());
+        return;
+    }
     if (current_page == UI_PAGE_MESH_ARCHIVE) {
         mesh_archive_tap(x, y);
         return;
@@ -12817,6 +12846,7 @@ void cerberus_ui_run(const cerberus_ui_config_t *config)
         if (!screen_asleep) watch_ui_tick((uint32_t)now_ms);
         ble_archive_tick(screen_asleep);
         wifi_archive_tick(screen_asleep);
+        ssid_lists_tick(screen_asleep);
         wardrive_recent_release_if_left();
         bool notification_added = cerberus_ui_time_service_tick(now_ms);
         if (notification_added && !screen_asleep && current_page == UI_PAGE_SETTINGS &&

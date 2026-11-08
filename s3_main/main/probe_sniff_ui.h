@@ -153,6 +153,16 @@ static void probe_sniff_mac(const uint8_t mac[6], char text[18])
     else snprintf(text, 18U, "%02X:%02X:%02X:%02X:%02X:%02X",
         mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
 }
+static bool probe_sniff_can_copy_name(const probe_sniff_ui_store_t *s)
+{
+    return s && s->detail && s->selected.frozen && s->scan.published.frozen &&
+        s->selected.session == s->scan.published.control.session_id &&
+        !s->closing && !s->job && !s->save_requested && !s->suppress_old &&
+        !s->scan.requested && !s->scan.restart_requested &&
+        (!s->scan.request.session_id || (s->scan.have_control &&
+            !(s->scan.remote.flags & (CERBERUS_PROBE_SNIFF_OWNED | CERBERUS_PROBE_SNIFF_RECEIVING))));
+}
+
 static esp_err_t probe_sniff_detail_draw(const probe_sniff_ui_store_t *s)
 {
     const probe_sniff_painted_t *p = &s->selected;
@@ -188,7 +198,10 @@ static esp_err_t probe_sniff_detail_draw(const probe_sniff_ui_store_t *s)
     ESP_RETURN_ON_ERROR(draw_centered(290, "C5 CALLBACK UPTIME / NOT UTC", UI_MUTED, 1), TAG, "probe time scope");
     snprintf(line, sizeof(line), "SESSION %016llX", (unsigned long long)p->session);
     ESP_RETURN_ON_ERROR(draw_centered(316, line, UI_MUTED, 1), TAG, "probe session");
-    return draw_centered(347, "REQUEST OBSERVATION / NOT ASSOCIATION", UI_MUTED, 1);
+    ESP_RETURN_ON_ERROR(draw_centered(347, s->error != ESP_OK && s->message[0] ? s->message :
+        "REQUEST OBSERVATION / NOT ASSOCIATION", s->error != ESP_OK ? UI_BAD : UI_MUTED, 1), TAG, "probe scope");
+    if (probe_sniff_can_copy_name(s)) return draw_button(48, 375, 224, 40, "COPY NAME TO LIST");
+    return draw_centered(390, "STOP CAPTURE TO COPY A NAME", UI_MUTED, 1);
 }
 
 static esp_err_t probe_sniff_draw(void)
@@ -278,7 +291,16 @@ static esp_err_t probe_sniff_draw(void)
 static void probe_sniff_tap(uint16_t x, uint16_t y)
 {
     probe_sniff_ui_store_t *s = probe_sniff_ui;
-    if (!s || s->closing || s->detail) return;
+    if (!s || s->closing) return;
+    if (s->detail) {
+        if (x >= 48U && x < 272U && y >= 375U && y < 415U && probe_sniff_can_copy_name(s)) {
+            const cerberus_probe_sniff_row_t *row = &s->selected.row.row;
+            s->error = ssid_lists_import_name(row->ssid, row->ssid_length, UI_PAGE_WIFI);
+            if (s->error == ESP_OK) { probe_sniff_close(false); wifi_mode = UI_WIFI_MODE_MENU; }
+            else snprintf(s->message, sizeof(s->message), "COPY NAME: %.31s", esp_err_to_name(s->error));
+        }
+        return;
+    }
     bool held = s->scan.requested || (s->scan.request.session_id && (!s->scan.have_control ||
         (s->scan.remote.flags & CERBERUS_PROBE_SNIFF_OWNED)));
     if (y >= 70U && y < 100U && !held && !s->job && !s->save_requested) {
