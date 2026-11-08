@@ -26,7 +26,8 @@ static void baseline_text(uint16_t y, const char *text);
 static const cerberus_ui_widget_theme_t theme = {UI_BACKGROUND, UI_PANEL, UI_GOOD, UI_TEXT, UI_MUTED};
 #define UI_WIDGET_THEME (&theme)
 enum { UI_PAGE_WIFI, UI_PAGE_TOOLS, UI_PAGE_MAIN, UI_PAGE_BLE };
-enum { UI_WIFI_MODE_BASELINE, UI_WIFI_MODE_LIST, UI_WIFI_MODE_MENU, UI_WIFI_MODE_OBSERVED_CLIENTS };
+enum { UI_WIFI_MODE_BASELINE, UI_WIFI_MODE_LIST, UI_WIFI_MODE_MENU, UI_WIFI_MODE_OBSERVED_CLIENTS, UI_WIFI_MODE_DETAIL };
+static bool wifi_selection_valid;
 enum { UI_BLE_MODE_MENU, UI_BLE_MODE_DETAIL };
 static unsigned current_page, wifi_mode, tool_parent_page, ble_mode;
 static bool learning_tool_active;

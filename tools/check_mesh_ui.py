@@ -52,7 +52,7 @@ begin = live.index('static bool live_is_view(void)')
 live_view = live[begin:live.index('\nstatic void live_status', begin)]
 assert 'const bool defer_c5 = live_wifi_capture_defers_c5() || mesh_ui_busy() || wifi_packet_count_ui_busy() || channel_analyzer_ui_busy() || wifi_fox_hunt_ui_busy() || saved_ble_lookup_ui_busy();' in live
 assert 'if (c5_online && !live_wifi_capture_defers_c5() && !mesh_ui_busy() && !wifi_packet_count_ui_busy() && !channel_analyzer_ui_busy() && !wifi_fox_hunt_ui_busy() && !saved_ble_lookup_ui_busy())' in live
-begin = ui.index('            if (mesh_archive_is_file(file_entries[index].name)) {')
+begin = ui.index('if (mesh_archive_is_file(file_entries[index].name)) {')
 file_route = ui[begin:ui.index('            } else if', begin)] + '}'
 file_route = file_route.replace('file_entries[index].name', 'name')
 assert 'if (current_page == UI_PAGE_MESH_ARCHIVE) return mesh_archive_draw();' in ui
