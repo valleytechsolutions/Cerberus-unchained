@@ -22,7 +22,7 @@ static const tools_item_t main_items[] = {
     {"Logs + reports", "VIEW SAVED SCANS AND DEVICE LOGS", VIOLET, SENTINEL_TOOLS_LOGS},
     {"Local web", "OPEN THE DASHBOARD IN YOUR BROWSER", VIOLET, SENTINEL_TOOLS_WEB},
     {"Device care", "HEALTH, HARDWARE CHECKS AND USB SUPPORT", AMBER, SENTINEL_TOOLS_OPEN_CARE},
-    {"Extras", "OFFLINE QR MAKER AND LOCAL SCRIPTS", AMBER, SENTINEL_TOOLS_OPEN_EXTRAS},
+    {"Extras", "SSID LISTS, QR MAKER AND LOCAL SCRIPTS", AMBER, SENTINEL_TOOLS_OPEN_EXTRAS},
 };
 static const tools_item_t care_items[] = {
     {"System health", "DEVICE STATUS AND CRASH RECORDS", CYAN, SENTINEL_TOOLS_STATUS},
@@ -30,6 +30,7 @@ static const tools_item_t care_items[] = {
     {"USB support", "DIAGNOSTIC CONSOLE AND RECOVERY MODE", AMBER, SENTINEL_TOOLS_USB},
 };
 static const tools_item_t extra_items[] = {
+    {"SSID Lists", "EDIT NETWORK NAMES / IMPORT AND SAVE", CYAN, SENTINEL_TOOLS_SSID_LISTS},
     {"QR maker", "CREATE WI-FI, TEXT AND LINK CODES", CYAN, SENTINEL_TOOLS_QR},
     {"Local scripts", "RUN MESSAGE, TIMER AND QR SEQUENCES", VIOLET, SENTINEL_TOOLS_SCRIPTS},
 };
@@ -94,7 +95,7 @@ esp_err_t sentinel_tools_draw(
         TRY_DRAW(cerberus_display_draw_text(24U, 400U, "RADIO TOOLS AND FIELD GUIDE ARE ON HOME",
             theme->muted, theme->background, 1U));
     } else {
-        uint16_t note_y = group == SENTINEL_TOOLS_CARE ? 252U : 198U;
+        uint16_t note_y = 252U;
         TRY_DRAW(cerberus_display_fill_rect(12U, note_y, 296U, 82U, theme->panel));
         TRY_DRAW(cerberus_display_draw_text(24U, note_y + 12U,
             group == SENTINEL_TOOLS_CARE ? "LOOKING FOR USB FILE SHARING?" : "KEEP EXPLORING",

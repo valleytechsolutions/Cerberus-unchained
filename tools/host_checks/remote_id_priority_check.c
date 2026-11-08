@@ -1,8 +1,11 @@
+#include "ap_survey_foreign_boundary.h"
+#include "wardrive_foreign_boundary.h"
 #undef NDEBUG
 #include "cerberus_watch_capture.h"
 #include "remote_id_channel_plan.h"
 #include <assert.h>
 #include <stdatomic.h>
+static atomic_bool packet_count_radio_reserved;
 #include <stdio.h>
 #include <string.h>
 static unsigned checks;
@@ -27,9 +30,11 @@ static int mutex,mux,task,defense_task;
 static void *scanner_mutex=&mutex,*scanner_task_handle=&task,*defense_task_handle=&defense_task;
 #define defense_capture_mux mux
 static bool locked,critical,scanner_ready=true,station_reserved,foreign,test_running,connected,promiscuous;
+/* Separate passive Probe owner; the actual admission body below checks it. */
+static atomic_bool probe_sniff_radio_reserved;
 static atomic_bool remote_id_radio_reserved,capture_radio_reserved,packet_monitor_radio_reserved,channel_survey_radio_reserved;
 static atomic_bool csi_radio_reserved, mac_radio_reserved;
-static atomic_uint mac_admission_token;
+static atomic_uint mac_admission_token, wifi_fox_hunt_admission_token;
 static cerberus_wifi_scan_status_payload_t scan_status;
 static cerberus_wifi_defense_status_payload_t defense_status;
 static cerberus_wifi_connection_status_payload_t connection_status;
@@ -110,11 +115,21 @@ static void scan_observation_receive(const wifi_promiscuous_pkt_t *p,unsigned t)
     }
 }
 static void channel_survey_receive(const wifi_promiscuous_pkt_t *p,unsigned t){(void)p;(void)t;}
+/* Fox Hunt is inactive in this receiver-specific SDK fixture. */
+static void wifi_fox_hunt_receive(const wifi_promiscuous_pkt_t *p,
+    wifi_promiscuous_pkt_type_t type, int64_t entered, uint32_t token)
+{ (void)p; (void)type; (void)entered; (void)token; }
 static void packet_monitor_receive(const wifi_promiscuous_pkt_t *p,unsigned t){(void)p;(void)t;}
+static uint32_t cerberus_wifi_capture_service_admission_token(void){return 0;}
 static bool cerberus_wifi_capture_service_active(void){return false;}
-static void cerberus_wifi_capture_service_receive(const uint8_t *p,unsigned n,unsigned c,int r,uint64_t t){(void)p;(void)n;(void)c;(void)r;(void)t;CHECK(false);}
+static void cerberus_wifi_capture_service_receive(const uint8_t *p,unsigned n,unsigned c,int r,int64_t t,uint32_t generation){(void)generation;(void)p;(void)n;(void)c;(void)r;(void)t;CHECK(false);}
 static void station_receive(const wifi_promiscuous_pkt_t *p){(void)p;}
 static void cerberus_c5_test_receive(const uint8_t *p,unsigned n,unsigned c){(void)p;(void)n;(void)c;}
+/* Dedicated Probe capture is inactive in this legacy consumer fixture. */
+static void packet_count_receive(const wifi_promiscuous_pkt_t *p,wifi_promiscuous_pkt_type_t type,int64_t entered)
+{(void)p;(void)type;(void)entered;}
+static void probe_sniff_receive(const wifi_promiscuous_pkt_t *p,wifi_promiscuous_pkt_type_t type,int64_t entered)
+{ (void)p;(void)type;(void)entered; }
 #include "wifi_remote_id_service.h"
 #include "remote_id_priority_callback.h"
 #include "remote_id_priority_survey_start.h"
@@ -152,7 +167,7 @@ static void reset(void)
 {
     CHECK(!locked&&!critical);scanner_mutex=&mutex;scanner_task_handle=&task;scanner_ready=true;
     station_reserved=foreign=test_running=connected=promiscuous=drain_on_delay=false;
-    atomic_store(&remote_id_radio_reserved,false);atomic_store(&capture_radio_reserved,false);
+    atomic_store(&probe_sniff_radio_reserved,false);atomic_store(&remote_id_radio_reserved,false);atomic_store(&capture_radio_reserved,false);
     atomic_store(&packet_monitor_radio_reserved,false);atomic_store(&channel_survey_radio_reserved,false);
     memset(&scan_status,0,sizeof(scan_status));memset(&defense_status,0,sizeof(defense_status));
     memset(&channel_survey_status,0,sizeof(channel_survey_status));memset(&watch_capture,0,sizeof(watch_capture));
@@ -184,6 +199,8 @@ static void completed_identity_cache_and_data(void)
     ++r.dwell_ms;cerberus_wifi_remote_id_start(&r,&reply);CHECK(reply.state==7&&reply.error_code==ESP_ERR_INVALID_ARG);
     r=request(done.job_id-1);cerberus_wifi_remote_id_start(&r,&reply);CHECK(reply.state==7&&status(0).job_id==done.job_id);
     scan_status.state=CERBERUS_WIFI_SCAN_RUNNING;CHECK(!status(0).flags);scan_status.state=0;CHECK(status(0).flags==4);
+    atomic_store(&probe_sniff_radio_reserved,true);CHECK(!status(0).flags);
+    atomic_store(&probe_sniff_radio_reserved,false);CHECK(status(0).flags==4);
     unsigned previous_calls=channel_sets;uint8_t next=remote_id_next_background;
     start(done.job_id+1);CHECK(channel_sets==previous_calls+1&&remote_id_epoch==epoch+1&&remote_id_status.generation==0);
     CHECK(cerberus_remote_id_channel_plan_next_background(&remote_id_plan)==next);
@@ -194,13 +211,14 @@ static void completed_identity_cache_and_data(void)
 }
 static void rejection_and_dispatch(void)
 {
-    for(unsigned defect=0;defect<13;++defect){
+    for(unsigned defect=0;defect<14;++defect){
         reset();cerberus_remote_id_start_request_t r=request(1);
         if(defect==0)r.job_id=0;if(defect==1)r.flags=1;if(defect==2)r.reserved[6]=1;
         if(defect==3)r.duration_ms=999;if(defect==4)r.duration_ms=30001;if(defect==5)r.lease_ms=999;
         if(defect==6)r.lease_ms=5001;if(defect==7)r.dwell_ms=99;if(defect==8)r.dwell_ms=1001;
         if(defect==9)foreign=true;if(defect==10)promiscuous=true;if(defect==11)channel_survey_status.state=CERBERUS_WIFI_CHANNEL_SURVEY_RUNNING;
         if(defect==12)watch_capture_epoch=UINT64_MAX;
+        if(defect==13)atomic_store(&probe_sniff_radio_reserved,true);
         cerberus_wifi_remote_id_start(&r,&reply);CHECK(reply.state==7&&!reply.flags&&!remote_id_request.job_id&&!notified&&!channel_sets);
     }
     reset();cerberus_spi_frame_t frame={.command=90,.sequence=42,.payload_length=22};
@@ -342,7 +360,7 @@ static void follow_identity_plan_and_deadline(void)
 }
 static void follow_proof_failures_and_explicit_search(void)
 {
-    for(unsigned defect=0;defect<13;++defect){
+    for(unsigned defect=0;defect<14;++defect){
         uint64_t source=seed_follow_source();cerberus_remote_id_start_request_t r=follow_request(2);
         switch(defect){
         case 0:watch_capture.capture_epoch++;break;

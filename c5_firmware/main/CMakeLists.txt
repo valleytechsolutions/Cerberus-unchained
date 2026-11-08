@@ -1,6 +1,9 @@
 idf_component_register(
     SRCS
         "main.c"
+        "../../shared/device_identity.c"
+        "../../shared/device_identity_esp.c"
+        "../../shared/wardrive_radio.c"
         "mdns_scanner.c"
         "network_diagnostics.c"
         "network_scanner.c"
@@ -11,6 +14,7 @@ idf_component_register(
         "../../shared/wifi_sae_commit.c"
         "../../shared/wifi_ap_clone.c"
         "../../shared/wifi_capture_ring.c"
+        "../../shared/wifi_packet_monitor_record.c"
         "../../shared/wifi_capture_filter.c"
         "../../shared/radio_test.c"
         "../../shared/network_scan.c"
@@ -20,15 +24,23 @@ idf_component_register(
         "fragment_transfer.c"
         "ieee802154_scanner.c"
         "wifi_scanner.c"
+        "../../shared/wifi_packet_count.c"
+        "../../shared/wifi_capture_plan.c"
+        "../../shared/wifi_ap_survey.c"
         "wifi_capture_service.c"
         "../../shared/cerberus_watch_capture.c"
         "../../shared/remote_id_channel_plan.c"
         "../../shared/mac_observation.c"
+        "../../shared/mesh_mac.c"
+        "../../shared/probe_sniff_core.c"
         "../../shared/sentinel_watch_protocol.c"
     INCLUDE_DIRS
         "."
         "../../shared"
     PRIV_REQUIRES
+        app_update
+        esp_app_format
+        spi_flash
         bt
         esp_event
         esp_http_client

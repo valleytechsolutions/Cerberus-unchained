@@ -16,8 +16,12 @@ static void mac_release_locked(cerberus_s3_ble_mac_monitor_t *m)
     bool own_scan=snapshot && snapshot->status.state==CERBERUS_BLE_SCAN_RUNNING &&
         scan_epoch==m->scan_epoch && scan_host_epoch==m->host_epoch;
     bool queued=stop_event_pending && stop_epoch==m->scan_epoch;
-    bool own_host=m->host_epoch==cerberus_s3_ble_host_epoch() &&
-        cerberus_s3_ble_host_owner()==CERBERUS_S3_BLE_OWNER_SCANNER;
+    bool own_host=scan_owns_host_locked();
+    if (!own_scan && !queued && own_host) {
+        esp_err_t error=scan_release_host_locked();
+        if (error) m->error=error;
+        own_host=scan_owns_host_locked();
+    }
     if (!own_scan && !queued && !own_host) {
         m->owned=m->receiving=false;
         m->state=m->error?CERBERUS_MAC_ERROR:CERBERUS_MAC_COMPLETE;
@@ -43,7 +47,7 @@ static int32_t mac_local_reserve(void *context,uint8_t radio,cerberus_mac_bindin
     if(!m || !out || radio!=CERBERUS_MAC_BLE)return ESP_ERR_INVALID_ARG;
     esp_err_t error=ensure_mutex();if(error)return error;
     xSemaphoreTake(scan_mutex,portMAX_DELAY);reconcile_host_locked();
-    bool busy=mac_monitor || discovery_attached || snapshot->status.state==CERBERUS_BLE_SCAN_RUNNING ||
+    bool busy=scan_host_acquiring || scan_host_held || mac_monitor || discovery_attached || passive_state.attached || snapshot->status.state==CERBERUS_BLE_SCAN_RUNNING ||
         stop_event_pending || start_event_pending || tracker.enabled || (analyzer && analyzer->active) ||
         cerberus_s3_ble_host_owner()!=CERBERUS_S3_BLE_OWNER_NONE ||
         cerberus_s3_wifi_owner()==CERBERUS_S3_WIFI_RECEIVER;

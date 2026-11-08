@@ -1,4 +1,4 @@
-"""Exercise the production C5 monitor's reserved-radio restore path."""
+"""Exercise C5 restore failures and the S3 monitor's Stop completion gate."""
 from pathlib import Path
 import importlib.util
 import os
@@ -8,7 +8,7 @@ import sys
 root = Path(__file__).resolve().parents[1]
 source = (root / "c5_firmware/main/wifi_packet_monitor_service.h").read_text()
 start = source.index("static esp_err_t packet_monitor_restore_radio(void)")
-end = source.index("static void packet_monitor_run(void)", start)
+end = source.index("static esp_err_t channel_analyzer_run_windows(", start)
 impl = source[start:end]
 program = r'''
 #undef NDEBUG
@@ -18,16 +18,23 @@ program = r'''
 #include <stdatomic.h>
 #define ESP_OK 0
 #define ESP_FAIL 1
+#define ESP_ERR_NOT_FINISHED 2
 typedef int esp_err_t;
 typedef int wifi_band_mode_t;
 typedef int wifi_second_chan_t;
 static wifi_band_mode_t packet_monitor_previous_band_mode;
 static uint8_t packet_monitor_previous_channel;
 static wifi_second_chan_t packet_monitor_previous_second;
+static int packet_monitor_previous_filter = 5;
+static int channel_analyzer_previous_ctrl_filter;
+static bool channel_analyzer_mode, wifi_fox_hunt_mode;
+static esp_err_t esp_wifi_set_promiscuous_ctrl_filter(const int *filter)
+{(void)filter;return ESP_OK;}
 static bool packet_monitor_restore_pending;
 static bool packet_monitor_disable_pending;
 static atomic_bool packet_monitor_radio_reserved;
-static int fail_disable, fail_band, fail_channel;
+static int fail_disable, fail_band, fail_channel, fail_filter;
+static bool callbacks_idle = true;
 static unsigned disable_calls, band_calls, channel_calls;
 static esp_err_t esp_wifi_set_promiscuous(bool enabled)
 {assert(!enabled);++disable_calls;return fail_disable ? ESP_FAIL : ESP_OK;}
@@ -35,6 +42,9 @@ static esp_err_t esp_wifi_set_band_mode(wifi_band_mode_t mode)
 {assert(mode==9);++band_calls;return fail_band ? ESP_FAIL : ESP_OK;}
 static esp_err_t esp_wifi_set_channel(uint8_t channel,wifi_second_chan_t second)
 {assert(channel==6 && second==2);++channel_calls;return fail_channel ? ESP_FAIL : ESP_OK;}
+static esp_err_t esp_wifi_set_promiscuous_filter(const int *filter)
+{assert(*filter==5);return fail_filter ? ESP_FAIL : ESP_OK;}
+static bool packet_monitor_record_callbacks_idle(void) {return callbacks_idle;}
 ''' + impl + r'''
 static void reset(void)
 {
@@ -44,7 +54,7 @@ static void reset(void)
     packet_monitor_restore_pending=true;
     packet_monitor_disable_pending=true;
     atomic_store(&packet_monitor_radio_reserved,true);
-    fail_disable=fail_band=fail_channel=0;
+    fail_disable=fail_band=fail_channel=fail_filter=0;callbacks_idle=true;
     disable_calls=band_calls=channel_calls=0;
 }
 int main(void)
@@ -78,6 +88,16 @@ int main(void)
     assert(packet_monitor_restore_radio()==ESP_OK);
     assert(!atomic_load(&packet_monitor_radio_reserved));
     assert(disable_calls==1 && band_calls==2 && channel_calls==2);
+    reset();fail_filter=1;
+    assert(packet_monitor_restore_radio()==ESP_FAIL);
+    assert(atomic_load(&packet_monitor_radio_reserved)&&packet_monitor_restore_pending);
+    fail_filter=0;assert(packet_monitor_restore_radio()==ESP_OK);
+    assert(!atomic_load(&packet_monitor_radio_reserved));
+    reset();callbacks_idle=false;
+    assert(packet_monitor_restore_radio()==ESP_ERR_NOT_FINISHED);
+    assert(atomic_load(&packet_monitor_radio_reserved)&&band_calls==0);
+    callbacks_idle=true;assert(packet_monitor_restore_radio()==ESP_OK);
+    assert(!atomic_load(&packet_monitor_radio_reserved));
     return 0;
 }
 '''
@@ -97,3 +117,7 @@ subprocess.run(compiler + ["-std=c11", "-O1", "-Wall", "-Wextra", "-Werror",
     str(fixture), "-o", str(exe)], check=True, env=environment)
 subprocess.run([str(exe)], check=True, env=environment)
 print("Wi-Fi Packet Monitor disable/restore reservation and retry: pass")
+
+# The session fixture covers the former Stop regression through the real
+# dispatcher, transport, controller and pending UI navigation.
+subprocess.run([sys.executable, str(root / "tools/check_wifi_packet_monitor_session.py")], check=True)

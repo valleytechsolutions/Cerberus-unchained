@@ -168,8 +168,11 @@ static bool pinescan_tick(uint32_t now, bool visible)
 {
     if (!pinescan_ui_open) return false;
     if (!visible) {
-        pinescan_ui_exit_pending = true;
-        pinescan_request_stop();
+        bool retained = wifi_fox_hunt_holds_source(UI_WIFI_MODE_PINESCAN);
+        if (!retained) pinescan_ui_exit_pending = true;
+        /* Fox Hunt retains this detail after release. Do not keep taking the
+         * old capture lock on every UI tick once that receiver has stopped. */
+        if (!retained || pinescan_ui_status.capture.busy) pinescan_request_stop();
     }
     if ((uint32_t)(now - pinescan_ui_last_poll) < 500U) return false;
     pinescan_ui_last_poll = now;
@@ -308,12 +311,14 @@ static esp_err_t pinescan_draw_detail(void)
         pinescan_ui_status.capture.error_code != ESP_OK ? esp_err_to_name(pinescan_ui_status.capture.error_code) : "PRIVACY BIT IS NOT VERIFIED WPA / RSN";
     ESP_RETURN_ON_ERROR(pinescan_line(350, message,
         pinescan_ui_message[0] || pinescan_ui_status.capture.error_code != ESP_OK ? UI_BAD : UI_MUTED), TAG, "pine note");
-    ESP_RETURN_ON_ERROR(cerberus_ui_widget_draw_button((cerberus_ui_rect_t){8,366,96,42},
+    ESP_RETURN_ON_ERROR(cerberus_ui_widget_draw_button((cerberus_ui_rect_t){8,366,68,42},
         pinescan_ui_variant ? "MATCH >" : "LATEST >", 1, true, UI_WIDGET_THEME), TAG, "pine evidence tab");
     bool pending = pinescan_ui_follow_pending || pinescan_ui_list_pending || pinescan_ui_exit_pending;
-    ESP_RETURN_ON_ERROR(cerberus_ui_widget_draw_button((cerberus_ui_rect_t){112,366,96,42}, "FOLLOW", 1,
+    ESP_RETURN_ON_ERROR(cerberus_ui_widget_draw_button((cerberus_ui_rect_t){84,366,68,42}, "FOLLOW", 1,
         !pending && !(pinescan_ui_status.following && pinescan_ui_status.capture.busy) && pinescan_supported(), UI_WIDGET_THEME), TAG, "pine follow");
-    return cerberus_ui_widget_draw_button((cerberus_ui_rect_t){216,366,96,42}, "STOP", 1,
+    ESP_RETURN_ON_ERROR(cerberus_ui_widget_draw_button((cerberus_ui_rect_t){160,366,68,42}, "FOX HUNT", 1,
+        !pending && wifi_fox_hunt_supported(),UI_WIDGET_THEME),TAG,"pine fox hunt");
+    return cerberus_ui_widget_draw_button((cerberus_ui_rect_t){236,366,76,42}, "STOP", 1,
         pinescan_ui_status.capture.busy || pinescan_ui_follow_pending, UI_WIDGET_THEME);
 }
 
@@ -376,12 +381,16 @@ static void pinescan_tap(uint16_t x, uint16_t y)
     if (pinescan_ui_exit_pending || pinescan_ui_list_pending) return;
     if (pinescan_ui_detail) {
         if (y < 366U || y >= 408U) return;
-        if (x >= 8U && x < 104U) pinescan_ui_variant = (uint8_t)((pinescan_ui_variant + 1U) % 2U);
-        else if (x >= 112U && x < 208U && !pinescan_ui_follow_pending &&
+        if (x >= 8U && x < 76U) pinescan_ui_variant = (uint8_t)((pinescan_ui_variant + 1U) % 2U);
+        else if (x >= 84U && x < 152U && !pinescan_ui_follow_pending &&
             !(pinescan_ui_status.following && pinescan_ui_status.capture.busy) && pinescan_supported()) {
             if (pinescan_busy()) { cerberus_s3_pinescan_stop(); pinescan_ui_follow_pending = true; }
             else pinescan_start_follow();
-        } else if (x >= 216U && x < 312U) pinescan_request_stop();
+        } else if (x >= 160U && x < 228U && !pinescan_ui_follow_pending && wifi_fox_hunt_supported() && pinescan_ui_store) {
+            const cerberus_wifi_beacon_observation_t *beacon=&pinescan_ui_store->selected.evidence.latest;
+            esp_err_t error=wifi_fox_hunt_open(beacon->transmitter,beacon->rx_channel,beacon->ssid,beacon->ssid_length,UI_WIFI_MODE_PINESCAN);
+            if(error!=ESP_OK)pinescan_ui_error("FOX HUNT",error);
+        } else if (x >= 236U && x < 312U) pinescan_request_stop();
         return;
     }
     if (x >= 8U && x < 312U && y >= 140U && y < 324U && (y - 140U) % 47U < 43U) {

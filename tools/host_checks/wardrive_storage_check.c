@@ -10,12 +10,28 @@
 #include "esp_err.h"
 #include "esp_check.h"
 #include "wardrive_core.h"
+#include "wardrive_wigle.h"
+#include "wardrive_compact.h"
+#include "gps_gpx.h"
+#include <errno.h>
+#include <stdlib.h>
+#include <fcntl.h>
+#include <unistd.h>
+#ifdef _WIN32
+#include <direct.h>
+#endif
 
 static bool partial_next_write, fail_next_sync;
-static unsigned write_calls;
+static unsigned write_calls, sync_calls, seek_calls, read_calls, flush_calls, close_calls;
+static unsigned fail_write_at, fail_sync_at, fail_seek_at, fail_read_at, fail_flush_at, fail_close_at;
+static bool fail_allocation, fail_rename;
+static bool short_fault_write;
+static const char *fail_remove_path;
 static size_t injected_fwrite(const void *data, size_t size, size_t count, FILE *file)
 {
     ++write_calls;
+    if (fail_write_at && write_calls == fail_write_at)
+        return short_fault_write && count > 1U ? fwrite(data, size, count / 2U, file) : 0;
     if (partial_next_write) {
         partial_next_write = false;
         assert(size == 1U && count > 2U);
@@ -28,13 +44,36 @@ static size_t injected_fwrite(const void *data, size_t size, size_t count, FILE 
 static int injected_fsync(int fd)
 {
     (void)fd;
+    if (++sync_calls == fail_sync_at) return -1;
     if (fail_next_sync) { fail_next_sync = false; return -1; }
     return 0;
 }
+static int injected_fseek(FILE *file,long offset,int origin)
+{ if (++seek_calls==fail_seek_at) return -1; return fseek(file,offset,origin); }
+static size_t injected_fread(void *data,size_t size,size_t count,FILE *file)
+{ if (++read_calls==fail_read_at) return 0; return fread(data,size,count,file); }
+static int injected_fflush(FILE *file)
+{ if (++flush_calls==fail_flush_at) return -1; return fflush(file); }
+static int injected_fclose(FILE *file)
+{ int result=fclose(file);return ++close_calls==fail_close_at?-1:result; }
+static int injected_rename(const char *from,const char *to)
+{ return fail_rename?-1:rename(from,to); }
+static int injected_remove(const char *path)
+{ return fail_remove_path && !strcmp(path, fail_remove_path) ? -1 : remove(path); }
 
 #define TAG "wardrive-storage"
+#define ESP_LOGW(...) ((void)0)
+#define MALLOC_CAP_SPIRAM 1U
+#define MALLOC_CAP_8BIT 2U
+static void *heap_caps_malloc(size_t n,unsigned caps){(void)caps;return fail_allocation?NULL:malloc(n);}
+static void *heap_caps_calloc(size_t n,size_t size,unsigned caps){(void)caps;return fail_allocation?NULL:calloc(n,size);}
+static void heap_caps_free(void *p){free(p);}
+static unsigned yield_calls;
+static void vTaskDelay(unsigned n){assert(n==1);++yield_calls;}
 #define ESP_LOGI(...) ((void)0)
-#define CERBERUS_STORAGE_MOUNT_PATH test_root
+#define CERBERUS_STORAGE_MOUNT_PATH "."
+#define CERBERUS_STORAGE_GPS_PATH "/CERBERUS/GPS"
+#define CERBERUS_STORAGE_GPS_NAME_CAPACITY 16U
 #define CERBERUS_STORAGE_WARDRIVE_PATH "/CERBERUS/WARD"
 #define CERBERUS_STORAGE_PATH_MAX 512U
 #define CERBERUS_STORAGE_NAME_MAX 256U
@@ -43,6 +82,12 @@ static int injected_fsync(int fd)
 #define fileno(file) (0)
 #define fsync(fd) injected_fsync(fd)
 #define fwrite(data, size, count, file) injected_fwrite(data, size, count, file)
+#define fseek(file, offset, origin) injected_fseek(file, offset, origin)
+#define fread(data, size, count, file) injected_fread(data, size, count, file)
+#define fflush(file) injected_fflush(file)
+#define fclose(file) injected_fclose(file)
+#define rename(from, to) injected_rename(from, to)
+#define remove(path) injected_remove(path)
 
 typedef enum {
     CERBERUS_STORAGE_OWNER_NONE,
@@ -50,9 +95,11 @@ typedef enum {
     CERBERUS_STORAGE_OWNER_USB,
 } cerberus_storage_owner_t;
 static const char *test_root;
-static bool sd_mounted = true, locked;
+static bool sd_mounted = true, locked, mutex_timeout;
 static cerberus_storage_owner_t storage_owner = CERBERUS_STORAGE_OWNER_FIRMWARE;
 static FILE *sd_wifi_capture_file;
+static void *sd_packet_count; /* Optional PCAP lease admission. */
+static struct { bool active; } sd_recon; /* Only the new lease admission boundary. */
 static int64_t test_now_us;
 static bool cerberus_storage_is_mounted(void) { return sd_mounted; }
 static esp_err_t cerberus_storage_mount(void)
@@ -62,7 +109,7 @@ static esp_err_t cerberus_storage_mount(void)
     return ESP_OK;
 }
 static esp_err_t take_storage_mutex(void)
-{ assert(!locked); locked = true; return ESP_OK; }
+{ assert(!locked); if(mutex_timeout)return ESP_ERR_TIMEOUT; locked = true; return ESP_OK; }
 static void release_storage_mutex(void)
 { assert(locked); locked = false; }
 static esp_err_t require_firmware_owner_locked(void)
@@ -73,19 +120,237 @@ static esp_err_t ensure_directory_exists(const char *path)
 static esp_err_t unmount_locked(void) { sd_mounted = false; return ESP_OK; }
 static int64_t esp_timer_get_time(void) { return test_now_us; }
 
+#include "wardrive_compact.c"
 #include "wardrive_storage_impl.h"
+#ifdef _WIN32
+#define mkdir(path, mode) _mkdir(path)
+#endif
+#include "gps_storage_helpers.h"
+#include "storage_gps_impl.h"
+#include "gps_storage_check.h"
 _Static_assert(sizeof(sd_wardrive_stream) + sizeof(sd_wigle_stream) <
     2U * (CERBERUS_STORAGE_PATH_MAX + CERBERUS_STORAGE_NAME_MAX) +
     CERBERUS_STORAGE_NAME_MAX, "two compact streams cost less than old path buffers");
 
+static void fault_row(char *out, size_t size, const char *sample, unsigned index)
+{
+    assert(snprintf(out, size, "%s", sample) > 0);
+    char address[18];
+    assert(snprintf(address, sizeof(address), "02:01:02:03:04:%02X", index % 70U) == 17);
+    memcpy(out, address, 17);
+    char *signal = strstr(out, ",-50,"); assert(signal);
+    signal[2] = (index / 70U) % 2U ? '9' : '3';
+}
+
+static void journal_recovery_conflicts(const char *header, const char *sample)
+{
+    char child[272], base[256], old_name[24], name[24];
+    uint64_t bytes = 0;
+    cerberus_wardrive_compact_stats_t stats;
+    struct stat item;
+    assert(cerberus_storage_wardrive_session_begin() == ESP_OK);
+    assert(cerberus_storage_wardrive_wigle_begin(header, strlen(header)) == ESP_OK);
+    assert(cerberus_storage_wardrive_wigle_append(sample, strlen(sample)) == ESP_OK);
+    assert(wardrive_journal_path(&sd_wigle_stream, 1, child, sizeof(child)));
+    FILE *existing = fopen(child, "wb"); assert(existing);
+    const char marker[] = "existing recovery bytes";
+    assert(fwrite(marker, 1, sizeof(marker), existing) == sizeof(marker) && !fclose(existing));
+    sd_wigle_stream.part_bytes = CERBERUS_STORAGE_WARDRIVE_MAX_BYTES;
+    assert(cerberus_storage_wardrive_wigle_append(sample, strlen(sample)) != ESP_OK);
+    assert(cerberus_storage_wardrive_wigle_finish(true, name, sizeof(name), &bytes, &stats) != ESP_OK && !name[0]);
+    existing = fopen(child, "rb"); assert(existing);
+    char readback[sizeof(marker)];
+    assert(fread(readback, 1, sizeof(readback), existing) == sizeof(readback) && !fclose(existing));
+    assert(!memcmp(readback, marker, sizeof(marker)));
+    assert(stat(sd_wigle_stream.temp_path, &item) == 0 && stat(sd_wigle_stream.final_path, &item) != 0);
+    assert(!remove(child) && !remove(sd_wigle_stream.temp_path));
+    assert(cerberus_storage_wardrive_session_finish() == ESP_OK);
+
+    assert(cerberus_storage_wardrive_session_begin() == ESP_OK);
+    assert(cerberus_storage_wardrive_wigle_begin(header, strlen(header)) == ESP_OK);
+    assert(cerberus_storage_wardrive_wigle_append(sample, strlen(sample)) == ESP_OK);
+    sd_wigle_stream.part_bytes = CERBERUS_STORAGE_WARDRIVE_MAX_BYTES;
+    assert(cerberus_storage_wardrive_wigle_append(sample, strlen(sample)) == ESP_OK);
+    assert(wardrive_journal_path(&sd_wigle_stream, 1, child, sizeof(child)));
+    strcpy(base, sd_wigle_stream.temp_path); strcpy(old_name, sd_wigle_stream.name);
+    fail_remove_path = child;
+    assert(cerberus_storage_wardrive_wigle_finish(true, name, sizeof(name), &bytes, &stats) == ESP_OK);
+    assert(stat(base, &item) == 0 && stat(child, &item) == 0 && stats.output_rows == 1);
+    fail_remove_path = NULL;
+    assert(!remove(sd_wigle_stream.final_path));
+    assert(cerberus_storage_wardrive_session_finish() == ESP_OK);
+    assert(cerberus_storage_wardrive_session_begin() == ESP_OK);
+    assert(cerberus_storage_wardrive_wigle_begin(header, strlen(header)) == ESP_OK);
+    assert(strcmp(sd_wigle_stream.name, old_name)); /* Retained base reserves its whole family. */
+    assert(cerberus_storage_wardrive_wigle_append(sample, strlen(sample)) == ESP_OK);
+    assert(cerberus_storage_wardrive_wigle_finish(true, name, sizeof(name), &bytes, &stats) == ESP_OK);
+    assert(!remove(sd_wigle_stream.final_path) && !remove(child) && !remove(base));
+    assert(cerberus_storage_wardrive_session_finish() == ESP_OK);
+}
+
+static void large_journal_run(const char *header, const char *sample)
+{
+    assert(cerberus_storage_wardrive_session_begin() == ESP_OK);
+    assert(cerberus_storage_wardrive_wigle_begin(header, strlen(header)) == ESP_OK);
+    uint32_t rows = (CERBERUS_STORAGE_WARDRIVE_MAX_BYTES - strlen(header)) / strlen(sample) + 5U;
+    char row[256], low[256], high[256], name[24];
+    assert(snprintf(low, sizeof(low), "%s", sample) > 0);
+    assert(snprintf(high, sizeof(high), "%s", sample) > 0);
+    char *signal = strstr(low, ",-50,"); assert(signal); signal[2] = '9';
+    signal = strstr(high, ",-50,"); assert(signal); signal[2] = '2';
+    for (uint32_t i = 0; i < rows; ++i) {
+        const char *value = !i ? low : i + 1U == rows ? high : sample;
+        assert(cerberus_storage_wardrive_wigle_append(value, strlen(value)) == ESP_OK);
+    }
+    assert(sd_wigle_stream.parts == 2 && sd_wigle_stream.bytes > CERBERUS_STORAGE_WARDRIVE_MAX_BYTES);
+    assert(!sd_wigle_stream.write_failed && sd_wigle_stream.part_bytes < 2048U);
+    uint64_t bytes = 0;
+    cerberus_wardrive_compact_stats_t stats;
+    assert(cerberus_storage_wardrive_wigle_finish(true, name, sizeof(name), &bytes, &stats) == ESP_OK);
+    assert(stats.input_rows == rows && stats.input_parts == 2 && stats.output_rows == 2 && stats.devices == 1);
+    FILE *output = fopen(sd_wigle_stream.final_path, "rb"); assert(output);
+    char preamble[512];
+    assert(fread(preamble, 1, strlen(header), output) == strlen(header) && !memcmp(preamble, header, strlen(header)));
+    assert(fgets(row, sizeof(row), output) && !strcmp(row, low));
+    assert(fgets(row, sizeof(row), output) && !strcmp(row, high));
+    assert(fgetc(output) == EOF && !ferror(output) && !fclose(output));
+    struct stat item;
+    for (uint16_t part = 0; part < 2; ++part) {
+        char path[272];
+        assert(wardrive_journal_path(&sd_wigle_stream, part, path, sizeof(path)) && stat(path, &item) != 0);
+    }
+    assert(!remove(sd_wigle_stream.final_path));
+    assert(cerberus_storage_wardrive_session_finish() == ESP_OK);
+    printf("64 MiB boundary: %u accepted rows in two private journals, one two-row extrema CSV, complete recovery-file cleanup.\n", rows);
+}
+
+static void rollover_fault_run(const char *header, const char *sample, unsigned family,
+    unsigned operation, unsigned spans[6])
+{
+    assert(cerberus_storage_wardrive_session_begin() == ESP_OK);
+    assert(cerberus_storage_wardrive_wigle_begin(header, strlen(header)) == ESP_OK);
+    assert(cerberus_storage_wardrive_wigle_append(sample, strlen(sample)) == ESP_OK);
+    /* The large case above exercises the real threshold. Move only this
+     * counter to reach the same boundary cheaply at every injected operation. */
+    sd_wigle_stream.part_bytes = CERBERUS_STORAGE_WARDRIVE_MAX_BYTES;
+    unsigned before[] = {write_calls, read_calls, seek_calls, flush_calls, sync_calls, close_calls};
+    unsigned *failures[] = {&fail_write_at, &fail_read_at, &fail_seek_at, &fail_flush_at, &fail_sync_at, &fail_close_at};
+    if (operation) *failures[family] = before[family] + operation;
+    short_fault_write = true;
+    esp_err_t error = cerberus_storage_wardrive_wigle_append(sample, strlen(sample));
+    unsigned after[] = {write_calls, read_calls, seek_calls, flush_calls, sync_calls, close_calls};
+    if (!operation) for (unsigned i = 0; i < 6; ++i) spans[i] = after[i] - before[i];
+    assert(!locked && sd_wigle_stream.file);
+    assert(operation ? error != ESP_OK && sd_wigle_stream.write_failed : error == ESP_OK && !sd_wigle_stream.write_failed);
+    for (unsigned i = 0; i < 6; ++i) *failures[i] = 0;
+    short_fault_write = false;
+    char name[24]; uint64_t bytes = 0;
+    cerberus_wardrive_compact_stats_t stats;
+    error = cerberus_storage_wardrive_wigle_finish(true, name, sizeof(name), &bytes, &stats);
+    struct stat item;
+    if (!operation) {
+        assert(error == ESP_OK && stats.input_parts == 2 && stats.input_rows == 2 && stats.output_rows == 1);
+        assert(!remove(sd_wigle_stream.final_path));
+    } else {
+        assert(error != ESP_OK && !name[0] && !stats.output_rows && stat(sd_wigle_stream.final_path, &item) != 0);
+        assert(stat(sd_wigle_stream.temp_path, &item) == 0 && (uint64_t)item.st_size == strlen(header) + strlen(sample));
+        FILE *base = fopen(sd_wigle_stream.temp_path, "rb"); assert(base);
+        char buffer[768]; size_t n = strlen(header) + strlen(sample);
+        assert(n < sizeof(buffer) && fread(buffer, 1, n, base) == n && !fclose(base));
+        assert(!memcmp(buffer, header, strlen(header)) && !memcmp(buffer + strlen(header), sample, strlen(sample)));
+        for (uint16_t part = 0; part < sd_wigle_stream.parts; ++part) {
+            char path[272]; assert(wardrive_journal_path(&sd_wigle_stream, part, path, sizeof(path)));
+            assert(!remove(path));
+        }
+    }
+    assert(cerberus_storage_wardrive_session_finish() == ESP_OK);
+}
+
+static void compact_fault_run(const char *header, const char *sample, unsigned family,
+    unsigned operation, unsigned spans[6], bool journals)
+{
+    char row[256], name[24];
+    uint64_t bytes = 0;
+    assert(cerberus_storage_wardrive_session_begin() == ESP_OK);
+    assert(cerberus_storage_wardrive_wigle_begin(header, strlen(header)) == ESP_OK);
+    for (unsigned i = 0; i < 1025; ++i) {
+        if (journals && i && i % 400U == 0) sd_wigle_stream.part_bytes = CERBERUS_STORAGE_WARDRIVE_MAX_BYTES;
+        fault_row(row, sizeof(row), sample, i);
+        assert(cerberus_storage_wardrive_wigle_append(row, strlen(row)) == ESP_OK);
+    }
+    assert(sd_wigle_stream.parts == (journals ? 3 : 1));
+    unsigned before[] = {write_calls, read_calls, seek_calls, flush_calls, sync_calls, close_calls};
+    if (operation) {
+        short_fault_write = family == 0U && operation % 2U != 0U;
+        if (family == 0) fail_write_at = before[0] + operation;
+        if (family == 1) fail_read_at = before[1] + operation;
+        if (family == 2) fail_seek_at = before[2] + operation;
+        if (family == 3) fail_flush_at = before[3] + operation;
+        if (family == 4) fail_sync_at = before[4] + operation;
+        if (family == 5) fail_close_at = before[5] + operation;
+    }
+    cerberus_wardrive_compact_stats_t stats;
+    esp_err_t error = cerberus_storage_wardrive_wigle_finish(true, name, sizeof(name), &bytes, &stats);
+    assert(!sd_wigle_stream.file && !locked);
+    struct stat item;
+    if (!operation) {
+        assert(error == ESP_OK && stats.input_rows == 1025 && stats.devices == 70 && stats.output_rows == 140);
+        spans[0] = write_calls - before[0]; spans[1] = read_calls - before[1]; spans[2] = seek_calls - before[2];
+        spans[3] = flush_calls - before[3]; spans[4] = sync_calls - before[4]; spans[5] = close_calls - before[5];
+        assert(stats.merge_passes == 2 && stats.final_refs == 140);
+        assert(stat(sd_wigle_stream.temp_path, &item) != 0 && stat(sd_wigle_stream.final_path, &item) == 0);
+        assert(!remove(sd_wigle_stream.final_path));
+    } else {
+        assert(error != ESP_OK && !name[0] && !stats.output_rows);
+        assert(stat(sd_wigle_stream.final_path, &item) != 0 && stat(sd_wigle_stream.temp_path, &item) == 0);
+        /* Recovery bytes must be intact even after a partial final output or
+         * a failed run-header backpatch. No private scratch survives. */
+        for (uint16_t part = 0; part < sd_wigle_stream.parts; ++part) {
+            char path[272], line[1024];
+            assert(wardrive_journal_path(&sd_wigle_stream, part, path, sizeof(path)));
+            FILE *source = fopen(path, "rb"); assert(source);
+            size_t header_length = strlen(header);
+            assert(header_length < sizeof(line) && fread(line, 1, header_length, source) == header_length);
+            assert(!memcmp(line, header, header_length));
+            unsigned start = journals ? part * 400U : 0U;
+            unsigned end = journals && start + 400U < 1025U ? start + 400U : 1025U;
+            for (unsigned i = start; i < end; ++i) {
+                fault_row(row, sizeof(row), sample, i);
+                assert(fgets(line, sizeof(line), source) && !strcmp(row, line));
+            }
+            assert(fgetc(source) == EOF && !ferror(source) && !fclose(source));
+            assert(!remove(path));
+        }
+    }
+    for (unsigned i = 0; i < 3; ++i) {
+        char path[256]; const char *suffix[] = {".D0", ".D1", ".NEW"};
+        assert(snprintf(path, sizeof(path), "%s%s", sd_wigle_stream.temp_path, suffix[i]) > 0);
+        assert(stat(path, &item) != 0);
+    }
+    fail_write_at = fail_read_at = fail_seek_at = fail_flush_at = fail_sync_at = fail_close_at = 0;
+    short_fault_write = false;
+    assert(cerberus_storage_wardrive_session_finish() == ESP_OK);
+}
+
 int main(int argc, char **argv)
 {
     assert(argc == 2);
+    wardrive_compact_yield_us=100000;test_now_us=100000;yield_calls=0;
+    for(unsigned i=0;i<1000;++i)wardrive_compact_yield();
+    assert(!yield_calls);
+    test_now_us=120000;wardrive_compact_yield();assert(yield_calls==1);
+    test_now_us=119999;wardrive_compact_yield();assert(yield_calls==2);
+    test_now_us=0;
     test_root = argv[1];
+    assert(chdir(test_root)==0);
     const char header[] = "header\n";
     const char row[] = "row1\n";
     char name[24];
     uint64_t bytes = 0;
+    sd_recon.active = true;
+    assert(cerberus_storage_reserve_for_usb() == ESP_ERR_INVALID_STATE && !locked);
+    assert(cerberus_storage_wardrive_begin(header, sizeof(header) - 1U) == ESP_ERR_INVALID_STATE && !locked);
+    sd_recon.active = false;
     assert(cerberus_storage_wardrive_begin(header, sizeof(header) - 1U) == ESP_OK);
     assert(!locked && sd_wardrive_stream.file != NULL);
     assert(cerberus_storage_reserve_for_usb() == ESP_ERR_INVALID_STATE);
@@ -113,16 +378,18 @@ int main(int argc, char **argv)
     assert(cerberus_storage_wardrive_finish(false, name, sizeof(name), NULL) == ESP_OK);
     assert(stat(sd_wardrive_stream.final_path, &item) != 0);
     assert(stat(sd_wardrive_stream.temp_path, &item) != 0);
+    const char wigle_header[]=CERBERUS_WIGLE_METADATA_HEADER CERBERUS_WIGLE_COLUMN_HEADER;
+    const char wigle_row[]="02:01:02:03:04:05,Lab,[WPA2-PSK-CCMP][ESS],2026-11-07 12:00:00,6,2437,-50,40.000000,-70.000000,,,,,WIFI\n";
     assert(cerberus_storage_wardrive_session_begin() == ESP_OK);
     assert(cerberus_storage_reserve_for_usb() == ESP_ERR_INVALID_STATE);
     assert(cerberus_storage_wardrive_session_begin() == ESP_ERR_INVALID_STATE);
-    assert(cerberus_storage_wardrive_wigle_begin(header, sizeof(header)-1U) == ESP_OK);
+    assert(cerberus_storage_wardrive_wigle_begin(wigle_header, sizeof(wigle_header)-1U) == ESP_OK);
     assert(cerberus_storage_wardrive_begin(header, sizeof(header)-1U) == ESP_OK);
     assert(cerberus_storage_wardrive_session_finish() == ESP_ERR_INVALID_STATE);
-    assert(cerberus_storage_wardrive_wigle_append(row, sizeof(row)-1U) == ESP_OK);
+    assert(cerberus_storage_wardrive_wigle_append(wigle_row, sizeof(wigle_row)-1U) == ESP_OK);
     assert(cerberus_storage_wardrive_wigle_sync() == ESP_OK);
-    assert(cerberus_storage_wardrive_wigle_finish(true, name, sizeof(name), &bytes) == ESP_OK);
-    assert(!strcmp(name, "WIGLE001.CSV"));
+    assert(cerberus_storage_wardrive_wigle_finish(true, name, sizeof(name), &bytes, NULL) == ESP_OK);
+    assert(!strcmp(name, "CERBWardrive001.CSV"));
     assert(cerberus_storage_reserve_for_usb() == ESP_ERR_INVALID_STATE);
     assert(cerberus_storage_wardrive_finish(false, name, sizeof(name), NULL) == ESP_OK);
     assert(cerberus_storage_reserve_for_usb() == ESP_ERR_INVALID_STATE);
@@ -158,14 +425,14 @@ int main(int argc, char **argv)
     assert(cerberus_storage_wardrive_wigle_begin(header, sizeof(header)-1U) == ESP_OK);
     partial_next_write = true;
     assert(cerberus_storage_wardrive_wigle_append(row, sizeof(row)-1U) == ESP_FAIL);
-    assert(cerberus_storage_wardrive_wigle_finish(false, NULL, 0U, NULL) == ESP_FAIL);
+    assert(cerberus_storage_wardrive_wigle_finish(false, NULL, 0U, NULL, NULL) == ESP_FAIL);
     assert(sd_wigle_stream.file == NULL && stat(sd_wigle_stream.final_path, &item) != 0);
     assert(stat(sd_wigle_stream.temp_path, &item) == 0 && (size_t)item.st_size == sizeof(header)+1U);
     assert(cerberus_storage_wardrive_wigle_begin(header, sizeof(header)-1U) == ESP_OK);
     assert(cerberus_storage_wardrive_wigle_append(row, sizeof(row)-1U) == ESP_OK);
     fail_next_sync = true;
     assert(cerberus_storage_wardrive_wigle_sync() == ESP_FAIL);
-    assert(cerberus_storage_wardrive_wigle_finish(true, name, sizeof(name), &bytes) == ESP_FAIL);
+    assert(cerberus_storage_wardrive_wigle_finish(true, name, sizeof(name), &bytes, NULL) == ESP_FAIL);
     assert(stat(sd_wigle_stream.final_path, &item) != 0 && stat(sd_wigle_stream.temp_path, &item) == 0);
 
     /* Periodic sync inside append must latch failure too. */
@@ -215,6 +482,60 @@ int main(int argc, char **argv)
     assert(!memcmp(v4_content+sizeof(v4_header)-1U+v4_length,probe_row,probe_length));
     assert(!strcmp(v4_content+sizeof(v4_header)-1U+v4_length+probe_length,relation_row));
     assert(cerberus_storage_reserve_for_usb() == ESP_OK);
-    puts("wardrive SD dual streams, USB lease, partial-write/sync failure retention: pass");
+    /* Finalization failures never publish a partial CSV or remove the raw
+     * journal. Exercise real files and the same compactor as firmware. */
+    storage_owner=CERBERUS_STORAGE_OWNER_FIRMWARE;sd_mounted=true;
+    for(unsigned fault=0;fault<9;++fault){
+        assert(cerberus_storage_wardrive_session_begin()==ESP_OK);
+        assert(cerberus_storage_wardrive_wigle_begin(wigle_header,sizeof(wigle_header)-1U)==ESP_OK);
+        for(unsigned i=0;i<2049;++i)
+            assert(cerberus_storage_wardrive_wigle_append(wigle_row,sizeof(wigle_row)-1U)==ESP_OK);
+        fail_allocation=fault==0;fail_rename=fault==6;
+        if(fault==1)fail_write_at=write_calls+4;
+        if(fault==2)fail_seek_at=seek_calls+1;
+        if(fault==3)fail_read_at=read_calls+1;
+        if(fault==4)fail_sync_at=sync_calls+2;
+        if(fault==5)fail_close_at=close_calls+2;
+        if(fault==7)fail_flush_at=flush_calls+2;
+        cerberus_wardrive_compact_stats_t stats;
+        esp_err_t error=cerberus_storage_wardrive_wigle_finish(true,name,sizeof(name),&bytes,&stats);
+        assert(!sd_wigle_stream.file&&!locked);
+        if(fault==8){
+            assert(error==ESP_OK&&stats.input_rows==2049&&stats.devices==1&&stats.output_rows==1);
+            assert(stat(sd_wigle_stream.temp_path,&item)!=0&&stat(sd_wigle_stream.final_path,&item)==0);
+            assert(bytes==sizeof(wigle_header)+sizeof(wigle_row)-2U);
+        }else{
+            assert(error!=ESP_OK&&!name[0]&&!stats.output_rows);
+            assert(stat(sd_wigle_stream.final_path,&item)!=0&&stat(sd_wigle_stream.temp_path,&item)==0);
+            assert((uint64_t)item.st_size==sizeof(wigle_header)-1U+2049U*(sizeof(wigle_row)-1U));
+        }
+        fail_allocation=fail_rename=false;
+        fail_write_at=fail_sync_at=fail_seek_at=fail_read_at=fail_flush_at=fail_close_at=0;
+        assert(cerberus_storage_wardrive_session_finish()==ESP_OK);
+    }
+    unsigned spans[6];
+    compact_fault_run(wigle_header, wigle_row, 0, 0, spans, false);
+    for (unsigned family = 0; family < 6; ++family)
+        for (unsigned operation = 1; operation <= spans[family]; ++operation)
+            compact_fault_run(wigle_header, wigle_row, family, operation, spans, false);
+    printf("Compaction recovery: every explicit write (%u), read (%u) and seek (%u) failure preserves the journal and removes scratch files.\n",
+        spans[0], spans[1], spans[2]);
+    compact_fault_run(wigle_header, wigle_row, 0, 0, spans, true);
+    for (unsigned family = 0; family < 6; ++family)
+        for (unsigned operation = 1; operation <= spans[family]; ++operation)
+            compact_fault_run(wigle_header, wigle_row, family, operation, spans, true);
+    printf("Three-journal recovery: %u write, %u read, %u seek, %u flush, %u sync, %u close failure positions passed.\n",
+        spans[0], spans[1], spans[2], spans[3], spans[4], spans[5]);
+    rollover_fault_run(wigle_header, wigle_row, 0, 0, spans);
+    for (unsigned family = 0; family < 6; ++family)
+        for (unsigned operation = 1; operation <= spans[family]; ++operation)
+            rollover_fault_run(wigle_header, wigle_row, family, operation, spans);
+    printf("Journal rollover: %u write, %u read, %u seek, %u flush, %u sync, %u close failure positions preserve prior rows.\n",
+        spans[0], spans[1], spans[2], spans[3], spans[4], spans[5]);
+    large_journal_run(wigle_header, wigle_row);
+    journal_recovery_conflicts(wigle_header, wigle_row);
+    puts("Journal conflicts and failed cleanup preserve the recovery family and prevent slot reuse.");
+    gps_storage_checks();
+    puts("wardrive and GPX SD streams, USB leases, partial-write/sync failure retention: pass");
     return 0;
 }

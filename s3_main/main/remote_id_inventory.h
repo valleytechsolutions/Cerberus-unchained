@@ -3,6 +3,7 @@
 #include "cerberus_protocol.h"
 #include "sentinel_watch_protocol.h"
 #include "watch_receive_timing.h"
+#include "watch_profile_evidence.h"
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -22,6 +23,7 @@ typedef struct {
     cerberus_watch_receive_timing_t timing; /* Source callback age, not field/RF time. */
     sentinel_watch_motion_t motion;
     cerberus_watch_receive_timing_t motion_timing; /* Location callback only. */
+    cerberus_watch_profile_evidence_t profile; /* Each message family has its own age. */
 } cerberus_remote_id_record_t;
 
 typedef struct {
@@ -42,6 +44,7 @@ typedef struct {
     cerberus_watch_receive_timing_t timings[CERBERUS_WATCH_MAX_OBSERVATIONS];
     sentinel_watch_motion_t motions[CERBERUS_WATCH_MAX_OBSERVATIONS];
     cerberus_watch_receive_timing_t motion_timings[CERBERUS_WATCH_MAX_OBSERVATIONS];
+    cerberus_watch_profile_evidence_t profiles[CERBERUS_WATCH_MAX_OBSERVATIONS];
     uint8_t count;
     bool published;
 } cerberus_remote_id_bank_t;
@@ -54,6 +57,7 @@ typedef struct {
     cerberus_watch_receive_timing_t staging_timings[CERBERUS_WATCH_MAX_OBSERVATIONS];
     sentinel_watch_motion_t staging_motions[CERBERUS_WATCH_MAX_OBSERVATIONS];
     cerberus_watch_receive_timing_t staging_motion_timings[CERBERUS_WATCH_MAX_OBSERVATIONS];
+    cerberus_watch_profile_evidence_t staging_profiles[CERBERUS_WATCH_MAX_OBSERVATIONS];
     cerberus_remote_id_selection_t selected;
 } cerberus_remote_id_inventory_t;
 
@@ -110,6 +114,21 @@ cerberus_remote_id_publish_result_t cerberus_remote_id_inventory_publish_detaile
     const cerberus_watch_receive_timing_t *timings,
     const sentinel_watch_motion_t *motions,
     const cerberus_watch_receive_timing_t *motion_timings, size_t count, uint64_t receipt_ms);
+
+/* Atomic additive public message profiles, with six independent source-age
+ * anchors. NULL clears profile availability for a legacy publication. Profiles
+ * are copied with the same typed source and epoch as the ordinary observation;
+ * no message family borrows another family's age. Frozen selections retain the
+ * original profile while latest matching evidence changes independently. */
+cerberus_remote_id_publish_result_t cerberus_remote_id_inventory_publish_profiled(
+    cerberus_remote_id_inventory_t *inventory, uint64_t sweep_token,
+    const cerberus_watch_scan_status_payload_t *before,
+    const cerberus_watch_scan_status_payload_t *after,
+    const cerberus_watch_observation_t *rows,
+    const cerberus_watch_receive_timing_t *timings,
+    const sentinel_watch_motion_t *motions,
+    const cerberus_watch_receive_timing_t *motion_timings,
+    const cerberus_watch_profile_evidence_t *profiles, size_t count, uint64_t receipt_ms);
 
 /* Return NULL for an unsupported radio. Bank metadata is observational; the
  * caller must not modify a committed bank. Empty unavailable banks remain

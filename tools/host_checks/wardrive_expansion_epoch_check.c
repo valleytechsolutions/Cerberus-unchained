@@ -5,6 +5,7 @@
 #include "field_survey_stream.h"
 #include "wardrive_core.h"
 #include "wardrive_service.h"
+#include "wardrive_recent_attempt_type.h"
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
@@ -42,13 +43,21 @@ size_t field_survey_stream_read(expansion_record_t *out, size_t capacity,
     return count;
 }
 static bool wants_stop(void) { return stop_flag; }
-static esp_err_t append_observation(const cerberus_wardrive_observation_t *observation)
+static esp_err_t append_observation_impl(const cerberus_wardrive_observation_t *observation,
+    cerberus_wardrive_recent_outcome_t *outcome)
 {
+    *outcome = CERBERUS_WARDRIVE_RECENT_APPENDED_UNLOCATED;
     assert(appended_count < sizeof(appended_ids));
     appended_ids[appended_count++] = observation->address[5];
     if (stop_after_first && appended_count == 1U) stop_flag = true;
     return ESP_OK;
 }
+/* Publication is covered separately by the whole-service/model suite. */
+static void recent_preview(const cerberus_wardrive_observation_t *o, wardrive_recent_attempt_t *a)
+{ (void)o; a->previewed=true; }
+static void recent_outcome(cerberus_wardrive_recent_ticket_t t, cerberus_wardrive_recent_outcome_t o)
+{ (void)t; (void)o; }
+#include "wardrive_recent_attempt_impl.h"
 #include "wardrive_expansion_capture_impl.h"
 
 static expansion_record_t report(unsigned id, uint8_t radio)

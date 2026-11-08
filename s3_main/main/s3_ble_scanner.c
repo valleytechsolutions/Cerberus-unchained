@@ -44,16 +44,27 @@ static uint32_t scan_epoch, stop_epoch;
  * reset or wrap this boot-lifetime counter when the BLE host restarts. */
 static uint64_t watch_epoch;
 static unsigned scan_host_epoch;
+/* Protected by scan_mutex. A completed bank keeps its source epoch after an
+ * intentional release; only a still-held lease may authorize GAP or cleanup. */
+static cerberus_s3_ble_host_lease_t scan_host_lease;
+static bool scan_host_held, scan_host_acquiring, scan_host_cleanup;
 static unsigned tracker_host_epoch;
 static unsigned analyzer_host_epoch;
 static cerberus_s3_ble_tracker_t tracker;
+static cerberus_s3_ble_track_state_t track_state;
 static cerberus_ble_analyzer_t *analyzer;
+static cerberus_s3_ble_analyzer_state_t analyzer_state;
+static cerberus_s3_ble_passive_state_t passive_state;
+static bool passive_acquiring, passive_claim_only, passive_has_claim;
 static cerberus_s3_ble_mac_monitor_t *mac_monitor;
 static uint64_t mac_monitor_epoch;
 static uint32_t mac_monitor_job;
 static bool discovery_attached;
 static uint64_t discovery_epoch, discovery_started_ms;
 static uint32_t discovery_scan_epoch;
+static bool discovery_reacquiring;
+static uint8_t discovery_target_address[6];
+static int64_t discovery_started_us, discovery_callback_us;
 static cerberus_s3_ble_binding_cache_t *discovery_bindings;
 /* NimBLE callbacks run in a task, not an ISR. The bounded inventory can live
  * in PSRAM, preserving internal heap for the controller and Wi-Fi receiver. */
@@ -61,32 +72,192 @@ static cerberus_s3_ble_snapshot_t *snapshot;
 
 static uint32_t now_ms(void) { return (uint32_t)(esp_timer_get_time() / 1000LL); }
 
+static bool scan_owns_host_locked(void)
+{
+    return scan_host_held && cerberus_s3_ble_host_lease_valid(&scan_host_lease);
+}
+
+static esp_err_t scan_release_host_locked(void)
+{
+    if (!scan_host_held) return ESP_OK;
+    esp_err_t error = cerberus_s3_ble_host_release(&scan_host_lease);
+    if (error == ESP_OK) {
+        scan_host_held = scan_host_cleanup = false;
+        passive_has_claim = false;
+    }
+    /* A rejected stale token remains recorded until reconciliation retires
+     * its source evidence. It cannot be mistaken for an intentional release. */
+    return error;
+}
+
 /* A controller reset discards GAP procedures without a DISC_COMPLETE callback.
  * The shared host clears its lease; retire the old snapshot and event epoch. */
 static void reconcile_host_locked(void)
 {
     unsigned host_epoch = cerberus_s3_ble_host_epoch();
-    if (mac_monitor && mac_monitor->host_epoch != host_epoch) {
+    bool lost = scan_host_held && !cerberus_s3_ble_host_lease_valid(&scan_host_lease);
+    if (lost) scan_host_held = scan_host_cleanup = false;
+    if (passive_state.attached && (passive_state.host_epoch != host_epoch || lost)) {
+        passive_state.error = ESP_ERR_INVALID_STATE;
+        passive_state.receiving = false;
+        passive_has_claim = false;
+    }
+    if (mac_monitor && (mac_monitor->host_epoch != host_epoch || lost)) {
         mac_monitor->receiving = false;
         mac_monitor->stopping = true;
         mac_monitor->error = ESP_ERR_INVALID_STATE;
         mac_monitor->state = CERBERUS_MAC_ERROR;
     }
-    if (tracker.enabled && tracker_host_epoch != host_epoch) {
+    if (tracker.enabled && (tracker_host_epoch != host_epoch || lost)) {
         cerberus_s3_ble_tracker_host_reset(&tracker);
-        tracker_host_epoch = host_epoch;
+        track_state.error = ESP_ERR_INVALID_STATE;
+        track_state.receiving = false;
     }
-    if (analyzer && analyzer->active && analyzer_host_epoch != host_epoch) {
+    if (analyzer && analyzer->active && (analyzer_host_epoch != host_epoch || lost)) {
         cerberus_ble_analyzer_stop(analyzer);
-        analyzer_host_epoch = host_epoch;
+        analyzer_state.error = ESP_ERR_INVALID_STATE;
+        analyzer_state.receiving = false;
     }
     if (snapshot && snapshot->status.state == CERBERUS_BLE_SCAN_RUNNING &&
-        scan_host_epoch != host_epoch) {
+        (scan_host_epoch != host_epoch || lost)) {
         cerberus_s3_ble_snapshot_finish(snapshot, false, ESP_ERR_INVALID_STATE, now_ms());
         if (scan_epoch != UINT32_MAX) ++scan_epoch;
         cancel_requested = false;
         stop_event_pending = false;
+    } else if (snapshot && snapshot->status.state == CERBERUS_BLE_SCAN_COMPLETE &&
+        (lost || (scan_host_epoch != host_epoch && discovery_attached))) {
+        /* A held lease was replaced, not intentionally released. Never lend
+         * its completed bank to the new same-label owner. */
+        snapshot->status.state = CERBERUS_BLE_SCAN_ERROR;
+        snapshot->status.error_code = ESP_ERR_INVALID_STATE;
+        if (snapshot->revision != UINT64_MAX) ++snapshot->revision;
     }
+}
+
+/* The Analyzer attachment is independent of the public generation byte.
+ * Only this never-reused callback epoch can own its history and Stop path. */
+static bool analyzer_bound_locked(void)
+{
+    return analyzer && analyzer_state.scan_epoch && snapshot &&
+        analyzer_state.scan_epoch == scan_epoch &&
+        analyzer_state.host_epoch == scan_host_epoch &&
+        analyzer_state.host_epoch == cerberus_s3_ble_host_epoch();
+}
+
+static void analyzer_refresh_locked(void)
+{
+    if (!analyzer) return;
+    analyzer_state.attached = true;
+    bool bound = analyzer_bound_locked();
+    if (analyzer_host_epoch != cerberus_s3_ble_host_epoch() ||
+        (analyzer_state.scan_epoch && !bound)) {
+        analyzer_state.error = ESP_ERR_INVALID_STATE;
+        analyzer_state.receiving = false;
+        cerberus_ble_analyzer_stop(analyzer);
+    }
+    bool queued = bound && ((start_event_pending && start_queued_epoch == analyzer_state.scan_epoch) ||
+        (stop_event_pending && stop_epoch == analyzer_state.scan_epoch));
+    bool host = scan_owns_host_locked() && (bound || scan_host_cleanup);
+    analyzer_state.owned = host || (bound && (snapshot->status.state == CERBERUS_BLE_SCAN_RUNNING || queued));
+    analyzer_state.stopping = bound && (cancel_requested ||
+        (stop_event_pending && stop_epoch == analyzer_state.scan_epoch));
+    if (bound) {
+        analyzer_state.scan = snapshot->status;
+        if (snapshot->status.error_code) analyzer_state.error = snapshot->status.error_code;
+        if (snapshot->status.state != CERBERUS_BLE_SCAN_RUNNING || analyzer_state.stopping)
+            analyzer_state.receiving = false;
+    } else memset(&analyzer_state.scan, 0, sizeof(analyzer_state.scan));
+}
+
+static bool analyzer_start_allowed_locked(bool analyzing)
+{
+    if (!analyzing) return analyzer == NULL;
+    analyzer_refresh_locked();
+    return analyzer && analyzer->active && !analyzer_state.error &&
+        analyzer_host_epoch == cerberus_s3_ble_host_epoch();
+}
+
+static bool track_bound_locked(void)
+{
+    return tracker.enabled && track_state.scan_epoch && snapshot &&
+        track_state.scan_epoch == scan_epoch && track_state.host_epoch == scan_host_epoch &&
+        track_state.host_epoch == cerberus_s3_ble_host_epoch();
+}
+
+static void track_refresh_locked(void)
+{
+    if (!tracker.enabled) return;
+    track_state.attached = true;
+    bool bound = track_bound_locked();
+    if (tracker_host_epoch != cerberus_s3_ble_host_epoch() ||
+        (track_state.scan_epoch && !bound)) {
+        track_state.error = ESP_ERR_INVALID_STATE;
+        track_state.receiving = false;
+        cerberus_s3_ble_tracker_host_reset(&tracker);
+    }
+    bool queued = bound && ((start_event_pending && start_queued_epoch == track_state.scan_epoch) ||
+        (stop_event_pending && stop_epoch == track_state.scan_epoch));
+    bool host = scan_owns_host_locked() && (bound || scan_host_cleanup);
+    track_state.owned = host || (bound && (snapshot->status.state == CERBERUS_BLE_SCAN_RUNNING || queued));
+    track_state.stopping = bound && (cancel_requested ||
+        (stop_event_pending && stop_epoch == track_state.scan_epoch));
+    if (bound) {
+        track_state.scan = snapshot->status;
+        if (snapshot->status.error_code) track_state.error = snapshot->status.error_code;
+        if (snapshot->status.state != CERBERUS_BLE_SCAN_RUNNING || track_state.stopping)
+            track_state.receiving = false;
+    } else memset(&track_state.scan, 0, sizeof(track_state.scan));
+}
+
+static bool track_start_allowed_locked(bool tracking)
+{
+    if (!tracking) return !tracker.enabled;
+    track_refresh_locked();
+    return tracker.enabled && !track_state.error && tracker_host_epoch == cerberus_s3_ble_host_epoch();
+}
+
+static void track_report_locked(const cerberus_s3_ble_report_t *report, uint32_t observed_ms)
+{
+    if (!track_bound_locked() || !track_state.receiving || track_state.error || cancel_requested) return;
+    (void)cerberus_s3_ble_tracker_observe(&tracker, report->address,
+        report->address_type, report->rssi, observed_ms);
+}
+
+static bool passive_bound_locked(void)
+{
+    return passive_state.attached && !passive_claim_only && passive_state.scan_epoch && snapshot &&
+        passive_state.scan_epoch == scan_epoch && passive_state.host_epoch == scan_host_epoch &&
+        passive_state.host_epoch == cerberus_s3_ble_host_epoch() &&
+        snapshot->watch.capture_epoch == passive_state.epoch;
+}
+
+static void passive_refresh_locked(void)
+{
+    if (!passive_state.attached) return;
+    if (passive_acquiring) { passive_state.owned = true; return; }
+    bool same_host = passive_state.host_epoch == cerberus_s3_ble_host_epoch();
+    bool bound = passive_bound_locked();
+    if (!same_host || (!passive_claim_only && !bound)) {
+        passive_state.error = ESP_ERR_INVALID_STATE;
+        passive_state.receiving = false;
+        passive_has_claim = false;
+    }
+    bool queued = bound && ((start_event_pending && start_queued_epoch == passive_state.scan_epoch) ||
+        (stop_event_pending && stop_epoch == passive_state.scan_epoch));
+    bool host = same_host && passive_has_claim && scan_owns_host_locked();
+    passive_state.owned = host || (bound && (snapshot->status.state == CERBERUS_BLE_SCAN_RUNNING || queued));
+    passive_state.stopping = bound && (cancel_requested ||
+        (stop_event_pending && stop_epoch == passive_state.scan_epoch));
+    if (bound) {
+        passive_state.scan = snapshot->status;
+        if (snapshot->status.error_code) passive_state.error = snapshot->status.error_code;
+        if (snapshot->status.state != CERBERUS_BLE_SCAN_RUNNING || passive_state.stopping)
+            passive_state.receiving = false;
+    } else memset(&passive_state.scan, 0, sizeof(passive_state.scan));
+    int64_t source_us = esp_timer_get_time();
+    passive_state.source_now_ms = source_us >= 0 ? (uint64_t)source_us / 1000U : 0U;
+    if (source_us < 0 || passive_state.source_now_ms < passive_state.started_ms)
+        passive_state.error = ESP_ERR_INVALID_STATE;
 }
 
 static void finish_scan(uint32_t expected_epoch, bool cancelled, int32_t reason)
@@ -98,6 +269,18 @@ static void finish_scan(uint32_t expected_epoch, bool cancelled, int32_t reason)
         cerberus_s3_ble_snapshot_finish(snapshot, cancelled || cancel_requested,
             reason, now_ms());
         cancel_requested = false;
+        if (analyzer_bound_locked()) {
+            analyzer_state.receiving = false;
+            analyzer_state.error = reason;
+        }
+        if (track_bound_locked()) {
+            track_state.receiving = false;
+            track_state.error = reason;
+        }
+        if (passive_bound_locked()) {
+            passive_state.receiving = false;
+            passive_state.error = reason;
+        }
         if (mac_monitor && mac_monitor->scan_epoch == expected_epoch) {
             mac_monitor->receiving = false;
             if (reason) {
@@ -110,7 +293,11 @@ static void finish_scan(uint32_t expected_epoch, bool cancelled, int32_t reason)
     /* Publish completion and release under the same scanner lock: a new
      * scanner lease cannot be admitted between these operations. */
     if (running) {
-        esp_err_t err = cerberus_s3_ble_host_release(CERBERUS_S3_BLE_OWNER_SCANNER);
+        esp_err_t err = scan_release_host_locked();
+        if (passive_bound_locked()) {
+            if (err == ESP_OK) passive_has_claim = false;
+            else passive_state.error = err;
+        }
         if (err != ESP_OK) ESP_LOGE(TAG, "BLE host release failed: %s", esp_err_to_name(err));
     }
     xSemaphoreGive(scan_mutex);
@@ -142,7 +329,8 @@ static void mac_report_locked(const cerberus_s3_ble_report_t *report,
 static void analyze_report_locked(const cerberus_s3_ble_report_t *report,
     uint32_t observed_ms)
 {
-    if (!analyzer || !analyzer->active) return;
+    if (!analyzer || !analyzer->active || !analyzer_bound_locked() ||
+        !analyzer_state.receiving || cancel_requested) return;
     cerberus_ble_analyzer_report_t event = {
         .address_type = report->address_type,
         .rssi_dbm = report->rssi,
@@ -156,12 +344,30 @@ static void analyze_report_locked(const cerberus_s3_ble_report_t *report,
     (void)cerberus_ble_analyzer_observe(analyzer, &event, observed_ms);
 }
 
+/* Saved-address acquisition filters before activity accounting and bounded
+ * admission. Its source time is callback entry, never a later mutex wait. */
+static bool discovery_admit_report_locked(const cerberus_s3_ble_report_t *report,
+    int64_t callback_us, size_t maximum_length)
+{
+    if (!discovery_attached || !discovery_reacquiring) return true;
+    if (cancel_requested || active_scan || discovery_scan_epoch != scan_epoch ||
+        report->scan_response || report->event_type > 3U || report->address_type > 3U ||
+        memcmp(report->address, discovery_target_address, sizeof(discovery_target_address)) ||
+        !report->complete || report->sid_invalid || (report->sid_valid && report->sid > 15U) ||
+        report->length > maximum_length || (report->length && !report->data) ||
+        callback_us < discovery_started_us || callback_us < discovery_callback_us) return false;
+    int64_t now = esp_timer_get_time();
+    if (callback_us < 0 || now < callback_us) return false;
+    discovery_callback_us = callback_us;
+    return true;
+}
+
 static int gap_event(struct ble_gap_event *event, void *arg)
 {
     const int64_t callback_us = esp_timer_get_time();
     xSemaphoreTake(scan_mutex, portMAX_DELAY);
     reconcile_host_locked();
-    bool current = snapshot->status.state == CERBERUS_BLE_SCAN_RUNNING &&
+    bool current = scan_owns_host_locked() && snapshot->status.state == CERBERUS_BLE_SCAN_RUNNING &&
         scan_epoch == (uint32_t)(uintptr_t)arg;
     xSemaphoreGive(scan_mutex);
     if (!current) return 0; /* A cancel may queue DISC_COMPLETE after the next sweep starts. */
@@ -181,12 +387,13 @@ static int gap_event(struct ble_gap_event *event, void *arg)
         report.length = disc->length_data;
         xSemaphoreTake(scan_mutex, portMAX_DELAY);
         reconcile_host_locked();
-        if (snapshot->status.state == CERBERUS_BLE_SCAN_RUNNING &&
-            scan_epoch == (uint32_t)(uintptr_t)arg) {
-            uint32_t observed_ms = now_ms();
+        if (scan_owns_host_locked() && snapshot->status.state == CERBERUS_BLE_SCAN_RUNNING &&
+            scan_epoch == (uint32_t)(uintptr_t)arg &&
+            discovery_admit_report_locked(&report, callback_us, 31U)) {
+            uint32_t observed_ms = discovery_attached && discovery_reacquiring ?
+                (uint32_t)((uint64_t)callback_us / 1000U) : now_ms();
             mac_report_locked(&report, (uint32_t)(uintptr_t)arg, callback_us, 31U, true);
-            (void)cerberus_s3_ble_tracker_observe(&tracker, report.address,
-                report.address_type, report.rssi, observed_ms);
+            track_report_locked(&report, observed_ms);
             analyze_report_locked(&report, observed_ms);
             if (callback_us >= 0)
                 cerberus_s3_ble_snapshot_observe_timed(snapshot, &report, observed_ms, (uint64_t)callback_us);
@@ -217,13 +424,15 @@ static int gap_event(struct ble_gap_event *event, void *arg)
         report.length = disc->length_data;
         xSemaphoreTake(scan_mutex, portMAX_DELAY);
         reconcile_host_locked();
-        if (snapshot->status.state == CERBERUS_BLE_SCAN_RUNNING &&
-            scan_epoch == (uint32_t)(uintptr_t)arg) {
-            uint32_t observed_ms = now_ms();
+        if (scan_owns_host_locked() && snapshot->status.state == CERBERUS_BLE_SCAN_RUNNING &&
+            scan_epoch == (uint32_t)(uintptr_t)arg &&
+            discovery_admit_report_locked(&report, callback_us,
+                (disc->props & BLE_HCI_ADV_LEGACY_MASK) ? 31U : 255U)) {
+            uint32_t observed_ms = discovery_attached && discovery_reacquiring ?
+                (uint32_t)((uint64_t)callback_us / 1000U) : now_ms();
             mac_report_locked(&report, (uint32_t)(uintptr_t)arg, callback_us,
                 (disc->props & BLE_HCI_ADV_LEGACY_MASK) ? 31U : 255U, disc->data_status <= 2U);
-            (void)cerberus_s3_ble_tracker_observe(&tracker, report.address,
-                report.address_type, report.rssi, observed_ms);
+            track_report_locked(&report, observed_ms);
             analyze_report_locked(&report, observed_ms);
             if (callback_us >= 0)
                 cerberus_s3_ble_snapshot_observe_timed(snapshot, &report, observed_ms, (uint64_t)callback_us);
@@ -243,9 +452,10 @@ static void start_scan_event(struct ble_npl_event *event)
     uint32_t epoch = (uint32_t)(uintptr_t)ble_npl_event_get_arg(event);
     xSemaphoreTake(scan_mutex, portMAX_DELAY);
     reconcile_host_locked();
-    bool current = snapshot->status.state == CERBERUS_BLE_SCAN_RUNNING && scan_epoch == epoch;
+    bool current = scan_owns_host_locked() && snapshot->status.state == CERBERUS_BLE_SCAN_RUNNING && scan_epoch == epoch;
     bool cancelled = cancel_requested;
     bool active = active_scan;
+    const cerberus_s3_ble_host_lease_t lease = scan_host_lease;
     xSemaphoreGive(scan_mutex);
     if (!current || cancelled) {
         xSemaphoreTake(scan_mutex, portMAX_DELAY);
@@ -255,6 +465,7 @@ static void start_scan_event(struct ble_npl_event *event)
     }
     uint8_t own_address_type = 0;
     int rc = ble_hs_id_infer_auto(0, &own_address_type);
+    if (rc == 0 && !cerberus_s3_ble_host_lease_valid(&lease)) rc = BLE_HS_EOS;
     if (rc == 0) {
 #if MYNEWT_VAL(BLE_EXT_ADV)
         const struct ble_gap_ext_disc_params uncoded = {
@@ -285,6 +496,15 @@ static void start_scan_event(struct ble_npl_event *event)
         if (mac_monitor && mac_monitor->scan_epoch == epoch && scan_epoch == epoch &&
             snapshot->status.state == CERBERUS_BLE_SCAN_RUNNING && !mac_monitor->stopping)
             mac_monitor->receiving = true;
+        if (analyzer_bound_locked() && analyzer_state.scan_epoch == epoch &&
+            snapshot->status.state == CERBERUS_BLE_SCAN_RUNNING && !cancel_requested)
+            analyzer_state.receiving = true;
+        if (track_bound_locked() && track_state.scan_epoch == epoch &&
+            snapshot->status.state == CERBERUS_BLE_SCAN_RUNNING && !cancel_requested)
+            track_state.receiving = true;
+        if (passive_bound_locked() && passive_state.scan_epoch == epoch &&
+            snapshot->status.state == CERBERUS_BLE_SCAN_RUNNING && !cancel_requested)
+            passive_state.receiving = true;
         xSemaphoreGive(scan_mutex);
     }
     xSemaphoreTake(scan_mutex, portMAX_DELAY);
@@ -297,7 +517,7 @@ static void stop_scan_event(struct ble_npl_event *event)
     uint32_t epoch = (uint32_t)(uintptr_t)ble_npl_event_get_arg(event);
     xSemaphoreTake(scan_mutex, portMAX_DELAY);
     reconcile_host_locked();
-    bool current = stop_event_pending && stop_epoch == epoch && scan_epoch == epoch &&
+    bool current = scan_owns_host_locked() && stop_event_pending && stop_epoch == epoch && scan_epoch == epoch &&
         snapshot->status.state == CERBERUS_BLE_SCAN_RUNNING;
     xSemaphoreGive(scan_mutex);
     if (current) {
@@ -329,22 +549,226 @@ static esp_err_t ensure_mutex(void)
 }
 
 static bool discovery_start_allowed(bool discovery, cerberus_s3_ble_filter_t family,
-    uint64_t previous)
+    uint64_t previous, const uint8_t reacquire_address[6])
 {
     if (!discovery) return !discovery_attached;
     if (tracker.enabled || (analyzer && analyzer->active)) return false;
     if (!previous) return !discovery_attached;
     return discovery_attached && discovery_epoch == previous && snapshot->family == family &&
+        discovery_reacquiring == (reacquire_address != NULL) &&
+        (!reacquire_address || !memcmp(discovery_target_address, reacquire_address, 6U)) &&
         snapshot->status.state == CERBERUS_BLE_SCAN_COMPLETE;
 }
 
 static bool discovery_meta_locked(cerberus_s3_ble_discovery_meta_t *meta);
 static bool discovery_meta_at_locked(cerberus_s3_ble_discovery_meta_t *meta, uint64_t source_now_ms);
 
-static esp_err_t start_scan_mode(bool active, cerberus_s3_ble_mac_monitor_t *monitor,
+/* The passive attachment reserves admission before host initialization, which
+ * must run outside scan_mutex. A failed release retains this exact handle;
+ * callers must never infer global SCANNER ownership from a rejected Start. */
+static esp_err_t passive_lock(uint64_t epoch)
+{
+    if (!epoch) return ESP_ERR_INVALID_ARG;
+    if (!scan_mutex || !snapshot) return ESP_ERR_NOT_FOUND;
+    if (!xSemaphoreTake(scan_mutex, pdMS_TO_TICKS(25U))) return ESP_ERR_TIMEOUT;
+    reconcile_host_locked();
+    if (!passive_state.attached || passive_state.epoch != epoch) {
+        xSemaphoreGive(scan_mutex);
+        return ESP_ERR_NOT_FOUND;
+    }
+    passive_refresh_locked();
+    return ESP_OK;
+}
+
+static bool passive_complete_locked(void)
+{
+    return passive_bound_locked() && !passive_acquiring && !passive_claim_only &&
+        !passive_state.error && snapshot->status.state == CERBERUS_BLE_SCAN_COMPLETE &&
+        snapshot->status.stored_count <= CERBERUS_BLE_SCAN_MAX_RESULTS &&
+        passive_state.source_now_ms >= passive_state.started_ms &&
+        passive_state.source_now_ms - passive_state.started_ms <= UINT32_MAX;
+}
+
+static bool passive_start_blocked_locked(void)
+{
+    return snapshot->status.state == CERBERUS_BLE_SCAN_RUNNING ||
+        start_event_pending || stop_event_pending || discovery_attached || mac_monitor ||
+        tracker.enabled || analyzer || passive_acquiring || watch_epoch == UINT64_MAX ||
+        scan_epoch == UINT32_MAX || scan_host_acquiring || scan_host_held ||
+        cerberus_s3_ble_host_owner() != CERBERUS_S3_BLE_OWNER_NONE ||
+        cerberus_s3_wifi_owner() == CERBERUS_S3_WIFI_RECEIVER;
+}
+
+esp_err_t cerberus_s3_ble_scanner_passive_start(uint64_t previous,
+    cerberus_s3_ble_passive_state_t *state)
+{
+    if (!state) return ESP_ERR_INVALID_ARG;
+    memset(state, 0, sizeof(*state));
+    esp_err_t error = ensure_mutex();
+    if (error != ESP_OK) return error;
+    xSemaphoreTake(scan_mutex, portMAX_DELAY);
+    reconcile_host_locked();
+    passive_refresh_locked();
+    if ((previous && (!passive_state.attached || passive_state.epoch != previous)) ||
+        (!previous && passive_state.attached)) {
+        xSemaphoreGive(scan_mutex);
+        return previous ? ESP_ERR_NOT_FOUND : ESP_ERR_INVALID_STATE;
+    }
+    if (previous) *state = passive_state;
+    bool blocked = passive_start_blocked_locked() ||
+        (previous && (!passive_complete_locked() || passive_state.owned));
+    if (blocked) { xSemaphoreGive(scan_mutex); return ESP_ERR_INVALID_STATE; }
+    if (heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) <
+        (cerberus_s3_ble_host_initialized() ? 32768U : 98304U)) {
+        xSemaphoreGive(scan_mutex); return ESP_ERR_NO_MEM;
+    }
+    cerberus_s3_ble_passive_state_t prior = passive_state;
+    if (!previous) {
+        memset(&passive_state, 0, sizeof(passive_state));
+        passive_state.epoch = ++watch_epoch; /* Consumed even on failed admission. */
+        passive_state.host_epoch = cerberus_s3_ble_host_epoch();
+        passive_state.attached = true;
+        passive_claim_only = true;
+    }
+    passive_acquiring = true;
+    passive_state.owned = true;
+    passive_state.stopping = false;
+    xSemaphoreGive(scan_mutex);
+
+    cerberus_s3_ble_host_lease_t acquired = {0};
+    error = cerberus_s3_ble_host_claim(CERBERUS_S3_BLE_OWNER_SCANNER, &acquired);
+    xSemaphoreTake(scan_mutex, portMAX_DELAY);
+    passive_acquiring = false;
+    bool same_host = passive_state.host_epoch == cerberus_s3_ble_host_epoch();
+    bool ours = error == ESP_OK && cerberus_s3_ble_host_lease_valid(&acquired);
+    if (ours) {
+        scan_host_lease = acquired;
+        scan_host_held = true;
+    }
+    int64_t started_us = esp_timer_get_time();
+    if (error == ESP_OK && (!ours || !same_host || started_us < 0 || passive_state.stopping ||
+        cerberus_s3_wifi_owner() == CERBERUS_S3_WIFI_RECEIVER)) error = ESP_ERR_INVALID_STATE;
+    if (error != ESP_OK) {
+        esp_err_t released = ours ? scan_release_host_locked() : ESP_OK;
+        if (released != ESP_OK && scan_owns_host_locked()) {
+            passive_has_claim = passive_claim_only = true;
+            passive_state.error = released;
+            passive_state.receiving = false;
+            passive_state.owned = true;
+            memset(&passive_state.scan, 0, sizeof(passive_state.scan));
+        } else {
+            passive_state = prior;
+            passive_has_claim = passive_claim_only = false;
+        }
+        passive_refresh_locked();
+        *state = passive_state;
+        xSemaphoreGive(scan_mutex);
+        return error;
+    }
+    if (!events_ready) {
+        ble_npl_event_init(&start_event, start_scan_event, NULL);
+        ble_npl_event_init(&stop_event, stop_scan_event, NULL);
+        events_ready = true;
+    }
+    if (previous) passive_state.epoch = ++watch_epoch;
+    passive_state.scan_epoch = ++scan_epoch;
+    passive_state.host_epoch = scan_host_epoch = acquired.epoch;
+    passive_state.started_ms = (uint64_t)started_us / 1000U;
+    passive_state.source_now_ms = passive_state.started_ms;
+    passive_state.error = ESP_OK;
+    passive_state.receiving = passive_state.stopping = false;
+    passive_has_claim = true;
+    passive_claim_only = false;
+    active_scan = cancel_requested = false;
+    cerberus_s3_ble_snapshot_begin_with_epoch(snapshot,
+        (uint8_t)(snapshot->status.generation + 1U), (uint32_t)passive_state.started_ms,
+        MYNEWT_VAL(BLE_EXT_ADV) != 0, passive_state.epoch);
+    start_event_pending = true;
+    start_queued_epoch = scan_epoch;
+    ble_npl_event_set_arg(&start_event, (void *)(uintptr_t)scan_epoch);
+    passive_state.scan = snapshot->status;
+    *state = passive_state;
+    xSemaphoreGive(scan_mutex);
+    ble_npl_eventq_put(nimble_port_get_dflt_eventq(), &start_event);
+    return ESP_OK;
+}
+
+esp_err_t cerberus_s3_ble_scanner_passive_get_state(uint64_t epoch,
+    cerberus_s3_ble_passive_state_t *state)
+{
+    if (!state) return ESP_ERR_INVALID_ARG;
+    memset(state, 0, sizeof(*state));
+    esp_err_t error = passive_lock(epoch);
+    if (error != ESP_OK) return error;
+    *state = passive_state;
+    xSemaphoreGive(scan_mutex);
+    return ESP_OK;
+}
+
+esp_err_t cerberus_s3_ble_scanner_passive_stop(uint64_t epoch,
+    cerberus_s3_ble_passive_state_t *state)
+{
+    if (!state) return ESP_ERR_INVALID_ARG;
+    memset(state, 0, sizeof(*state));
+    esp_err_t error = passive_lock(epoch);
+    if (error != ESP_OK) return error;
+    bool queue_stop = false;
+    if (passive_acquiring) passive_state.stopping = true;
+    else if (passive_bound_locked() && snapshot->status.state == CERBERUS_BLE_SCAN_RUNNING) {
+        cancel_requested = true;
+        passive_state.receiving = false;
+        if (!stop_event_pending) {
+            stop_event_pending = true;
+            stop_epoch = scan_epoch;
+            ble_npl_event_set_arg(&stop_event, (void *)(uintptr_t)scan_epoch);
+            queue_stop = true;
+        }
+    } else if (passive_has_claim && scan_owns_host_locked()) {
+        error = scan_release_host_locked();
+        if (error == ESP_OK) passive_has_claim = false;
+        else passive_state.error = error;
+    }
+    passive_refresh_locked();
+    *state = passive_state;
+    xSemaphoreGive(scan_mutex);
+    if (queue_stop) ble_npl_eventq_put(nimble_port_get_dflt_eventq(), &stop_event);
+    return error;
+}
+
+esp_err_t cerberus_s3_ble_scanner_passive_release(uint64_t epoch)
+{
+    esp_err_t error = passive_lock(epoch);
+    if (error != ESP_OK) return error;
+    if (passive_state.owned) error = ESP_ERR_INVALID_STATE;
+    else {
+        memset(&passive_state, 0, sizeof(passive_state));
+        passive_claim_only = passive_has_claim = passive_acquiring = false;
+    }
+    xSemaphoreGive(scan_mutex);
+    return error;
+}
+
+/* A single admission reservation covers allocation and a yielding host claim.
+ * A rejected candidate can retire only its own exact token. */
+static esp_err_t scan_acquisition_failed(cerberus_s3_ble_binding_cache_t *allocated,
+    esp_err_t error)
+{
+    xSemaphoreTake(scan_mutex, portMAX_DELAY);
+    scan_host_acquiring = false;
+    if (scan_host_held) {
+        (void)scan_release_host_locked();
+        scan_host_cleanup = scan_host_held;
+    }
+    xSemaphoreGive(scan_mutex);
+    heap_caps_free(allocated);
+    return error;
+}
+
+static esp_err_t start_scan_mode_owned(bool active, cerberus_s3_ble_mac_monitor_t *monitor,
     cerberus_ble_scan_status_payload_t *status, bool discovery,
     cerberus_s3_ble_filter_t family, uint64_t previous,
-    cerberus_s3_ble_discovery_meta_t *meta)
+    cerberus_s3_ble_discovery_meta_t *meta, bool analyzing, bool tracking,
+    const uint8_t reacquire_address[6])
 {
     if (!status) return ESP_ERR_INVALID_ARG;
     if (cerberus_s3_wifi_owner() == CERBERUS_S3_WIFI_RECEIVER) return ESP_ERR_INVALID_STATE;
@@ -352,49 +776,61 @@ static esp_err_t start_scan_mode(bool active, cerberus_s3_ble_mac_monitor_t *mon
     if (err != ESP_OK) return err;
     xSemaphoreTake(scan_mutex, portMAX_DELAY);
     reconcile_host_locked();
-    bool running = snapshot->status.state == CERBERUS_BLE_SCAN_RUNNING || stop_event_pending || start_event_pending ||
+    bool running = scan_host_acquiring || scan_host_held ||
+        snapshot->status.state == CERBERUS_BLE_SCAN_RUNNING || stop_event_pending || start_event_pending ||
         watch_epoch == UINT64_MAX || scan_epoch == UINT32_MAX || (mac_monitor && monitor != mac_monitor) ||
         (monitor && (monitor != mac_monitor || !monitor->owned || monitor->stopping)) ||
-        !discovery_start_allowed(discovery, family, previous);
+        !discovery_start_allowed(discovery, family, previous, reacquire_address) || !analyzer_start_allowed_locked(analyzing) ||
+        !track_start_allowed_locked(tracking) || passive_state.attached;
     bool need_bindings = discovery && family != CERBERUS_S3_BLE_FILTER_ALL && !discovery_bindings;
+    if (!running) scan_host_acquiring = true;
     xSemaphoreGive(scan_mutex);
     if (running) return ESP_ERR_INVALID_STATE;
     if (heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) <
-        (cerberus_s3_ble_host_initialized() ? 32768U : 98304U)) return ESP_ERR_NO_MEM;
+        (cerberus_s3_ble_host_initialized() ? 32768U : 98304U))
+        return scan_acquisition_failed(NULL, ESP_ERR_NO_MEM);
     cerberus_s3_ble_binding_cache_t *allocated = need_bindings ?
         heap_caps_calloc(1U, sizeof(*allocated), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) : NULL;
-    if (need_bindings && !allocated) return ESP_ERR_NO_MEM;
-    err = cerberus_s3_ble_host_claim(CERBERUS_S3_BLE_OWNER_SCANNER);
-    if (err != ESP_OK) {
-        heap_caps_free(allocated);
-        return err;
+    if (need_bindings && !allocated) return scan_acquisition_failed(NULL, ESP_ERR_NO_MEM);
+    cerberus_s3_ble_host_lease_t acquired = {0};
+    err = cerberus_s3_ble_host_claim(CERBERUS_S3_BLE_OWNER_SCANNER, &acquired);
+    if (err != ESP_OK) return scan_acquisition_failed(allocated, err);
+    xSemaphoreTake(scan_mutex, portMAX_DELAY);
+    reconcile_host_locked();
+    bool ours = cerberus_s3_ble_host_lease_valid(&acquired);
+    if (ours) { scan_host_lease = acquired; scan_host_held = true; }
+    int64_t started_us = esp_timer_get_time();
+    if (!ours || cerberus_s3_wifi_owner() == CERBERUS_S3_WIFI_RECEIVER ||
+        snapshot->status.state == CERBERUS_BLE_SCAN_RUNNING || stop_event_pending || start_event_pending ||
+        watch_epoch == UINT64_MAX || scan_epoch == UINT32_MAX || (mac_monitor && monitor != mac_monitor) ||
+        (monitor && (monitor != mac_monitor || !monitor->owned || monitor->stopping)) ||
+        !discovery_start_allowed(discovery, family, previous, reacquire_address) || !analyzer_start_allowed_locked(analyzing) ||
+        !track_start_allowed_locked(tracking) || passive_state.attached || started_us < 0) {
+        xSemaphoreGive(scan_mutex);
+        return scan_acquisition_failed(allocated, ESP_ERR_INVALID_STATE);
     }
-    if (cerberus_s3_wifi_owner() == CERBERUS_S3_WIFI_RECEIVER) {
-        (void)cerberus_s3_ble_host_release(CERBERUS_S3_BLE_OWNER_SCANNER);
-        heap_caps_free(allocated);
-        return ESP_ERR_INVALID_STATE;
-    }
+    scan_host_acquiring = false;
     if (!events_ready) {
         ble_npl_event_init(&start_event, start_scan_event, NULL);
         ble_npl_event_init(&stop_event, stop_scan_event, NULL);
         events_ready = true;
     }
-    xSemaphoreTake(scan_mutex, portMAX_DELAY);
-    reconcile_host_locked();
-    int64_t started_us = esp_timer_get_time();
-    if (snapshot->status.state == CERBERUS_BLE_SCAN_RUNNING || stop_event_pending || start_event_pending ||
-        watch_epoch == UINT64_MAX || scan_epoch == UINT32_MAX || (mac_monitor && monitor != mac_monitor) ||
-        (monitor && (monitor != mac_monitor || !monitor->owned || monitor->stopping)) ||
-        !discovery_start_allowed(discovery, family, previous) || started_us < 0) {
-        xSemaphoreGive(scan_mutex);
-        (void)cerberus_s3_ble_host_release(CERBERUS_S3_BLE_OWNER_SCANNER);
-        heap_caps_free(allocated);
-        return ESP_ERR_INVALID_STATE;
-    }
     uint8_t generation = (uint8_t)(snapshot->status.generation + 1U);
     ++scan_epoch; /* Admission above guarantees no SDK callback-token reuse. */
     if (monitor) { monitor->scan_epoch = scan_epoch; monitor->receiving = false; }
-    scan_host_epoch = cerberus_s3_ble_host_epoch();
+    scan_host_epoch = acquired.epoch;
+    if (analyzing) {
+        analyzer_state.scan_epoch = scan_epoch;
+        analyzer_state.host_epoch = scan_host_epoch;
+        analyzer_state.error = ESP_OK;
+        analyzer_state.receiving = analyzer_state.stopping = false;
+    }
+    if (tracking) {
+        track_state.scan_epoch = scan_epoch;
+        track_state.host_epoch = scan_host_epoch;
+        track_state.error = ESP_OK;
+        track_state.receiving = track_state.stopping = false;
+    }
     active_scan = active;
     start_event_pending = true;
     start_queued_epoch = scan_epoch;
@@ -412,6 +848,10 @@ static esp_err_t start_scan_mode(bool active, cerberus_s3_ble_mac_monitor_t *mon
         discovery_epoch = watch_epoch;
         discovery_scan_epoch = scan_epoch;
         discovery_started_ms = started_ms;
+        discovery_started_us = discovery_callback_us = started_us;
+        discovery_reacquiring = reacquire_address != NULL;
+        memset(discovery_target_address, 0, sizeof(discovery_target_address));
+        if (reacquire_address) memcpy(discovery_target_address, reacquire_address, sizeof(discovery_target_address));
     } else {
         cerberus_s3_ble_snapshot_begin_with_epoch(snapshot, generation, (uint32_t)started_ms,
             MYNEWT_VAL(BLE_EXT_ADV) != 0, watch_epoch);
@@ -422,6 +862,13 @@ static esp_err_t start_scan_mode(bool active, cerberus_s3_ble_mac_monitor_t *mon
     xSemaphoreGive(scan_mutex);
     ble_npl_eventq_put(nimble_port_get_dflt_eventq(), &start_event);
     return ESP_OK;
+}
+
+static esp_err_t start_scan_mode(bool active, cerberus_s3_ble_mac_monitor_t *monitor,
+    cerberus_ble_scan_status_payload_t *status, bool discovery,
+    cerberus_s3_ble_filter_t family, uint64_t previous, cerberus_s3_ble_discovery_meta_t *meta)
+{
+    return start_scan_mode_owned(active, monitor, status, discovery, family, previous, meta, false, false, NULL);
 }
 
 static esp_err_t start_scan(bool active, cerberus_s3_ble_mac_monitor_t *monitor,
@@ -440,14 +887,22 @@ esp_err_t cerberus_s3_ble_scanner_start_active(cerberus_ble_scan_status_payload_
     return start_scan(true, NULL, status);
 }
 
-static esp_err_t stop_scan(cerberus_s3_ble_mac_monitor_t *monitor,
-    cerberus_ble_scan_status_payload_t *status)
+static esp_err_t stop_scan_owned(cerberus_s3_ble_mac_monitor_t *monitor,
+    cerberus_ble_scan_status_payload_t *status, bool analyzing, bool tracking)
 {
     if (!status || !scan_mutex) return ESP_ERR_INVALID_ARG;
     xSemaphoreTake(scan_mutex, portMAX_DELAY);
     reconcile_host_locked();
+    if (scan_host_cleanup && !discovery_attached && !analyzer && !tracker.enabled &&
+        !passive_state.attached && (!mac_monitor || monitor == mac_monitor)) {
+        esp_err_t error = scan_release_host_locked();
+        *status = snapshot->status;
+        xSemaphoreGive(scan_mutex);
+        return error;
+    }
     if (snapshot->status.state != CERBERUS_BLE_SCAN_RUNNING ||
-        discovery_attached ||
+        discovery_attached || (analyzing ? !analyzer_bound_locked() : analyzer != NULL) ||
+        (tracking ? !track_bound_locked() : tracker.enabled) || passive_state.attached ||
         (mac_monitor && monitor != mac_monitor) ||
         (monitor && (monitor != mac_monitor || monitor->scan_epoch != scan_epoch))) {
         *status = snapshot->status;
@@ -467,6 +922,10 @@ static esp_err_t stop_scan(cerberus_s3_ble_mac_monitor_t *monitor,
     if (queue_stop) ble_npl_eventq_put(nimble_port_get_dflt_eventq(), &stop_event);
     return ESP_OK;
 }
+
+static esp_err_t stop_scan(cerberus_s3_ble_mac_monitor_t *monitor,
+    cerberus_ble_scan_status_payload_t *status)
+{ return stop_scan_owned(monitor, status, false, false); }
 
 esp_err_t cerberus_s3_ble_scanner_stop(cerberus_ble_scan_status_payload_t *status)
 { return stop_scan(NULL, status); }
@@ -674,23 +1133,36 @@ esp_err_t cerberus_s3_ble_scanner_get_watch_result(uint8_t generation, uint8_t i
 static esp_err_t get_watch_observed_result(uint8_t generation,
     uint8_t index, cerberus_watch_observation_t *result,
     cerberus_watch_receive_timing_t *timing, sentinel_watch_motion_t *motion,
-    cerberus_watch_receive_timing_t *motion_timing)
+    cerberus_watch_receive_timing_t *motion_timing, uint64_t passive_epoch,
+    uint64_t expected_capture_epoch, cerberus_watch_profile_evidence_t *profile)
 {
     const int64_t request_started_us = esp_timer_get_time();
     if (result) memset(result, 0, sizeof(*result));
     if (timing) memset(timing, 0, sizeof(*timing));
-    if (!result || !timing || !snapshot) return ESP_ERR_INVALID_ARG;
+    if (profile) memset(profile, 0, sizeof(*profile));
+    if (!result || !timing || (!snapshot && !passive_epoch)) return ESP_ERR_INVALID_ARG;
     cerberus_watch_observation_t pending = {0};
     cerberus_watch_receive_timing_t pending_timing = {0};
     sentinel_watch_motion_t pending_motion = {0};
     cerberus_watch_receive_timing_t pending_motion_timing = {0};
-    xSemaphoreTake(scan_mutex, portMAX_DELAY);
-    bool valid = snapshot->watch.status.state == CERBERUS_WATCH_COMPLETE &&
+    if (passive_epoch) {
+        esp_err_t error = passive_lock(passive_epoch);
+        if (error != ESP_OK) return error;
+        generation = snapshot->status.generation;
+    } else if (profile) {
+        if (!scan_mutex) return ESP_ERR_INVALID_STATE;
+        if (!xSemaphoreTake(scan_mutex, pdMS_TO_TICKS(25U))) return ESP_ERR_TIMEOUT;
+    } else xSemaphoreTake(scan_mutex, portMAX_DELAY);
+    bool valid = (!passive_epoch || passive_complete_locked()) &&
+        snapshot->watch.status.state == CERBERUS_WATCH_COMPLETE &&
         snapshot->watch.status.generation == generation && index < snapshot->watch.status.stored_count &&
-        index < CERBERUS_WATCH_MAX_OBSERVATIONS;
+        snapshot->watch.status.stored_count <= CERBERUS_WATCH_MAX_OBSERVATIONS &&
+        index < CERBERUS_WATCH_MAX_OBSERVATIONS &&
+        (!expected_capture_epoch || snapshot->watch.capture_epoch == expected_capture_epoch);
     if (valid) {
         pending = snapshot->watch.records[index];
         const int64_t source_now_us = esp_timer_get_time();
+        if (passive_epoch && (request_started_us < 0 || source_now_us < request_started_us)) valid = false;
         if (request_started_us >= 0 && source_now_us >= request_started_us &&
             snapshot->watch.capture_epoch != 0U) {
             cerberus_watch_scan_timing_payload_t source = {0};
@@ -713,9 +1185,30 @@ static esp_err_t get_watch_observed_result(uint8_t generation,
                 CERBERUS_WATCH_RADIO_BLE, generation, index, (uint64_t)request_started_us,
                 &pending_motion_timing);
         }
+        if (valid && profile) {
+            sentinel_watch_profile_timing_t source = {0};
+            valid = request_started_us >= 0 && source_now_us >= request_started_us &&
+                cerberus_watch_capture_get_profile(&snapshot->watch, CERBERUS_WATCH_RADIO_BLE,
+                    generation, index, (uint64_t)source_now_us, &profile->values, &source) &&
+                source.capture_epoch == snapshot->watch.capture_epoch;
+            if (valid) {
+                profile->available = true;
+                profile->capture_epoch = source.capture_epoch;
+                for (unsigned group = 0; group < SENTINEL_WATCH_PROFILE_GROUP_COUNT; ++group) {
+                    if (!(source.valid_mask & (1U << group))) continue;
+                    profile->timing[group] = (cerberus_watch_receive_timing_t){
+                        .request_started_us = (uint64_t)request_started_us,
+                        .source_age_ms = source.age_ms[group], .valid = true};
+                }
+                valid = cerberus_watch_profile_evidence_valid(profile, (uint64_t)source_now_us / 1000U);
+            }
+        }
     }
     xSemaphoreGive(scan_mutex);
-    if (!valid) return ESP_ERR_INVALID_STATE;
+    if (!valid) {
+        if (profile) memset(profile, 0, sizeof(*profile));
+        return ESP_ERR_INVALID_STATE;
+    }
     *result = pending;
     *timing = pending_timing;
     if (motion) *motion = pending_motion;
@@ -726,7 +1219,7 @@ static esp_err_t get_watch_observed_result(uint8_t generation,
 esp_err_t cerberus_s3_ble_scanner_get_watch_observed_result(uint8_t generation,
     uint8_t index, cerberus_watch_observation_t *result, cerberus_watch_receive_timing_t *timing)
 {
-    return get_watch_observed_result(generation, index, result, timing, NULL, NULL);
+    return get_watch_observed_result(generation, index, result, timing, NULL, NULL, 0U, 0U, NULL);
 }
 
 esp_err_t cerberus_s3_ble_scanner_get_watch_detailed_result(uint8_t generation,
@@ -738,7 +1231,22 @@ esp_err_t cerberus_s3_ble_scanner_get_watch_detailed_result(uint8_t generation,
     if (motion) memset(motion, 0, sizeof(*motion));
     if (motion_timing) memset(motion_timing, 0, sizeof(*motion_timing));
     if (!result || !timing || !motion || !motion_timing) return ESP_ERR_INVALID_ARG;
-    return get_watch_observed_result(generation, index, result, timing, motion, motion_timing);
+    return get_watch_observed_result(generation, index, result, timing, motion, motion_timing, 0U, 0U, NULL);
+}
+
+esp_err_t cerberus_s3_ble_scanner_get_watch_profiled_result(uint8_t generation,
+    uint8_t index, uint64_t expected_capture_epoch, cerberus_watch_observation_t *result,
+    cerberus_watch_receive_timing_t *timing, sentinel_watch_motion_t *motion,
+    cerberus_watch_receive_timing_t *motion_timing, cerberus_watch_profile_evidence_t *profile)
+{
+    if (result) memset(result, 0, sizeof(*result));
+    if (timing) memset(timing, 0, sizeof(*timing));
+    if (motion) memset(motion, 0, sizeof(*motion));
+    if (motion_timing) memset(motion_timing, 0, sizeof(*motion_timing));
+    if (profile) memset(profile, 0, sizeof(*profile));
+    if (!result || !timing || !motion || !motion_timing || !profile) return ESP_ERR_INVALID_ARG;
+    return get_watch_observed_result(generation, index, result, timing, motion, motion_timing,
+        0U, expected_capture_epoch, profile);
 }
 
 esp_err_t cerberus_s3_ble_scanner_get_activity(uint8_t generation,
@@ -761,24 +1269,90 @@ esp_err_t cerberus_s3_ble_scanner_track_begin(const uint8_t address[6],
     if (error != ESP_OK) return error;
     xSemaphoreTake(scan_mutex, portMAX_DELAY);
     reconcile_host_locked();
-    bool busy = snapshot->status.state == CERBERUS_BLE_SCAN_RUNNING ||
-        stop_event_pending || start_event_pending || discovery_attached || mac_monitor || (analyzer && analyzer->active) ||
+    bool busy = scan_host_acquiring || scan_host_held || snapshot->status.state == CERBERUS_BLE_SCAN_RUNNING ||
+        stop_event_pending || start_event_pending || discovery_attached || mac_monitor || analyzer || tracker.enabled || passive_state.attached ||
         cerberus_s3_ble_host_owner() != CERBERUS_S3_BLE_OWNER_NONE;
     if (!busy) {
         cerberus_s3_ble_tracker_begin(&tracker, address, address_type);
         tracker_host_epoch = cerberus_s3_ble_host_epoch();
+        track_state = (cerberus_s3_ble_track_state_t){.attached = true, .host_epoch = tracker_host_epoch};
     }
     xSemaphoreGive(scan_mutex);
     return busy ? ESP_ERR_INVALID_STATE : ESP_OK;
 }
 
-void cerberus_s3_ble_scanner_track_end(void)
+esp_err_t cerberus_s3_ble_scanner_track_get_state(cerberus_s3_ble_track_state_t *state)
 {
-    if (!scan_mutex) return;
+    if (!state) return ESP_ERR_INVALID_ARG;
+    memset(state, 0, sizeof(*state));
+    if (!scan_mutex) return ESP_OK;
     xSemaphoreTake(scan_mutex, portMAX_DELAY);
-    cerberus_s3_ble_tracker_end(&tracker);
+    reconcile_host_locked();track_refresh_locked();
+    if (tracker.enabled) *state = track_state;
     xSemaphoreGive(scan_mutex);
+    return ESP_OK;
 }
+
+esp_err_t cerberus_s3_ble_scanner_track_start(cerberus_s3_ble_track_state_t *state)
+{
+    if (!state) return ESP_ERR_INVALID_ARG;
+    memset(state, 0, sizeof(*state));
+    if (!scan_mutex) return ESP_ERR_INVALID_STATE;
+    xSemaphoreTake(scan_mutex, portMAX_DELAY);
+    reconcile_host_locked();
+    bool allowed = track_start_allowed_locked(true) && !track_state.owned;
+    if (tracker.enabled) *state = track_state;
+    xSemaphoreGive(scan_mutex);
+    if (!allowed) return ESP_ERR_INVALID_STATE;
+    cerberus_ble_scan_status_payload_t status = {0};
+    esp_err_t error = start_scan_mode_owned(false, NULL, &status, false,
+        CERBERUS_S3_BLE_FILTER_ALL, 0U, NULL, false, true, NULL);
+    (void)cerberus_s3_ble_scanner_track_get_state(state);
+    return error;
+}
+
+esp_err_t cerberus_s3_ble_scanner_track_stop(cerberus_s3_ble_track_state_t *state)
+{
+    if (!state) return ESP_ERR_INVALID_ARG;
+    memset(state, 0, sizeof(*state));
+    if (!scan_mutex) return ESP_OK;
+    xSemaphoreTake(scan_mutex, portMAX_DELAY);
+    reconcile_host_locked();track_refresh_locked();
+    bool own = tracker.enabled && track_state.owned;
+    bool running = own && snapshot->status.state == CERBERUS_BLE_SCAN_RUNNING;
+    bool queued = own && ((start_event_pending && start_queued_epoch == track_state.scan_epoch) ||
+        (stop_event_pending && stop_epoch == track_state.scan_epoch));
+    esp_err_t error = ESP_OK;
+    if (own && !running && !queued) {
+        error = scan_release_host_locked();
+        if (error) track_state.error = error;
+    }
+    xSemaphoreGive(scan_mutex);
+    if (running) {
+        cerberus_ble_scan_status_payload_t status;
+        error = stop_scan_owned(NULL, &status, false, true);
+    }
+    (void)cerberus_s3_ble_scanner_track_get_state(state);
+    return error;
+}
+
+esp_err_t cerberus_s3_ble_scanner_track_release(void)
+{
+    if (!scan_mutex) return ESP_OK;
+    xSemaphoreTake(scan_mutex, portMAX_DELAY);
+    reconcile_host_locked();track_refresh_locked();
+    if (tracker.enabled && track_state.owned) {
+        xSemaphoreGive(scan_mutex);
+        return ESP_ERR_INVALID_STATE;
+    }
+    cerberus_s3_ble_tracker_end(&tracker);
+    memset(&track_state, 0, sizeof(track_state));
+    xSemaphoreGive(scan_mutex);
+    return ESP_OK;
+}
+
+void cerberus_s3_ble_scanner_track_end(void)
+{ (void)cerberus_s3_ble_scanner_track_release(); }
 
 esp_err_t cerberus_s3_ble_scanner_track_status(
     cerberus_s3_ble_track_status_t *status)
@@ -787,10 +1361,11 @@ esp_err_t cerberus_s3_ble_scanner_track_status(
     memset(status, 0, sizeof(*status));
     if (!scan_mutex) return ESP_ERR_INVALID_STATE;
     xSemaphoreTake(scan_mutex, portMAX_DELAY);
-    reconcile_host_locked();
-    cerberus_s3_ble_tracker_snapshot(&tracker, now_ms(), status);
+    reconcile_host_locked();track_refresh_locked();
+    bool valid = tracker.enabled && !track_state.error;
+    if (valid) cerberus_s3_ble_tracker_snapshot(&tracker, now_ms(), status);
     xSemaphoreGive(scan_mutex);
-    return status->enabled ? ESP_OK : ESP_ERR_INVALID_STATE;
+    return valid ? ESP_OK : ESP_ERR_INVALID_STATE;
 }
 
 esp_err_t cerberus_s3_ble_scanner_analyzer_begin(void)
@@ -799,8 +1374,8 @@ esp_err_t cerberus_s3_ble_scanner_analyzer_begin(void)
     if (error != ESP_OK) return error;
     xSemaphoreTake(scan_mutex, portMAX_DELAY);
     reconcile_host_locked();
-    bool busy = snapshot->status.state == CERBERUS_BLE_SCAN_RUNNING ||
-        stop_event_pending || start_event_pending || discovery_attached || mac_monitor || tracker.enabled ||
+    bool busy = scan_host_acquiring || scan_host_held || snapshot->status.state == CERBERUS_BLE_SCAN_RUNNING ||
+        stop_event_pending || start_event_pending || discovery_attached || mac_monitor || tracker.enabled || analyzer || passive_state.attached ||
         cerberus_s3_ble_host_owner() != CERBERUS_S3_BLE_OWNER_NONE;
     if (busy) {
         xSemaphoreGive(scan_mutex);
@@ -814,19 +1389,90 @@ esp_err_t cerberus_s3_ble_scanner_analyzer_begin(void)
     }
     cerberus_ble_analyzer_begin(analyzer, now_ms());
     analyzer_host_epoch = cerberus_s3_ble_host_epoch();
+    analyzer_state = (cerberus_s3_ble_analyzer_state_t){.attached = true, .host_epoch = analyzer_host_epoch};
     xSemaphoreGive(scan_mutex);
     return ESP_OK;
 }
 
-void cerberus_s3_ble_scanner_analyzer_end(void)
+esp_err_t cerberus_s3_ble_scanner_analyzer_get_state(cerberus_s3_ble_analyzer_state_t *state)
 {
-    if (!scan_mutex) return;
+    if (!state) return ESP_ERR_INVALID_ARG;
+    memset(state, 0, sizeof(*state));
+    if (!scan_mutex) return ESP_OK;
     xSemaphoreTake(scan_mutex, portMAX_DELAY);
+    reconcile_host_locked();
+    analyzer_refresh_locked();
+    if (analyzer) *state = analyzer_state;
+    xSemaphoreGive(scan_mutex);
+    return ESP_OK;
+}
+
+esp_err_t cerberus_s3_ble_scanner_analyzer_start(cerberus_s3_ble_analyzer_state_t *state)
+{
+    if (!state) return ESP_ERR_INVALID_ARG;
+    memset(state, 0, sizeof(*state));
+    /* Admission is repeated under the scanner lock before and after claiming
+     * the host. An absent attachment must not initialize or allocate anything. */
+    if (!scan_mutex) return ESP_ERR_INVALID_STATE;
+    xSemaphoreTake(scan_mutex, portMAX_DELAY);
+    reconcile_host_locked();
+    bool allowed = analyzer_start_allowed_locked(true) && !analyzer_state.owned;
+    if (analyzer) *state = analyzer_state;
+    xSemaphoreGive(scan_mutex);
+    if (!allowed) return ESP_ERR_INVALID_STATE;
+    cerberus_ble_scan_status_payload_t status = {0};
+    esp_err_t error = start_scan_mode_owned(false, NULL, &status, false,
+        CERBERUS_S3_BLE_FILTER_ALL, 0U, NULL, true, false, NULL);
+    (void)cerberus_s3_ble_scanner_analyzer_get_state(state);
+    return error;
+}
+
+esp_err_t cerberus_s3_ble_scanner_analyzer_stop(cerberus_s3_ble_analyzer_state_t *state)
+{
+    if (!state) return ESP_ERR_INVALID_ARG;
+    memset(state, 0, sizeof(*state));
+    if (!scan_mutex) return ESP_OK;
+    xSemaphoreTake(scan_mutex, portMAX_DELAY);
+    reconcile_host_locked();analyzer_refresh_locked();
+    bool own = analyzer && analyzer_state.owned;
+    bool running = own && snapshot->status.state == CERBERUS_BLE_SCAN_RUNNING;
+    bool queued = own && ((start_event_pending && start_queued_epoch == analyzer_state.scan_epoch) ||
+        (stop_event_pending && stop_epoch == analyzer_state.scan_epoch));
+    esp_err_t error = ESP_OK;
+    /* Retry only this bound host release if completion's release failed.
+     * Never release a replacement owner's otherwise identical SCANNER label. */
+    if (own && !running && !queued) {
+        error = scan_release_host_locked();
+        if (error) analyzer_state.error = error;
+    }
+    xSemaphoreGive(scan_mutex);
+    if (running) {
+        cerberus_ble_scan_status_payload_t status;
+        error = stop_scan_owned(NULL, &status, true, false);
+    }
+    (void)cerberus_s3_ble_scanner_analyzer_get_state(state);
+    return error;
+}
+
+esp_err_t cerberus_s3_ble_scanner_analyzer_release(void)
+{
+    if (!scan_mutex) return ESP_OK;
+    xSemaphoreTake(scan_mutex, portMAX_DELAY);
+    reconcile_host_locked();analyzer_refresh_locked();
+    if (analyzer && analyzer_state.owned) {
+        xSemaphoreGive(scan_mutex);
+        return ESP_ERR_INVALID_STATE;
+    }
     cerberus_ble_analyzer_t *old = analyzer;
     analyzer = NULL;
+    memset(&analyzer_state, 0, sizeof(analyzer_state));
     xSemaphoreGive(scan_mutex);
     heap_caps_free(old);
+    return ESP_OK;
 }
+
+void cerberus_s3_ble_scanner_analyzer_end(void)
+{ (void)cerberus_s3_ble_scanner_analyzer_release(); }
 
 esp_err_t cerberus_s3_ble_scanner_analyzer_status(
     cerberus_ble_analyzer_view_t *view)
@@ -836,15 +1482,203 @@ esp_err_t cerberus_s3_ble_scanner_analyzer_status(
     if (!scan_mutex) return ESP_ERR_INVALID_STATE;
     xSemaphoreTake(scan_mutex, portMAX_DELAY);
     reconcile_host_locked();
+    analyzer_refresh_locked();
     bool active = analyzer && analyzer->active;
     if (active) cerberus_ble_analyzer_snapshot(analyzer, now_ms(), view);
     xSemaphoreGive(scan_mutex);
     return active ? ESP_OK : ESP_ERR_INVALID_STATE;
 }
 #include "s3_ble_discovery_impl.h"
+
+esp_err_t cerberus_s3_ble_scanner_passive_copy_wardrive(uint64_t epoch, uint8_t count,
+    cerberus_c5_ble_result_t *rows, cerberus_s3_ble_wardrive_evidence_t *evidence,
+    size_t capacity, cerberus_s3_ble_passive_state_t *state)
+{
+    clear_wardrive_copy(rows, evidence, capacity);
+    if (state) memset(state, 0, sizeof(*state));
+    if (!epoch || !state || capacity > CERBERUS_BLE_SCAN_MAX_RESULTS || count > capacity ||
+        (capacity && (!rows || !evidence))) return ESP_ERR_INVALID_ARG;
+    esp_err_t error = passive_lock(epoch);
+    if (error != ESP_OK) return error;
+    bool valid = passive_complete_locked() && !passive_state.owned && !passive_state.stopping &&
+        snapshot->status.stored_count == count;
+    cerberus_s3_ble_discovery_meta_t meta = {
+        .started_ms = passive_state.started_ms, .source_now_ms = passive_state.source_now_ms,
+        .status = snapshot->status,
+    };
+    /* Validate every record before committing any caller-visible row. Missing
+     * packet hints remain absent evidence; corrupt storage never partly copies. */
+    for (size_t i = 0; valid && i < count; ++i) {
+        cerberus_s3_ble_wardrive_evidence_t item = wardrive_evidence(&snapshot->records[i], meta.status.generation);
+        valid = discovery_row_valid(&snapshot->records[i], &meta) &&
+            cerberus_s3_ble_wardrive_evidence_valid(&item);
+    }
+    for (size_t i = 0; valid && i < count; ++i) {
+        const cerberus_s3_ble_record_t *record = &snapshot->records[i];
+        memcpy(rows[i].address, record->address, sizeof(rows[i].address));
+        memcpy(rows[i].name, record->name, record->name_length);
+        rows[i].rssi = record->rssi;
+        rows[i].address_type = record->address_type;
+        rows[i].manufacturer_id = record->manufacturer_id;
+        rows[i].flags = record->flags;
+        rows[i].uuid_length = record->uuid_length;
+        memcpy(rows[i].uuid, record->uuid, record->uuid_length);
+        evidence[i] = wardrive_evidence(record, meta.status.generation);
+    }
+    if (valid) *state = passive_state;
+    xSemaphoreGive(scan_mutex);
+    return valid ? ESP_OK : ESP_ERR_INVALID_STATE;
+}
+
+esp_err_t cerberus_s3_ble_scanner_passive_copy_row(uint64_t epoch, uint8_t index,
+    cerberus_s3_ble_discovery_record_t *row, cerberus_s3_ble_passive_state_t *state)
+{
+    if (row) memset(row, 0, sizeof(*row));
+    if (state) memset(state, 0, sizeof(*state));
+    if (!row || !state) return ESP_ERR_INVALID_ARG;
+    esp_err_t error = passive_lock(epoch);
+    if (error != ESP_OK) return error;
+    cerberus_s3_ble_discovery_meta_t meta = {
+        .started_ms = passive_state.started_ms, .source_now_ms = passive_state.source_now_ms,
+        .status = snapshot->status,
+    };
+    bool valid = passive_complete_locked() && index < snapshot->status.stored_count &&
+        discovery_row_valid(&snapshot->records[index], &meta);
+    if (valid) {
+        discovery_copy_row(&snapshot->records[index], snapshot->status.generation, index, row);
+        *state = passive_state;
+    }
+    xSemaphoreGive(scan_mutex);
+    return valid ? ESP_OK : ESP_ERR_INVALID_STATE;
+}
+
+static bool passive_watch_complete_locked(void)
+{
+    return passive_complete_locked() && snapshot->watch.status.state == CERBERUS_WATCH_COMPLETE &&
+        snapshot->watch.status.generation == snapshot->status.generation &&
+        snapshot->watch.status.stored_count <= CERBERUS_WATCH_MAX_OBSERVATIONS;
+}
+
+esp_err_t cerberus_s3_ble_scanner_passive_get_watch_status(uint64_t epoch,
+    cerberus_watch_scan_status_payload_t *status)
+{
+    if (!status) return ESP_ERR_INVALID_ARG;
+    memset(status, 0, sizeof(*status));
+    esp_err_t error = passive_lock(epoch);
+    if (error != ESP_OK) return error;
+    bool valid = passive_watch_complete_locked();
+    if (valid) *status = snapshot->watch.status;
+    xSemaphoreGive(scan_mutex);
+    return valid ? ESP_OK : ESP_ERR_INVALID_STATE;
+}
+
+esp_err_t cerberus_s3_ble_scanner_passive_get_watch_result(uint64_t epoch, uint8_t index,
+    cerberus_watch_observation_t *result)
+{
+    if (!result) return ESP_ERR_INVALID_ARG;
+    memset(result, 0, sizeof(*result));
+    esp_err_t error = passive_lock(epoch);
+    if (error != ESP_OK) return error;
+    bool valid = passive_watch_complete_locked() && index < snapshot->watch.status.stored_count;
+    if (valid) *result = snapshot->watch.records[index];
+    xSemaphoreGive(scan_mutex);
+    return valid ? ESP_OK : ESP_ERR_INVALID_STATE;
+}
+
+esp_err_t cerberus_s3_ble_scanner_passive_get_watch_detailed_result(uint64_t epoch,
+    uint8_t index, cerberus_watch_observation_t *result, cerberus_watch_receive_timing_t *timing,
+    sentinel_watch_motion_t *motion, cerberus_watch_receive_timing_t *motion_timing)
+{
+    if (result) memset(result, 0, sizeof(*result));
+    if (timing) memset(timing, 0, sizeof(*timing));
+    if (motion) memset(motion, 0, sizeof(*motion));
+    if (motion_timing) memset(motion_timing, 0, sizeof(*motion_timing));
+    if (!epoch || !result || !timing || !motion || !motion_timing) return ESP_ERR_INVALID_ARG;
+    return get_watch_observed_result(0U, index, result, timing, motion, motion_timing, epoch, 0U, NULL);
+}
+
+esp_err_t cerberus_s3_ble_scanner_passive_get_activity(uint64_t epoch,
+    cerberus_ble_activity_payload_t *status)
+{
+    if (!status) return ESP_ERR_INVALID_ARG;
+    memset(status, 0, sizeof(*status));
+    esp_err_t error = passive_lock(epoch);
+    if (error != ESP_OK) return error;
+    bool valid = passive_complete_locked() && snapshot->activity.status.state == CERBERUS_WATCH_COMPLETE &&
+        snapshot->activity.status.generation == snapshot->status.generation;
+    if (valid) *status = snapshot->activity.status;
+    xSemaphoreGive(scan_mutex);
+    return valid ? ESP_OK : ESP_ERR_INVALID_STATE;
+}
 #include "s3_ble_mac_monitor_impl.h"
 #else
 #include <string.h>
+esp_err_t cerberus_s3_ble_scanner_passive_start(uint64_t previous,
+    cerberus_s3_ble_passive_state_t *state)
+{
+    (void)previous;
+    if (!state) return ESP_ERR_INVALID_ARG;
+    memset(state, 0, sizeof(*state));
+    return ESP_ERR_NOT_SUPPORTED;
+}
+esp_err_t cerberus_s3_ble_scanner_passive_get_state(uint64_t epoch,
+    cerberus_s3_ble_passive_state_t *state)
+{
+    if (state) memset(state, 0, sizeof(*state));
+    return !state || !epoch ? ESP_ERR_INVALID_ARG : ESP_ERR_NOT_SUPPORTED;
+}
+esp_err_t cerberus_s3_ble_scanner_passive_stop(uint64_t epoch,
+    cerberus_s3_ble_passive_state_t *state)
+{ return cerberus_s3_ble_scanner_passive_get_state(epoch,state); }
+esp_err_t cerberus_s3_ble_scanner_passive_release(uint64_t epoch)
+{ return epoch ? ESP_ERR_NOT_SUPPORTED : ESP_ERR_INVALID_ARG; }
+esp_err_t cerberus_s3_ble_scanner_passive_copy_row(uint64_t epoch,uint8_t index,
+    cerberus_s3_ble_discovery_record_t *row,cerberus_s3_ble_passive_state_t *state)
+{
+    (void)index;
+    if (row) memset(row, 0, sizeof(*row));
+    if (state) memset(state, 0, sizeof(*state));
+    return !epoch || !row || !state ? ESP_ERR_INVALID_ARG : ESP_ERR_NOT_SUPPORTED;
+}
+esp_err_t cerberus_s3_ble_scanner_passive_get_watch_status(uint64_t epoch,
+    cerberus_watch_scan_status_payload_t *status)
+{
+    if (status) memset(status, 0, sizeof(*status));
+    return !epoch || !status ? ESP_ERR_INVALID_ARG : ESP_ERR_NOT_SUPPORTED;
+}
+esp_err_t cerberus_s3_ble_scanner_passive_get_watch_result(uint64_t epoch,uint8_t index,
+    cerberus_watch_observation_t *result)
+{
+    (void)index;
+    if (result) memset(result, 0, sizeof(*result));
+    return !epoch || !result ? ESP_ERR_INVALID_ARG : ESP_ERR_NOT_SUPPORTED;
+}
+esp_err_t cerberus_s3_ble_scanner_passive_get_watch_detailed_result(uint64_t epoch,uint8_t index,
+    cerberus_watch_observation_t *result,cerberus_watch_receive_timing_t *timing,
+    sentinel_watch_motion_t *motion,cerberus_watch_receive_timing_t *motion_timing)
+{
+    (void)index;
+    if (result) memset(result, 0, sizeof(*result));
+    if (timing) memset(timing, 0, sizeof(*timing));
+    if (motion) memset(motion, 0, sizeof(*motion));
+    if (motion_timing) memset(motion_timing, 0, sizeof(*motion_timing));
+    return !epoch || !result || !timing || !motion || !motion_timing ? ESP_ERR_INVALID_ARG : ESP_ERR_NOT_SUPPORTED;
+}
+esp_err_t cerberus_s3_ble_scanner_passive_get_activity(uint64_t epoch,
+    cerberus_ble_activity_payload_t *status)
+{
+    if (status) memset(status, 0, sizeof(*status));
+    return !epoch || !status ? ESP_ERR_INVALID_ARG : ESP_ERR_NOT_SUPPORTED;
+}
+esp_err_t cerberus_s3_ble_scanner_passive_copy_wardrive(uint64_t epoch, uint8_t count,
+    cerberus_c5_ble_result_t *rows, cerberus_s3_ble_wardrive_evidence_t *evidence,
+    size_t capacity, cerberus_s3_ble_passive_state_t *state)
+{
+    clear_wardrive_copy(rows, evidence, capacity);
+    if (state) memset(state, 0, sizeof(*state));
+    return !epoch || !state || capacity > CERBERUS_BLE_SCAN_MAX_RESULTS || count > capacity ||
+        (capacity && (!rows || !evidence)) ? ESP_ERR_INVALID_ARG : ESP_ERR_NOT_SUPPORTED;
+}
 esp_err_t cerberus_s3_ble_scanner_discovery_diagnostics(cerberus_s3_ble_discovery_meta_t *meta)
 {
     if (!meta) return ESP_ERR_INVALID_ARG;
@@ -856,6 +1690,22 @@ esp_err_t cerberus_s3_ble_scanner_start_discovery(cerberus_s3_ble_filter_t famil
 {
     (void)family;
     (void)previous;
+    if (meta) memset(meta, 0, sizeof(*meta));
+    return ESP_ERR_NOT_SUPPORTED;
+}
+esp_err_t cerberus_s3_ble_scanner_start_reacquire(const uint8_t address[6],
+    uint64_t previous, cerberus_s3_ble_discovery_meta_t *meta)
+{
+    (void)address; (void)previous;
+    if (meta) memset(meta, 0, sizeof(*meta));
+    return ESP_ERR_NOT_SUPPORTED;
+}
+esp_err_t cerberus_s3_ble_scanner_copy_reacquire(uint64_t epoch,
+    cerberus_s3_ble_discovery_record_t records[CERBERUS_S3_BLE_REACQUIRE_CAPACITY],
+    cerberus_s3_ble_discovery_meta_t *meta)
+{
+    (void)epoch;
+    if (records) memset(records, 0, CERBERUS_S3_BLE_REACQUIRE_CAPACITY * sizeof(*records));
     if (meta) memset(meta, 0, sizeof(*meta));
     return ESP_ERR_NOT_SUPPORTED;
 }
@@ -943,13 +1793,40 @@ esp_err_t cerberus_s3_ble_scanner_get_watch_detailed_result(uint8_t generation,
 }
 esp_err_t cerberus_s3_ble_scanner_get_activity(uint8_t generation, cerberus_ble_activity_payload_t *status)
 { (void)generation; (void)status; return ESP_ERR_NOT_SUPPORTED; }
+esp_err_t cerberus_s3_ble_scanner_get_watch_profiled_result(uint8_t generation,
+    uint8_t index, uint64_t expected_capture_epoch, cerberus_watch_observation_t *result,
+    cerberus_watch_receive_timing_t *timing, sentinel_watch_motion_t *motion,
+    cerberus_watch_receive_timing_t *motion_timing, cerberus_watch_profile_evidence_t *profile)
+{
+    (void)generation; (void)index; (void)expected_capture_epoch;
+    if (result) memset(result, 0, sizeof(*result));
+    if (timing) memset(timing, 0, sizeof(*timing));
+    if (motion) memset(motion, 0, sizeof(*motion));
+    if (motion_timing) memset(motion_timing, 0, sizeof(*motion_timing));
+    if (profile) memset(profile, 0, sizeof(*profile));
+    return ESP_ERR_NOT_SUPPORTED;
+}
 esp_err_t cerberus_s3_ble_scanner_track_begin(const uint8_t address[6], uint8_t address_type)
 { (void)address; (void)address_type; return ESP_ERR_NOT_SUPPORTED; }
+esp_err_t cerberus_s3_ble_scanner_track_start(cerberus_s3_ble_track_state_t *state)
+{ if (!state) return ESP_ERR_INVALID_ARG; memset(state, 0, sizeof(*state)); return ESP_ERR_NOT_SUPPORTED; }
+esp_err_t cerberus_s3_ble_scanner_track_get_state(cerberus_s3_ble_track_state_t *state)
+{ if (!state) return ESP_ERR_INVALID_ARG; memset(state, 0, sizeof(*state)); return ESP_ERR_NOT_SUPPORTED; }
+esp_err_t cerberus_s3_ble_scanner_track_stop(cerberus_s3_ble_track_state_t *state)
+{ if (!state) return ESP_ERR_INVALID_ARG; memset(state, 0, sizeof(*state)); return ESP_ERR_NOT_SUPPORTED; }
+esp_err_t cerberus_s3_ble_scanner_track_release(void) { return ESP_ERR_NOT_SUPPORTED; }
 void cerberus_s3_ble_scanner_track_end(void) { }
 esp_err_t cerberus_s3_ble_scanner_track_status(cerberus_s3_ble_track_status_t *status)
 { if (status) memset(status, 0, sizeof(*status)); return ESP_ERR_NOT_SUPPORTED; }
 esp_err_t cerberus_s3_ble_scanner_analyzer_begin(void)
 { return ESP_ERR_NOT_SUPPORTED; }
+esp_err_t cerberus_s3_ble_scanner_analyzer_start(cerberus_s3_ble_analyzer_state_t *state)
+{ if (!state) return ESP_ERR_INVALID_ARG; memset(state, 0, sizeof(*state)); return ESP_ERR_NOT_SUPPORTED; }
+esp_err_t cerberus_s3_ble_scanner_analyzer_get_state(cerberus_s3_ble_analyzer_state_t *state)
+{ if (!state) return ESP_ERR_INVALID_ARG; memset(state, 0, sizeof(*state)); return ESP_ERR_NOT_SUPPORTED; }
+esp_err_t cerberus_s3_ble_scanner_analyzer_stop(cerberus_s3_ble_analyzer_state_t *state)
+{ if (!state) return ESP_ERR_INVALID_ARG; memset(state, 0, sizeof(*state)); return ESP_ERR_NOT_SUPPORTED; }
+esp_err_t cerberus_s3_ble_scanner_analyzer_release(void) { return ESP_ERR_NOT_SUPPORTED; }
 void cerberus_s3_ble_scanner_analyzer_end(void) { }
 esp_err_t cerberus_s3_ble_scanner_analyzer_status(cerberus_ble_analyzer_view_t *view)
 { if (view) memset(view, 0, sizeof(*view)); return ESP_ERR_NOT_SUPPORTED; }

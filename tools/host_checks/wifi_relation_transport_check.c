@@ -103,6 +103,16 @@ static void spi_request_response(const cerberus_spi_frame_t *request,void *disca
     now_us+=1000;
 }
 
+/* Protocol-only adapter; production READY/software deadlines are exercised by
+ * check_c5_ready_handshake.py with the actual bounded exchange. */
+static esp_err_t spi_request_response_passive(const void *request, void *discarded,
+    void *response, size_t size, uint32_t deadline_ms)
+{
+    (void)deadline_ms;
+    spi_request_response(request, discarded, response, size);
+    return ESP_OK;
+}
+
 #include "relation_peer_impl.h"
 #include "c5_wifi_relation_link_impl.h"
 

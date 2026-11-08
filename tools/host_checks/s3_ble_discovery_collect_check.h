@@ -12,6 +12,131 @@ static void discovery_emit(cerberus_s3_ble_snapshot_t *bank, uint8_t identity,
     cerberus_s3_ble_snapshot_observe(bank, &report, now);
 }
 
+static void check_raw_matched_responses(void)
+{
+    const uint8_t original[] = {3,3,0x44,0xfd};
+    const uint8_t response[] = {4,9,'r','s','p'};
+    const uint8_t malformed[] = {6,9,'x'};
+    uint8_t long_response[255] = {254,0x30};
+    uint8_t long_original[40] = {3,3,0x44,0xfd,35,0x30};
+    static cerberus_s3_ble_snapshot_t bank;
+    static cerberus_s3_ble_binding_cache_t bindings;
+    for (unsigned family = 0; family < 2; ++family) {
+        const cerberus_s3_ble_filter_t filter = family ? CERBERUS_S3_BLE_FILTER_FIND_MY : CERBERUS_S3_BLE_FILTER_ALL;
+        D_CHECK(cerberus_s3_ble_snapshot_begin_discovery(&bank, 19, 0, true, 901, filter,
+            family ? &bindings : NULL));
+        cerberus_s3_ble_report_t report = {.address = {1,2,3,4,5,6}, .address_type=1,
+            .rssi=-80, .event_type=0, .complete=true, .data=original, .length=sizeof(original)};
+        cerberus_s3_ble_snapshot_observe(&bank, &report, 0);
+        cerberus_s3_ble_record_t *record = &bank.records[0];
+        cerberus_s3_ble_discovery_evidence_t *e = &record->focus.discovery;
+        D_CHECK(bank.status.stored_count == 1 && e->advertisement_sequence == 1 &&
+            e->raw_advertisement_sequence == 1 && cerberus_s3_ble_response_storage_valid(e));
+        report.scan_response=true; report.event_type=4; report.rssi=-10;
+        report.data=response; report.length=sizeof(response);
+        cerberus_s3_ble_snapshot_observe(&bank, &report, 0);
+        D_CHECK(e->scan_response_sequence == 2 && e->scan_response_observed_ms == 0 &&
+            e->scan_response.length == sizeof(response) && e->scan_response.original_length == sizeof(response) &&
+            e->scan_response.event_type == 4 && !e->scan_response.flags &&
+            !memcmp(e->scan_response.data, response, sizeof(response)) && cerberus_s3_ble_response_storage_valid(e));
+        D_CHECK(record->rssi == -80 && record->reports_seen == 1 && record->last_advertisement_ms == 0 &&
+            record->advertisement_length == sizeof(original) &&
+            !memcmp(record->advertisement, original, sizeof(original)));
+        cerberus_s3_ble_record_t frozen = *record;
+        for (unsigned bad = 0; bad < 9; ++bad) {
+            cerberus_s3_ble_report_t rejected = report;
+            uint32_t now = 1;
+            if (bad == 0) { rejected.data=malformed; rejected.length=sizeof(malformed); }
+            if (bad == 1) rejected.complete=false;
+            if (bad == 2) rejected.address_type=2;
+            if (bad == 3) rejected.address[0]=2;
+            if (bad == 4) { rejected.sid_valid=true; rejected.sid=1; rejected.event_type=0; }
+            if (bad == 5) rejected.event_type=2;
+            if (bad == 6) now=2001;
+            if (bad == 7) rejected.data=NULL;
+            if (bad == 8) rejected.length=0;
+            cerberus_s3_ble_snapshot_observe(&bank, &rejected, now);
+            D_CHECK(!memcmp(record, &frozen, sizeof(frozen)));
+        }
+        report.data=long_response; report.length=sizeof(long_response);
+        cerberus_s3_ble_snapshot_observe(&bank, &report, 1);
+        D_CHECK(e->scan_response.length == 31 && e->scan_response.original_length == 255 &&
+            e->scan_response.flags == CERBERUS_BLE_ADVERTISEMENT_TRUNCATED &&
+            !memcmp(e->scan_response.data,long_response,31) && e->scan_response_observed_ms == 1 &&
+            cerberus_s3_ble_response_storage_valid(e));
+        D_CHECK(record->last_advertisement_ms == 0 && record->reports_seen == 1 && record->rssi == -80);
+        /* A partial newer original at the same source millisecond clears the
+         * separate response while retaining the old raw ADV sequence/time. */
+        report.scan_response=false; report.event_type=0; report.complete=false;
+        report.data=original; report.length=sizeof(original);
+        cerberus_s3_ble_snapshot_observe(&bank, &report, 1);
+        D_CHECK(!(e->flags & CERBERUS_S3_BLE_EVIDENCE_RESPONSE_VALID) &&
+            e->raw_advertisement_sequence == 1 && e->advertisement_sequence > 2 &&
+            record->last_advertisement_ms == 0 && cerberus_s3_ble_response_storage_valid(e));
+        report.complete=true; report.data=malformed; report.length=sizeof(malformed);
+        cerberus_s3_ble_snapshot_observe(&bank, &report, 1);
+        D_CHECK(!(e->flags & CERBERUS_S3_BLE_EVIDENCE_ADV_VALID) &&
+            e->raw_advertisement_sequence == e->advertisement_sequence &&
+            record->advertisement_flags == CERBERUS_BLE_ADVERTISEMENT_MALFORMED &&
+            cerberus_s3_ble_response_storage_valid(e));
+        report.data=long_original; report.length=sizeof(long_original);
+        report.sid_valid=true; report.sid=4;
+        cerberus_s3_ble_snapshot_observe(&bank, &report, 2);
+        D_CHECK(record->advertisement_flags == CERBERUS_BLE_ADVERTISEMENT_TRUNCATED &&
+            !(e->flags & CERBERUS_S3_BLE_EVIDENCE_RAW_COMPLETE) && (e->flags & CERBERUS_S3_BLE_EVIDENCE_ADV_VALID));
+        report.scan_response=true; report.event_type=3; report.data=response; report.length=sizeof(response);
+        cerberus_s3_ble_snapshot_observe(&bank, &report, 3);
+        D_CHECK(e->scan_response.length == sizeof(response) && !e->scan_response.flags &&
+            e->scan_response.event_type == 3 && cerberus_s3_ble_response_storage_valid(e));
+        frozen=*record; report.sid=5;
+        cerberus_s3_ble_snapshot_observe(&bank, &report, 4);
+        D_CHECK(!memcmp(record,&frozen,sizeof(frozen)));
+        /* Reusing the same byte generation in a new full epoch starts with
+         * canonical empty response bytes; no retained source is borrowed. */
+        D_CHECK(cerberus_s3_ble_snapshot_begin_discovery(&bank,19,UINT32_MAX-2,true,902,filter,
+            family ? &bindings : NULL));
+        report.sid=4; report.scan_response=false; report.event_type=0; report.data=original; report.length=sizeof(original);
+        cerberus_s3_ble_snapshot_observe(&bank,&report,UINT32_MAX-1);
+        report.scan_response=true; report.event_type=0; report.data=response; report.length=sizeof(response);
+        cerberus_s3_ble_snapshot_observe(&bank,&report,0);
+        D_CHECK(e->advertisement_sequence == 1 && e->raw_advertisement_sequence == 1 &&
+            e->scan_response_sequence == 2 && e->scan_response_observed_ms == 0 &&
+            cerberus_s3_ble_response_storage_valid(e));
+        frozen=*record;
+        cerberus_s3_ble_snapshot_observe(&bank,&report,UINT32_MAX);
+        D_CHECK(!memcmp(record,&frozen,sizeof(frozen)));
+        D_CHECK(cerberus_s3_ble_snapshot_begin_discovery(&bank,19,1000,false,903,filter,
+            family ? &bindings : NULL));
+        report.sid_valid=false;report.sid=0;report.scan_response=false;report.event_type=0;
+        report.data=original;report.length=sizeof(original);
+        cerberus_s3_ble_snapshot_observe(&bank,&report,1000);
+        report.scan_response=true;report.event_type=4;
+        uint8_t sized[255]={0};
+        for (unsigned length=255;length>0;--length) {
+            memset(sized,0,sizeof(sized));sized[0]=(uint8_t)(length-1);
+            if(length>1)sized[1]=0x30;
+            report.data=sized;report.length=length;
+            cerberus_s3_ble_snapshot_observe(&bank,&report,1000);
+            D_CHECK(e->scan_response.original_length==length &&
+                e->scan_response.length==(length>31?31:length) &&
+                e->scan_response.flags==(length>31?CERBERUS_BLE_ADVERTISEMENT_TRUNCATED:0) &&
+                !memcmp(e->scan_response.data,sized,e->scan_response.length) &&
+                cerberus_s3_ble_response_storage_valid(e));
+        }
+        /* Every callback shares one millisecond; only the explicit original
+         * sequence distinguishes the retained ADV from this partial one. */
+        report.scan_response=false;report.event_type=0;report.complete=false;
+        report.data=original;report.length=sizeof(original);
+        cerberus_s3_ble_snapshot_observe(&bank,&report,1000);
+        D_CHECK(e->advertisement_observed_ms==record->last_advertisement_ms &&
+            e->raw_advertisement_sequence==1 && e->advertisement_sequence==257 &&
+            !(e->flags&CERBERUS_S3_BLE_EVIDENCE_RESPONSE_VALID) &&
+            cerberus_s3_ble_response_storage_valid(e));
+    }
+    printf("Matched response raw producer checks passed; evidence=%zu record=%zu snapshot=%zu bindings=%zu bytes\n",
+        sizeof(cerberus_s3_ble_discovery_evidence_t),sizeof(cerberus_s3_ble_record_t),sizeof(bank),sizeof(bindings));
+}
+
 static void check_focused_discovery_collect(void)
 {
     static const uint8_t ordinary[] = {2,1,6};

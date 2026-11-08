@@ -14,6 +14,9 @@ typedef struct {
     sentinel_watch_motion_t motion[CERBERUS_WATCH_MAX_OBSERVATIONS];
     uint64_t motion_us[CERBERUS_WATCH_MAX_OBSERVATIONS];
     uint16_t motion_valid; /* Own Location callback, distinct from source reports. */
+    sentinel_watch_profile_t profiles[CERBERUS_WATCH_MAX_OBSERVATIONS];
+    uint64_t profile_us[CERBERUS_WATCH_MAX_OBSERVATIONS][SENTINEL_WATCH_PROFILE_GROUPS];
+    uint8_t profile_valid[CERBERUS_WATCH_MAX_OBSERVATIONS];
     uint8_t protected_transport; /* 0 disables protection; Wi-Fi only. */
     uint8_t protected_address[6];
 } cerberus_watch_capture_t;
@@ -62,6 +65,12 @@ bool cerberus_watch_capture_get_timing(const cerberus_watch_capture_t *capture,
 bool cerberus_watch_capture_get_motion(const cerberus_watch_capture_t *capture,
     uint8_t radio, uint8_t generation, uint8_t index, uint64_t now_us,
     sentinel_watch_motion_t *motion, cerberus_watch_scan_timing_payload_t *timing);
+/* COMPLETE/exact-source copy under the caller's radio lock. Each group keeps
+ * its own callback anchor; unrelated messages never refresh it. Ages round
+ * upward and saturate to UINT32_MAX (unknown). Failure clears both outputs. */
+bool cerberus_watch_capture_get_profile(const cerberus_watch_capture_t *capture,
+    uint8_t radio, uint8_t generation, uint8_t index, uint64_t now_us,
+    sentinel_watch_profile_t *profile, sentinel_watch_profile_timing_t *timing);
 bool cerberus_watch_capture_get_chunk(const cerberus_watch_capture_t *capture,
     uint8_t radio, uint8_t generation, uint8_t index, uint8_t chunk,
     cerberus_watch_scan_data_payload_t *out);

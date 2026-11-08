@@ -52,6 +52,7 @@ static void row(unsigned index, unsigned identity, uint8_t type, uint64_t time, 
     d->address_type = type;
     d->generation = r->generation;
     d->advertisement_sequence = (uint32_t)(index + 1U);
+    d->raw_advertisement_sequence = d->advertisement_sequence;
     d->advertisement_observed_ms = (uint32_t)time;
     d->flags = CERBERUS_S3_BLE_EVIDENCE_ADV_COMPLETE | CERBERUS_S3_BLE_EVIDENCE_ADV_VALID |
         CERBERUS_S3_BLE_EVIDENCE_RAW_COMPLETE;
@@ -61,6 +62,16 @@ static void row(unsigned index, unsigned identity, uint8_t type, uint64_t time, 
         r->focus.ibeacon_sequence = d->advertisement_sequence;
         r->focus.ibeacon_observed_ms = (uint32_t)time;
     }
+}
+
+static void response(unsigned index, uint32_t sequence, uint32_t time)
+{
+    cerberus_s3_ble_discovery_evidence_t *d = &bank.records[index].focus.discovery;
+    d->flags |= CERBERUS_S3_BLE_EVIDENCE_RESPONSE_VALID;
+    d->scan_response_sequence = sequence;
+    d->scan_response_observed_ms = time;
+    d->scan_response = (cerberus_s3_ble_scan_response_t){.data={2,1,6},
+        .length=3,.original_length=3,.event_type=4};
 }
 
 static int find(unsigned identity, uint8_t type)
@@ -110,9 +121,7 @@ static void lifecycle(void)
     /* A new current response cannot refresh the original raw observation. */
     bank.meta.revision = 2;
     bank.records[0].focus.discovery.findmy_advertisement.bits = 0;
-    bank.records[0].focus.discovery.flags |= CERBERUS_S3_BLE_EVIDENCE_RESPONSE_VALID;
-    bank.records[0].focus.discovery.scan_response_sequence = 3;
-    bank.records[0].focus.discovery.scan_response_observed_ms = 20;
+    response(0,3,20);
     bank.records[0].focus.discovery.findmy_scan_response.bits = CERBERUS_BLE_FINDMY_HINT_DULT;
     apply();
     CHECK(inventory.entries[0].original_source_ms == 0 && inventory.entries[0].record.observed_ms == 0);
@@ -125,6 +134,9 @@ static void lifecycle(void)
     bank.meta.status.stored_count = 1;
     bank.records[0].focus.category_bits = 0;
     bank.records[0].focus.discovery.flags = 0;
+    bank.records[0].focus.discovery.scan_response_sequence = 0;
+    bank.records[0].focus.discovery.scan_response_observed_ms = 0;
+    memset(&bank.records[0].focus.discovery.scan_response,0,sizeof(bank.records[0].focus.discovery.scan_response));
     apply();
     CHECK(inventory.count == 1 && find(10, 0) < 0 && find(10, 1) == 0);
     CHECK(!inventory.current_mask);
@@ -323,6 +335,91 @@ static void pages(void)
     for (size_t i = 0; i < sizeof(output); ++i) CHECK(((uint8_t *)&output)[i] == 0);
 }
 
+static cerberus_s3_ble_response_state_t response_state(const cerberus_s3_ble_discovery_record_t *r,
+    uint64_t original, uint64_t ceiling, uint64_t *source)
+{
+    return cerberus_s3_ble_discovery_response(&r->focus,&r->advertisement,r->generation,
+        r->observed_ms,original,ceiling,source);
+}
+
+static void matched_response_history(void)
+{
+    const uint64_t origins[] = {0,UINT64_C(0xfffffffe),UINT64_MAX-2000};
+    for (unsigned n=0;n<sizeof(origins)/sizeof(origins[0]);++n) {
+        uint64_t original=origins[n], source=99;
+        CHECK(cerberus_s3_ble_discovery_inventory_init(&inventory,CERBERUS_S3_BLE_FILTER_ALL));
+        begin(n+1,1,original,original+2000,CERBERUS_S3_BLE_FILTER_ALL,1);
+        row(0,9,1,original,0);
+        CHECK(response_state(&bank.records[0],original,original+2000,&source)==CERBERUS_S3_BLE_RESPONSE_NONE && !source);
+        response(0,2,(uint32_t)(original+2000));
+        apply();
+        CHECK(response_state(&bank.records[0],original,original+2000,&source)==CERBERUS_S3_BLE_RESPONSE_PRESENT && source==original+2000);
+        CHECK(inventory.entries[0].original_source_ms==original && inventory.entries[0].source_now_ms==original+2000);
+        cerberus_s3_ble_discovery_entry_t selected;
+        CHECK(cerberus_s3_ble_discovery_inventory_copy(&inventory,0,&selected));
+        saved=inventory;
+        CHECK(cerberus_s3_ble_discovery_inventory_apply(&inventory,&bank)==CERBERUS_BLE_INVENTORY_DUPLICATE);
+        CHECK(!memcmp(&saved,&inventory,sizeof(saved)));
+        CHECK(response_state(&selected.record,selected.original_source_ms,selected.source_now_ms,&source)==CERBERUS_S3_BLE_RESPONSE_PRESENT && source==original+2000);
+#define RESPONSE_BAD(change) do { damaged=bank; change; source=99; \
+    CHECK(response_state(&damaged.records[0],original,original+2000,&source)==CERBERUS_S3_BLE_RESPONSE_UNKNOWN && !source); reject(); } while(0)
+        RESPONSE_BAD(damaged.records[0].focus.discovery.raw_advertisement_sequence++);
+        RESPONSE_BAD(damaged.records[0].focus.discovery.scan_response_sequence=1);
+        RESPONSE_BAD(damaged.records[0].focus.discovery.scan_response_observed_ms++);
+        RESPONSE_BAD(damaged.records[0].focus.discovery.scan_response.length=32);
+        RESPONSE_BAD(damaged.records[0].focus.discovery.scan_response.original_length=4);
+        RESPONSE_BAD(damaged.records[0].focus.discovery.scan_response.flags=CERBERUS_BLE_ADVERTISEMENT_MALFORMED);
+        RESPONSE_BAD(damaged.records[0].focus.discovery.scan_response.event_type=0);
+        RESPONSE_BAD(damaged.records[0].focus.discovery.scan_response.data[30]=1);
+        RESPONSE_BAD(damaged.records[0].focus.discovery.flags &= ~CERBERUS_S3_BLE_EVIDENCE_RESPONSE_VALID);
+        RESPONSE_BAD(damaged.records[0].focus.discovery.flags |= CERBERUS_S3_BLE_EVIDENCE_SID_INVALID);
+        RESPONSE_BAD(damaged.records[0].advertisement.flags=CERBERUS_BLE_ADVERTISEMENT_MALFORMED);
+        RESPONSE_BAD(damaged.records[0].generation++);
+        RESPONSE_BAD(damaged.records[0].advertisement.address_type=0);
+        RESPONSE_BAD(damaged.records[0].advertisement.address[0]++);
+        RESPONSE_BAD(damaged.records[0].observed_ms++);
+#undef RESPONSE_BAD
+        CHECK(response_state(&bank.records[0],original,original+1999,&source)==CERBERUS_S3_BLE_RESPONSE_UNKNOWN);
+        bank.records[0].focus.discovery.flags |= CERBERUS_S3_BLE_EVIDENCE_SID_VALID;
+        bank.records[0].focus.discovery.sid=15;
+        bank.records[0].focus.discovery.scan_response.event_type=3;
+        CHECK(response_state(&bank.records[0],original,original+2000,&source)==CERBERUS_S3_BLE_RESPONSE_PRESENT);
+        CHECK(cerberus_s3_ble_discovery_bank_valid(&bank));
+        /* A valid complete extended original may have only a retained prefix. */
+        bank.records[0].focus.discovery.flags &= ~CERBERUS_S3_BLE_EVIDENCE_RAW_COMPLETE;
+        bank.records[0].advertisement.flags=CERBERUS_BLE_ADVERTISEMENT_TRUNCATED;
+        bank.records[0].advertisement.length=31;
+        bank.records[0].focus.discovery.scan_response.original_length=255;
+        bank.records[0].focus.discovery.scan_response.length=31;
+        bank.records[0].focus.discovery.scan_response.flags=CERBERUS_BLE_ADVERTISEMENT_TRUNCATED;
+        CHECK(cerberus_s3_ble_discovery_bank_valid(&bank));
+        CHECK(response_state(&bank.records[0],original,original+2000,&source)==CERBERUS_S3_BLE_RESPONSE_PRESENT && source==original+2000);
+        /* The frozen selected copy keeps its own bytes and source clock. */
+        CHECK(selected.record.focus.discovery.scan_response.original_length==3 &&
+            selected.record.focus.discovery.scan_response.flags==0);
+    }
+    CHECK(cerberus_s3_ble_discovery_inventory_init(&inventory,CERBERUS_S3_BLE_FILTER_ALL));
+    begin(9,1,0,0,CERBERUS_S3_BLE_FILTER_ALL,1);row(0,1,0,0,0);response(0,2,0);apply();
+    uint64_t source=99;
+    CHECK(response_state(&bank.records[0],0,0,&source)==CERBERUS_S3_BLE_RESPONSE_PRESENT && source==0);
+    /* New partial original at the same millisecond keeps old raw evidence,
+     * but sequence mismatch and invalid source make response unavailable. */
+    cerberus_s3_ble_discovery_evidence_t *d=&bank.records[0].focus.discovery;
+    d->advertisement_sequence=3; d->flags=0;d->scan_response_sequence=0;d->scan_response_observed_ms=0;
+    memset(&d->scan_response,0,sizeof(d->scan_response));bank.meta.revision++;apply();
+    CHECK(response_state(&bank.records[0],0,0,&source)==CERBERUS_S3_BLE_RESPONSE_UNKNOWN);
+    /* Even superficially valid restored flags cannot relabel that old raw. */
+    d->flags=CERBERUS_S3_BLE_EVIDENCE_ADV_COMPLETE|CERBERUS_S3_BLE_EVIDENCE_ADV_VALID|CERBERUS_S3_BLE_EVIDENCE_RAW_COMPLETE;
+    CHECK(response_state(&bank.records[0],0,0,&source)==CERBERUS_S3_BLE_RESPONSE_UNKNOWN);
+    d->raw_advertisement_sequence=3;
+    CHECK(response_state(&bank.records[0],0,0,&source)==CERBERUS_S3_BLE_RESPONSE_NONE);
+    response(0,4,1);
+    CHECK(response_state(&bank.records[0],UINT64_MAX-0xffffffffU,UINT64_MAX,&source)==CERBERUS_S3_BLE_RESPONSE_PRESENT);
+    bank.records[0].observed_ms=UINT32_MAX;d->advertisement_observed_ms=UINT32_MAX;d->scan_response_observed_ms=0;
+    CHECK(response_state(&bank.records[0],UINT64_MAX,UINT64_MAX,&source)==CERBERUS_S3_BLE_RESPONSE_UNKNOWN);
+    damaged=bank;damaged.meta.started_ms=0;damaged.meta.source_now_ms=UINT64_C(1)<<32;reject();
+}
+
 int main(void)
 {
     lifecycle();
@@ -330,6 +427,7 @@ int main(void)
     clocks_and_generations();
     capacity_and_order();
     pages();
+    matched_response_history();
     printf("BLE discovery inventory: %u checks passed; inventory=%zu entry=%zu bytes\n", checks,
         sizeof(inventory), sizeof(cerberus_s3_ble_discovery_entry_t));
     return 0;

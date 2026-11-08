@@ -8,10 +8,17 @@ import sys
 root = Path(__file__).resolve().parents[1]
 scanner = (root / "s3_main/main/s3_ble_scanner.c").read_text(encoding="utf-8")
 ui = (root / "s3_main/main/ui.c").read_text(encoding="utf-8")
-assert scanner.count("cerberus_s3_ble_tracker_observe(&tracker, report.address,") == 2
+assert scanner.count("track_report_locked(&report, observed_ms);") == 2
+assert scanner.count("cerberus_s3_ble_tracker_observe(&tracker, report->address,") == 1
+assert "!track_bound_locked() || !track_state.receiving || track_state.error || cancel_requested" in scanner
 assert "scan_epoch == (uint32_t)(uintptr_t)arg" in scanner
 assert "cerberus_s3_ble_tracker_host_reset(&tracker)" in scanner
-assert "cerberus_s3_ble_scanner_track_end();" in ui
+fox = ui[ui.index("static void ble_fox_hunt_finish_exit("):ui.index("static bool ble_sound_terminal(")]
+assert "cerberus_s3_ble_scanner_track_release();" in fox
+for operation in ("start", "stop", "get_status"):
+    assert f"cerberus_s3_ble_scanner_{operation}(" not in fox
+for operation in ("start", "stop", "get_state"):
+    assert f"cerberus_s3_ble_scanner_track_{operation}(" in fox
 assert "ble_fox_hunt_tick((uint32_t)now_ms, screen_asleep);" in ui
 assert "ble_scan_status.state == CERBERUS_BLE_SCAN_RUNNING &&" in ui
 

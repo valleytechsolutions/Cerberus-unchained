@@ -12,7 +12,7 @@ pieces = []
 for first, after in (
     ("static void scan_observation_begin(void)", "static void reset_defense_capture(void)"),
     ("static void finish_scan(esp_err_t scan_error)", "esp_err_t cerberus_wifi_watch_get_status("),
-    ("esp_err_t cerberus_wifi_scanner_start(void)", "void cerberus_wifi_scanner_get_status("),
+    ("static esp_err_t wifi_scanner_start_band_internal(", "void cerberus_wifi_scanner_get_status("),
     ("esp_err_t cerberus_wifi_scanner_get_result(", "esp_err_t cerberus_wifi_scanner_get_ssid_chunk("),
 ):
     start = source.index(first)

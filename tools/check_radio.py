@@ -36,6 +36,7 @@ typedef int wifi_second_chan_t;
 #define WIFI_PHY_RATE_6M 6
 #define MALLOC_CAP_INTERNAL 1
 #define MALLOC_CAP_8BIT 2
+#define MALLOC_CAP_SPIRAM 4
 #define portMAX_DELAY 0xffffffffU
 #define pdMS_TO_TICKS(x) (x)
 #define pdPASS 1
@@ -47,6 +48,7 @@ void vTaskDelete(void*);
 void vTaskDelay(unsigned);
 int64_t esp_timer_get_time(void);
 size_t heap_caps_get_free_size(unsigned);
+size_t heap_caps_get_minimum_free_size(unsigned);
 void esp_fill_random(void*,size_t);
 esp_err_t esp_wifi_get_band_mode(wifi_band_mode_t*);
 esp_err_t esp_wifi_get_channel(uint8_t*,wifi_second_chan_t*);

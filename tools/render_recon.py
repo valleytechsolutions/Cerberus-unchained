@@ -15,6 +15,9 @@ exe = out / "recon-render.exe"
 subprocess.run([sys.executable, "-m", "ziglang", "cc", "-std=c11", "-O1", "-Wall", "-Wextra", "-Werror",
     "-I", str(ROOT / "tools/host_checks/stubs"), "-I", str(ROOT / "s3_main/main"), "-I", str(out), "-I", str(ROOT / "shared"),
     str(ROOT / "tools/host_checks/recon_render.c"), str(ROOT / "s3_main/main/sentinel_watch_view.c"),
+    str(ROOT / "s3_main/main/sentinel_scan_session.c"),
+    str(ROOT / "s3_main/main/recon_inventory.c"), str(ROOT / "s3_main/main/recon_journal.c"),
+    str(ROOT / "s3_main/main/sentinel_watch_detect.c"),
     str(ROOT / "s3_main/main/sentinel_watch.c"), "-o", str(exe)], check=True)
 subprocess.run([str(exe), str(out / "recon")], check=True)
 def chunk(kind, payload):

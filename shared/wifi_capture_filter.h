@@ -8,3 +8,6 @@
  * complete 802.11 bytes, excluding radiotap and FCS. */
 bool cerberus_wifi_capture_filter_match(uint8_t mode_mask,bool filter_bssid,
     const uint8_t bssid[6],const uint8_t *frame,size_t length);
+/* Bounded address-layout lookup only; the family gate/parser still validates
+ * the frame. No BSSID exists in control or four-address WDS frames. */
+const uint8_t *cerberus_wifi_capture_filter_bssid(const uint8_t *frame,size_t length);

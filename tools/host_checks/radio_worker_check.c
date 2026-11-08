@@ -4,6 +4,7 @@
 #include <assert.h>
 #include <setjmp.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include "fake_worker_platform.h"
 #include "ieee802154_scanner.c"
@@ -15,6 +16,10 @@ static unsigned mutexes, queues;
 static TickType_t ticks;
 static bool fail_queue, fail_task, fail_enable, fail_channel, fail_sleep, busy_wifi, busy_test;
 static bool inject_overlap, injected,busy_stations;
+void *heap_caps_calloc(size_t n,size_t size,unsigned caps){assert(caps==3U);return calloc(n,size);}
+void heap_caps_free(void *p){free(p);}
+uint32_t esp_random(void){return 0x13456789U;}
+int64_t esp_timer_get_time(void){return (int64_t)ticks*1000;}
 
 SemaphoreHandle_t xSemaphoreCreateMutex(void){++mutexes;return (void *)1;}
 void vSemaphoreDelete(SemaphoreHandle_t h){assert(h&&mutexes);--mutexes;}
@@ -48,6 +53,7 @@ esp_err_t esp_ieee802154_sleep(void){return fail_sleep?ESP_FAIL:ESP_OK;}
 esp_err_t esp_ieee802154_set_channel(uint8_t c){assert(c>=11&&c<=26);return fail_channel?ESP_FAIL:ESP_OK;}
 esp_err_t esp_ieee802154_set_coordinator(bool v){assert(!v);return ESP_OK;}
 esp_err_t esp_ieee802154_set_promiscuous(bool v){(void)v;return ESP_OK;}
+esp_err_t esp_ieee802154_set_rx_when_idle(bool v){(void)v;return ESP_OK;}
 esp_err_t esp_ieee802154_receive(void){++receives;return ESP_OK;}
 esp_err_t esp_ieee802154_receive_handle_done(uint8_t *f){(void)f;return ESP_OK;}
 esp_err_t esp_ieee802154_energy_detect(uint32_t n){assert(n==3125);++detects;esp_ieee802154_energy_detect_done(-77);return ESP_OK;}

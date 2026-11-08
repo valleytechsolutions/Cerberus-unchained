@@ -6,6 +6,7 @@
  * receive-callback age bounds are separate; neither dates individual fields. */
 #include "remote_id_inventory.h"
 #include "sentinel_watch_protocol.h"
+#include "sentinel_watch_profile.h"
 #include "display.h"
 #include <inttypes.h>
 #include <stdio.h>
@@ -22,7 +23,8 @@ typedef enum {
 typedef struct {
     cerberus_remote_id_ui_state_t state;
     bool detail, start_available, stop_available, back_available;
-    bool follow_available, follow_enabled, motion_detail;
+    bool follow_available, follow_enabled, motion_detail, message_detail, private_values;
+    uint8_t message_page;
     uint64_t now_ms;
     cerberus_remote_id_page_t page;
     cerberus_remote_id_selection_t selection;
@@ -45,6 +47,9 @@ typedef enum {
     CERBERUS_REMOTE_ID_UI_ACTION_UNFOLLOW,
     CERBERUS_REMOTE_ID_UI_ACTION_MOTION,
     CERBERUS_REMOTE_ID_UI_ACTION_DETAILS,
+    CERBERUS_REMOTE_ID_UI_ACTION_MESSAGES,
+    CERBERUS_REMOTE_ID_UI_ACTION_MESSAGE_PREV,
+    CERBERUS_REMOTE_ID_UI_ACTION_MESSAGE_NEXT,
 } cerberus_remote_id_ui_action_t;
 
 typedef struct {
@@ -58,7 +63,8 @@ typedef struct {
     uint16_t row_colors[4];
     bool detail_mode, back, previous, next, start, stop;
     bool follow_visible, follow_available, follow_enabled;
-    bool motion_mode, motion_available;
+    bool motion_mode, motion_available, message_mode, message_available;
+    uint8_t message_page;
 } cerberus_remote_id_ui_model_t;
 
 typedef struct {
@@ -138,6 +144,144 @@ static inline void cerberus_remote_id_ui_coordinate(char out[49], const char *la
         signed_value<0?"-":"",magnitude/10000000U,magnitude%10000000U);
 }
 
+static inline void cerberus_remote_id_ui_bytes(char out[49],const uint8_t *bytes,
+    size_t length,bool hex)
+{
+    static const char digits[]="0123456789ABCDEF";
+    size_t used=0U;
+    for(size_t i=0;i<length&&used+(hex?2U:1U)<49U;++i){
+        uint8_t b=bytes[i];
+        if(hex){out[used++]=digits[b>>4U];out[used++]=digits[b&15U];}
+        else out[used++]=b>=32U&&b<=126U?(char)b:'?';
+    }
+    out[used]='\0';
+}
+
+static inline void cerberus_remote_id_ui_fixed(char *out,size_t size,int32_t value,
+    unsigned divisor,unsigned decimals,bool valid)
+{
+    if(!valid){snprintf(out,size,"N/A");return;}
+    int64_t number=value;uint64_t magnitude=(uint64_t)(number<0?-number:number);
+    snprintf(out,size,"%s%" PRIu64 ".%0*u",number<0?"-":"",magnitude/divisor,
+        (int)decimals,(unsigned)(magnitude%divisor));
+}
+
+static inline void cerberus_remote_id_ui_messages(const cerberus_remote_id_ui_view_t *view,
+    cerberus_remote_id_ui_model_t *out,const sentinel_watch_profile_t *profile,
+    const cerberus_watch_receive_timing_t *times,bool available)
+{
+    static const uint8_t groups[]={SENTINEL_WATCH_PROFILE_BASIC,SENTINEL_WATCH_PROFILE_LOCATION,
+        SENTINEL_WATCH_PROFILE_SELF,SENTINEL_WATCH_PROFILE_OPERATOR,
+        SENTINEL_WATCH_PROFILE_AUTH,SENTINEL_WATCH_PROFILE_SYSTEM};
+    unsigned group=groups[out->message_page];
+    char source[27];
+    memset(out->detail,0,sizeof(out->detail));
+    cerberus_remote_id_ui_text(source,sizeof(source),view->selected_source_label?
+        view->selected_source_label:"ADDRESS HIDDEN",26U);
+    snprintf(out->detail[0],49,"SOURCE %s / LATEST MATCH",source);
+    bool valid=available&&profile&&sentinel_watch_profile_valid(profile);
+    bool present=valid&&(profile->present&(1U<<group));
+    cerberus_remote_id_ui_receive_age(out->detail[1],"GROUP CALLBACK AGE",times?&times[group]:NULL,
+        view->now_ms,present&&times);
+    snprintf(out->detail[2],49,"%s",!available?"MESSAGE PROFILE UNAVAILABLE":!valid?
+        "MESSAGE PROFILE INVALID":!present?"GROUP NOT RECEIVED IN THIS EVIDENCE":
+        view->selection.radio_unavailable?"RADIO UNAVAILABLE / RETAINED GROUP":
+        !view->selection.present?"SOURCE ABSENT / RETAINED GROUP":"PRESENT / SELF-REPORTED GROUP");
+    if(!present)return;
+    char a[20],b[20],c[20];
+    /* Decoded wire limits need at most seven altitude characters, six for
+     * horizontal speed, five for vertical speed and three for direction.
+     * Bound combined lines explicitly without shortening valid numbers. */
+    if(group==SENTINEL_WATCH_PROFILE_BASIC){
+        sentinel_watch_profile_basic_t v;
+        if(!sentinel_watch_profile_basic(profile,&v))return;
+        const char *type=v.id_type==1U?"SERIAL":v.id_type==2U?"CAA REGISTRATION":
+            v.id_type==3U?"UTM UUID":"SESSION ID";
+        snprintf(out->detail[3],49,"ID TYPE %u / %s",v.id_type,type);
+        static const char *ua[]={"UNDECLARED","AEROPLANE","HELICOPTER / MULTIROTOR","GYROPLANE",
+            "HYBRID LIFT","ORNITHOPTER","GLIDER","KITE","FREE BALLOON","CAPTIVE BALLOON",
+            "AIRSHIP","FREE FALL / PARACHUTE","ROCKET","TETHERED POWERED","GROUND OBSTACLE","OTHER"};
+        snprintf(out->detail[4],49,"UA TYPE %u / %s",v.ua_type,ua[v.ua_type&15U]);
+        snprintf(out->detail[5],49,"%s / %u BYTES",v.text?"TEXT ID":"BINARY ID / HEX",v.length);
+        if(view->private_values)snprintf(out->detail[6],49,"[IDENTIFIER HIDDEN]");
+        else cerberus_remote_id_ui_bytes(out->detail[6],v.id,v.length,!v.text);
+        snprintf(out->detail[9],49,"ID CLAIM DOES NOT VERIFY THE AIRCRAFT");
+        snprintf(out->detail[10],49,"PROTOCOL VERSION %u",profile->version[group]);
+    }else if(group==SENTINEL_WATCH_PROFILE_LOCATION){
+        sentinel_watch_profile_location_t v;
+        if(!sentinel_watch_profile_location(profile,&v))return;
+        static const char *status[]={"UNDECLARED","GROUND","AIRBORNE","EMERGENCY","REMOTE ID FAILURE"};
+        snprintf(out->detail[3],49,"STATUS %u / %s",v.status,status[v.status]);
+        if(view->private_values)snprintf(out->detail[4],49,"[AIRCRAFT LOCATION / ALTITUDES HIDDEN]");
+        else{
+            if(v.position_valid){
+                cerberus_remote_id_ui_coordinate(out->detail[4],"LAT",v.latitude_e7);
+                cerberus_remote_id_ui_coordinate(out->detail[5],"LON",v.longitude_e7);
+            }else snprintf(out->detail[4],49,"POSITION UNAVAILABLE");
+            cerberus_remote_id_ui_fixed(a,sizeof(a),v.pressure_altitude_dm,10U,1U,v.pressure_valid);
+            cerberus_remote_id_ui_fixed(b,sizeof(b),v.geo_altitude_dm,10U,1U,v.geo_valid);
+            snprintf(out->detail[6],49,"ALT M: PRESS %.7s / GEO %.7s",a,b);
+            cerberus_remote_id_ui_fixed(a,sizeof(a),v.height_dm,10U,1U,v.height_valid);
+            snprintf(out->detail[7],49,"HEIGHT %s M / %s",a,v.height_agl?"AGL":"TAKEOFF");
+        }
+        cerberus_remote_id_ui_fixed(a,sizeof(a),(int32_t)v.speed_qms*25,100U,2U,v.speed_valid);
+        cerberus_remote_id_ui_fixed(b,sizeof(b),(int32_t)v.vertical_speed_half_ms*5,10U,1U,v.vertical_speed_valid);
+        if(v.direction_valid)snprintf(c,sizeof(c),"%u",v.direction_deg);else snprintf(c,sizeof(c),"N/A");
+        snprintf(out->detail[8],49,"M/S H:%.6s V:%.5s / DIR:%.3s",a,b,c);
+        static const char *hacc[]={"?","18.52KM","7.408KM","3.704KM","1.852KM","926M","555.6M",
+            "185.2M","92.6M","30M","10M","3M","1M"};
+        static const char *vacc[]={"?","150M","45M","25M","10M","3M","1M"};
+        static const char *sacc[]={"?","10","3","1","0.3"};
+        snprintf(out->detail[9],49,"ACCURACY H:%s V:%s B:%s",
+            hacc[v.horizontal_accuracy],vacc[v.vertical_accuracy],vacc[v.baro_accuracy]);
+        cerberus_remote_id_ui_fixed(b,sizeof(b),v.timestamp_accuracy,10U,1U,v.timestamp_accuracy!=0U);
+        snprintf(out->detail[10],49,"ACC SPEED:%s M/S / TX TIME:%s S",sacc[v.speed_accuracy],b);
+        cerberus_remote_id_ui_fixed(a,sizeof(a),v.timestamp_ds,10U,1U,v.timestamp_valid);
+        snprintf(out->detail[11],49,"TX SEC IN HOUR %s / NOT RX UTC",a);
+    }else if(group==SENTINEL_WATCH_PROFILE_SELF){
+        sentinel_watch_profile_self_t v;if(!sentinel_watch_profile_self(profile,&v))return;
+        snprintf(out->detail[3],49,"DESCRIPTION TYPE %u / %u BYTES",v.type,v.length);
+        if(view->private_values)snprintf(out->detail[5],49,"[DESCRIPTION HIDDEN]");
+        else cerberus_remote_id_ui_bytes(out->detail[5],v.text,v.length,false);
+        snprintf(out->detail[9],49,"ADVERTISED DESCRIPTION / NOT VERIFIED");
+    }else if(group==SENTINEL_WATCH_PROFILE_OPERATOR){
+        sentinel_watch_profile_operator_t v;if(!sentinel_watch_profile_operator(profile,&v))return;
+        snprintf(out->detail[3],49,"OPERATOR ID TYPE %u / %u BYTES",v.type,v.length);
+        if(view->private_values)snprintf(out->detail[5],49,"[OPERATOR ID HIDDEN]");
+        else cerberus_remote_id_ui_bytes(out->detail[5],v.text,v.length,false);
+        snprintf(out->detail[9],49,"BROADCAST ID / DOES NOT IDENTIFY A PERSON");
+    }else if(group==SENTINEL_WATCH_PROFILE_AUTH){
+        sentinel_watch_profile_auth_t v;if(!sentinel_watch_profile_auth(profile,&v))return;
+        snprintf(out->detail[3],49,"UNVERIFIED AUTH METADATA");
+        snprintf(out->detail[4],49,"TYPE %u / OBSERVED PAGE %u",v.type,v.page);
+        if(v.page_zero){
+            snprintf(out->detail[5],49,"LAST PAGE %u / DECLARED LENGTH %u",v.last_page,v.length);
+            snprintf(out->detail[6],49,"TX TIME %" PRIu32 " S SINCE 2019",v.timestamp_2019_s);
+        }else snprintf(out->detail[5],49,"PAGE 0 LENGTH / TIME NOT AVAILABLE");
+        snprintf(out->detail[9],49,"NO SIGNATURE OR IDENTITY VERIFICATION");
+        snprintf(out->detail[10],49,"AUTH PAYLOAD IS NOT STORED OR DISPLAYED");
+    }else{
+        sentinel_watch_profile_system_t v;if(!sentinel_watch_profile_system(profile,&v))return;
+        snprintf(out->detail[3],49,"OP POSITION TYPE %u / CLASSIFICATION %u",v.location_type,v.classification_type);
+        if(view->private_values)snprintf(out->detail[4],49,"[ADVERTISED OP LOCATION / ALT HIDDEN]");
+        else{
+            if(v.position_valid){
+                cerberus_remote_id_ui_coordinate(out->detail[4],"OP LAT",v.latitude_e7);
+                cerberus_remote_id_ui_coordinate(out->detail[5],"OP LON",v.longitude_e7);
+            }else snprintf(out->detail[4],49,"ADVERTISED OP POSITION UNAVAILABLE");
+            cerberus_remote_id_ui_fixed(a,sizeof(a),v.altitude_dm,10U,1U,v.altitude_valid);
+            snprintf(out->detail[6],49,"OP ALTITUDE %s M / WGS84 HAE",a);
+            cerberus_remote_id_ui_fixed(a,sizeof(a),v.floor_dm,10U,1U,v.floor_valid);
+            cerberus_remote_id_ui_fixed(b,sizeof(b),v.ceiling_dm,10U,1U,v.ceiling_valid);
+            snprintf(out->detail[8],49,"AREA M: FLOOR %.7s / CEILING %.7s",a,b);
+        }
+        snprintf(out->detail[7],49,"AREA COUNT %u / RADIUS %u M",v.area_count,v.radius_m);
+        snprintf(out->detail[9],49,"EU CATEGORY %u / CLASS %u",v.category_eu,v.class_eu);
+        snprintf(out->detail[10],49,"TX TIME %" PRIu32 " S SINCE 2019",v.timestamp_2019_s);
+        snprintf(out->detail[11],49,"ADVERTISED POSITION / NOT A PERSON FIX");
+    }
+}
+
 static inline bool cerberus_remote_id_ui_model(const cerberus_remote_id_ui_view_t *view,
     cerberus_remote_id_ui_model_t *out)
 {
@@ -146,8 +290,11 @@ static inline bool cerberus_remote_id_ui_model(const cerberus_remote_id_ui_view_
         view->page.copied>view->page.total-view->page.offset) return false;
     memset(out,0,sizeof(*out));
     out->detail_mode=view->detail;
-    out->motion_mode=view->detail && view->motion_detail;
+    out->message_mode=view->detail && view->message_detail;
+    out->message_page=view->message_page<6U?view->message_page:0U;
+    out->motion_mode=view->detail && view->motion_detail && !out->message_mode;
     out->motion_available=view->detail && view->selection.valid && view->back_available;
+    out->message_available=out->motion_available;
     out->back=view->back_available;
     out->stop=view->stop_available;
     out->start=!out->stop && view->start_available;
@@ -174,6 +321,11 @@ static inline bool cerberus_remote_id_ui_model(const cerberus_remote_id_ui_view_
     else snprintf(out->footer[0],49,"SOURCE COUNTS ARE NOT AIRCRAFT COUNTS");
     cerberus_remote_id_ui_text(out->footer[1],49,view->message ? view->message :
         "SELF-REPORTED BROADCAST DATA",48);
+    if(view->detail){
+        cerberus_remote_id_ui_text(out->footer[0],49,view->message?view->message:
+            "BROADCAST CLAIMS / NOT VERIFIED",48);
+        out->footer[1][0]='\0';
+    }
     if (!view->detail) {
         unsigned page=view->page.total?(unsigned)(view->page.offset/4U+1U):0U;
         snprintf(out->summary,49,"%u SOURCES / PAGE %u OF %u",view->page.total,page,
@@ -217,6 +369,11 @@ static inline bool cerberus_remote_id_ui_model(const cerberus_remote_id_ui_view_
     cerberus_remote_id_ui_age(out->detail[4],"LAST MATCH RECEIPT AGE",selection->latest.receipt_ms,view->now_ms,latest);
     snprintf(out->detail[5],49,"MATCHING SWEEPS %" PRIu32,selection->matching_sweeps);
     const cerberus_watch_observation_t *row=&selection->latest.observation;
+    if(out->message_mode){
+        cerberus_remote_id_ui_messages(view,out,&selection->latest.profile.values,
+            selection->latest.profile.timing,latest&&selection->latest.profile.available);
+        return true;
+    }
     if(out->motion_mode){
         const sentinel_watch_motion_t *motion=&selection->latest.motion;
         bool location=latest && sentinel_watch_motion_valid(motion) &&
@@ -298,6 +455,7 @@ static inline esp_err_t cerberus_remote_id_ui_update(cerberus_remote_id_ui_cache
     if(!cerberus_remote_id_ui_model(view,&cache->staging)){cache->valid=false;return ESP_ERR_INVALID_ARG;}
     cerberus_remote_id_ui_model_t *next=&cache->staging,*old=&cache->painted;
     force|=!cache->valid || old->detail_mode!=next->detail_mode || old->motion_mode!=next->motion_mode ||
+        old->message_mode!=next->message_mode || old->message_page!=next->message_page ||
         (!next->detail_mode && ((cache->row_count==0U)!=(view->page.copied==0U)));
     esp_err_t error=ESP_OK;
 #define RID_UI_TRY(call) do{error=(call);if(error!=ESP_OK){cache->valid=false;return error;}}while(0)
@@ -335,17 +493,31 @@ static inline esp_err_t cerberus_remote_id_ui_update(cerberus_remote_id_ui_cache
         RID_UI_TRY(cerberus_display_fill_rect(8,104,304,258,RID_UI_BG));
         static const uint16_t y[]={110,129,146,174,194,214,251,293,307,328,350,228};
         static const uint16_t motion_y[]={110,129,146,174,194,216,239,267,291,315,335,352};
-        for(unsigned i=0;i<12;++i)RID_UI_TRY(cerberus_remote_id_ui_draw_text(16,next->motion_mode?motion_y[i]:y[i],next->detail[i],
-            i==0||i==3?RID_UI_CYAN:RID_UI_TEXT,RID_UI_BG,i==6?2:1,i==6?24:48));
-        if(view->selection.valid && !next->motion_mode){
+        for(unsigned i=0;i<12;++i)RID_UI_TRY(cerberus_remote_id_ui_draw_text(16,
+            next->message_mode?(uint16_t)(142U+i*18U):next->motion_mode?motion_y[i]:y[i],next->detail[i],
+            i==0||i==3?RID_UI_CYAN:RID_UI_TEXT,RID_UI_BG,!next->message_mode&&i==6?2:1,!next->message_mode&&i==6?24:48));
+        if(next->message_mode){
+            static const char *families[]={"1/6 BASIC ID","2/6 LOCATION","3/6 SELF ID","4/6 OPERATOR","5/6 AUTH","6/6 SYSTEM"};
+            RID_UI_TRY(cerberus_display_fill_rect(8,106,56,28,RID_UI_PANEL));
+            RID_UI_TRY(cerberus_display_fill_rect(256,106,56,28,RID_UI_PANEL));
+            RID_UI_TRY(cerberus_remote_id_ui_draw_text(24,116,"PREV",RID_UI_TEXT,RID_UI_PANEL,1,4));
+            RID_UI_TRY(cerberus_remote_id_ui_draw_text(272,116,"NEXT",RID_UI_TEXT,RID_UI_PANEL,1,4));
+            RID_UI_TRY(cerberus_remote_id_ui_draw_text(100,116,families[next->message_page],RID_UI_CYAN,RID_UI_BG,1,20));
+        }
+        if(view->selection.valid && !next->motion_mode && !next->message_mode){
             RID_UI_TRY(cerberus_remote_id_ui_draw_text(16,238,"ADVERTISED ID",RID_UI_MUTED,RID_UI_BG,1,48));
             RID_UI_TRY(cerberus_remote_id_ui_draw_text(16,278,"AIRCRAFT POSITION",RID_UI_MUTED,RID_UI_BG,1,48));
         }
     }
-    if(force || memcmp(old->footer,next->footer,sizeof(next->footer))){
+    if(force || memcmp(old->footer,next->footer,sizeof(next->footer)) || old->message_available!=next->message_available){
         RID_UI_TRY(cerberus_display_fill_rect(8,366,304,46,RID_UI_BG));
         RID_UI_TRY(cerberus_remote_id_ui_draw_text(16,374,next->footer[0],RID_UI_MUTED,RID_UI_BG,1,48));
-        RID_UI_TRY(cerberus_remote_id_ui_draw_text(16,394,next->footer[1],RID_UI_MUTED,RID_UI_BG,1,48));
+        if(next->detail_mode){
+            RID_UI_TRY(cerberus_display_fill_rect(8,386,304,30,next->message_available?RID_UI_PANEL:RID_UI_BG));
+            RID_UI_TRY(cerberus_remote_id_ui_draw_text(next->message_mode?139:136,397,
+                next->message_mode?"DETAILS":"MESSAGES",next->message_available?RID_UI_TEXT:RID_UI_MUTED,
+                next->message_available?RID_UI_PANEL:RID_UI_BG,1,8));
+        }else RID_UI_TRY(cerberus_remote_id_ui_draw_text(16,394,next->footer[1],RID_UI_MUTED,RID_UI_BG,1,48));
     }
     if(force || old->back!=next->back)RID_UI_TRY(cerberus_remote_id_ui_button(8,68,"BACK",next->back));
     if(force || old->previous!=next->previous || old->follow_visible!=next->follow_visible ||
@@ -392,6 +564,13 @@ static inline cerberus_remote_id_ui_event_t cerberus_remote_id_ui_tap(
                 event.selected=cache->rows[0];
             }else if(painted->next)event.action=CERBERUS_REMOTE_ID_UI_ACTION_NEXT;
         }
+    }else if(painted->message_available && x>=8U && x<312U && y>=386U && y<416U){
+        event.action=painted->message_mode?CERBERUS_REMOTE_ID_UI_ACTION_DETAILS:CERBERUS_REMOTE_ID_UI_ACTION_MESSAGES;
+        event.selected=cache->rows[0];
+    }else if(painted->message_mode && painted->message_available && y>=106U && y<134U){
+        if(x>=8U&&x<64U)event.action=CERBERUS_REMOTE_ID_UI_ACTION_MESSAGE_PREV;
+        else if(x>=256U&&x<312U)event.action=CERBERUS_REMOTE_ID_UI_ACTION_MESSAGE_NEXT;
+        event.selected=cache->rows[0];
     }else if(!painted->detail_mode && x>=8U && x<312U && y>=132U){
         unsigned row=(y-132U)/58U,within=(y-132U)%58U;
         if(row<cache->row_count && within<54U){

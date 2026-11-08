@@ -25,6 +25,7 @@ typedef enum {
     SENTINEL_TOOLS_USB,
     SENTINEL_TOOLS_QR,
     SENTINEL_TOOLS_SCRIPTS,
+    SENTINEL_TOOLS_SSID_LISTS,
     SENTINEL_TOOLS_BACK,
 } sentinel_tools_action_t;
 

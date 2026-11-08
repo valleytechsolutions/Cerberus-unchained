@@ -17,6 +17,7 @@ void cerberus_remote_id_session_init(cerberus_remote_id_session_t *session)
 bool cerberus_remote_id_session_released(const cerberus_remote_id_session_t *session)
 {
     if (!session) return true;
+    if (session->capture.owner || session->capture_cancel_pending) return false;
     for (unsigned i = 0; i < 2; ++i) {
         const cerberus_remote_id_radio_session_t *r = &session->radios[i];
         if (r->owned || r->scan.active != SENTINEL_SCAN_NONE ||
@@ -34,6 +35,7 @@ bool cerberus_remote_id_session_start(cerberus_remote_id_session_t *session)
         sentinel_scan_session_init(&r->scan);
         sentinel_scan_session_select(&r->scan, tool_id(i));
         r->capture_pending = r->faulted = r->identity_pending = false;
+        r->poll_attempted = false;
         r->rejected_starts = 0;
         r->retry_after_ms = 0;
         r->error = 0;
@@ -45,6 +47,7 @@ void cerberus_remote_id_session_stop(cerberus_remote_id_session_t *session)
 {
     if (!session) return;
     session->running = false;
+    if (session->capture.owner) session->capture_cancel_pending = true;
     for (unsigned i = 0; i < 2; ++i) {
         cerberus_remote_id_radio_session_t *r = &session->radios[i];
         r->capture_pending = false;
@@ -63,6 +66,7 @@ static void reject_start(cerberus_remote_id_radio_session_t *r, unsigned slot, u
     sentinel_scan_session_select(&r->scan, tool_id(slot));
     r->owned = false;
     r->identity_pending = false;
+    r->poll_attempted = false;
     if (r->rejected_starts < 3) ++r->rejected_starts;
     r->faulted = r->rejected_starts >= 3;
     r->retry_after_ms = now + (UINT64_C(1000) << (r->rejected_starts - 1U));
@@ -106,20 +110,114 @@ static int32_t capture(cerberus_remote_id_radio_session_t *r, unsigned slot,
     return result == CERBERUS_REMOTE_ID_PUBLISHED ? 0 : CERBERUS_REMOTE_ID_ERROR_SNAPSHOT;
 }
 
+static void clear_capture(cerberus_remote_id_session_t *session,
+    const cerberus_remote_id_ops_t *ops)
+{
+    if (ops->row_profiled_cancel) ops->row_profiled_cancel(ops->context);
+    memset(&session->capture, 0, sizeof(session->capture));
+    session->capture_cancel_pending = false;
+}
+
+/* The two radios share staging but never interleave writes to it. Radio work
+ * continues independently; only copying completed banks is serialized. */
+static int32_t capture_step(cerberus_remote_id_session_t *session, unsigned slot,
+    cerberus_remote_id_inventory_t *inventory, const cerberus_remote_id_ops_t *ops,
+    bool *complete)
+{
+    *complete = false;
+    cerberus_remote_id_radio_session_t *r = &session->radios[slot];
+    uint8_t radio = radio_id(slot);
+    if (!session->capture.owner) session->capture.owner = (uint8_t)(slot + 1U);
+    if (session->capture.owner != slot + 1U) return 0;
+    if (!session->capture.phase) {
+        int32_t error = ops->status(ops->context, radio, r->expected_generation, &session->capture.before);
+        if (error) return error;
+        const cerberus_watch_scan_status_payload_t *before = &session->capture.before;
+        if (before->radio != radio || before->generation != r->expected_generation ||
+            before->state != CERBERUS_WATCH_COMPLETE || before->stored_count > CERBERUS_WATCH_MAX_OBSERVATIONS)
+            return CERBERUS_REMOTE_ID_ERROR_SNAPSHOT;
+        memset(inventory->staging, 0, sizeof(inventory->staging));
+        memset(inventory->staging_timings, 0, sizeof(inventory->staging_timings));
+        memset(inventory->staging_motions, 0, sizeof(inventory->staging_motions));
+        memset(inventory->staging_motion_timings, 0, sizeof(inventory->staging_motion_timings));
+        memset(inventory->staging_profiles, 0, sizeof(inventory->staging_profiles));
+        session->capture.phase = 1U;
+        return 0;
+    }
+    if (session->capture.phase == 1U) {
+        uint8_t i = session->capture.index;
+        if (i < session->capture.before.stored_count) {
+            bool row_complete = false;
+            int32_t error = ops->row_profiled_step(ops->context, radio, r->expected_generation, i,
+                session->capture.epoch, &inventory->staging[i], &inventory->staging_timings[i],
+                &inventory->staging_motions[i], &inventory->staging_motion_timings[i],
+                &inventory->staging_profiles[i], &row_complete);
+            if (error || !row_complete) return error;
+            const cerberus_watch_profile_evidence_t *profile = &inventory->staging_profiles[i];
+            if (!cerberus_watch_profile_evidence_valid(profile, ops->now_ms(ops->context)))
+                return CERBERUS_REMOTE_ID_ERROR_SNAPSHOT;
+            if (i && (profile->available != session->capture.profile_available ||
+                (profile->available && profile->capture_epoch != session->capture.epoch)))
+                return CERBERUS_REMOTE_ID_ERROR_SOURCE_CHANGED;
+            session->capture.profile_available = profile->available;
+            session->capture.epoch = profile->capture_epoch;
+            ++session->capture.index;
+            return 0;
+        }
+        session->capture.phase = 2U;
+    }
+    if (session->capture.phase == 2U) {
+        int32_t error = ops->status(ops->context, radio, r->expected_generation, &session->capture.after);
+        if (!error) session->capture.phase = 3U;
+        return error;
+    }
+    cerberus_remote_id_radio_observation_t end = {0};
+    int32_t error = ops->poll(ops->context, radio, false, &end);
+    if (error) return error;
+    if (!end.supported || !end.released || end.state != SENTINEL_SCAN_COMPLETE ||
+        end.radio_error || end.generation != r->expected_generation || end.epoch != r->expected_epoch)
+        return CERBERUS_REMOTE_ID_ERROR_SOURCE_CHANGED;
+    cerberus_remote_id_publish_result_t published = cerberus_remote_id_inventory_publish_profiled(inventory,
+        r->token, &session->capture.before, &session->capture.after, inventory->staging,
+        inventory->staging_timings, inventory->staging_motions, inventory->staging_motion_timings,
+        inventory->staging_profiles, session->capture.before.stored_count, ops->now_ms(ops->context));
+    if (published != CERBERUS_REMOTE_ID_PUBLISHED) return CERBERUS_REMOTE_ID_ERROR_SNAPSHOT;
+    *complete = true;
+    return 0;
+}
+
 void cerberus_remote_id_session_tick(cerberus_remote_id_session_t *session,
     cerberus_remote_id_inventory_t *inventory, const cerberus_remote_id_ops_t *ops)
 {
     if (!session || !inventory || !ops || !ops->poll || !ops->command ||
-        !ops->status || (!ops->row && !ops->row_observed && !ops->row_detailed) || !ops->now_ms) return;
+        !ops->status || (!ops->row && !ops->row_observed && !ops->row_detailed && !ops->row_profiled_step) || !ops->now_ms) return;
+    if (session->capture_cancel_pending) clear_capture(session, ops);
     if (!session->running && cerberus_remote_id_session_released(session)) return;
     for (unsigned i = 0; i < 2; ++i) {
         cerberus_remote_id_radio_session_t *r = &session->radios[i];
         uint64_t now = ops->now_ms(ops->context);
+        if (r->capture_pending && ops->row_profiled_step &&
+            (!session->capture.owner || session->capture.owner == i + 1U) &&
+            (now < r->capture_since_ms || now - r->capture_since_ms >= 15000U)) {
+            clear_capture(session, ops);
+            r->capture_pending = false; r->faulted = true;
+            r->error = CERBERUS_REMOTE_ID_ERROR_SNAPSHOT;
+            continue;
+        }
         cerberus_remote_id_radio_observation_t observation = {0};
-        int32_t error = ops->poll(ops->context, radio_id(i), r->owned, &observation);
-        r->observed = error == 0;
-        if (error) { r->error = error; continue; }
-        r->observation = observation;
+        int32_t error = 0;
+        bool copying = ops->row_profiled_step && session->running &&
+            (session->radios[0].capture_pending || session->radios[1].capture_pending);
+        if (copying && r->poll_attempted && now >= r->last_poll_ms && now - r->last_poll_ms < 500U) {
+            if (!r->observed) continue;
+            observation = r->observation;
+        } else {
+            r->poll_attempted = true; r->last_poll_ms = now;
+            error = ops->poll(ops->context, radio_id(i), r->owned, &observation);
+            r->observed = error == 0;
+            if (error) { r->error = error; continue; }
+            r->observation = observation;
+        }
         if (observation.state > SENTINEL_SCAN_ERROR) {
             r->error = CERBERUS_REMOTE_ID_ERROR_SNAPSHOT; continue;
         }
@@ -146,14 +244,21 @@ void cerberus_remote_id_session_tick(cerberus_remote_id_session_t *session,
         if (!observation.supported) continue;
         if (r->capture_pending) {
             if (!session->running) { r->capture_pending = false; continue; }
-            error = capture(r, i, inventory, ops);
+            if (ops->row_profiled_step && session->capture.owner && session->capture.owner != i + 1U) continue;
+            bool complete = !ops->row_profiled_step;
+            error = ops->row_profiled_step ? capture_step(session, i, inventory, ops, &complete) :
+                capture(r, i, inventory, ops);
             r->error = error;
-            if (!error) {
+            if (!error && complete) {
+                if (ops->row_profiled_step) clear_capture(session, ops);
                 r->capture_pending = false;
                 if (r->published_sweeps != UINT32_MAX) ++r->published_sweeps;
                 sentinel_scan_session_pause(&r->scan, false);
             } else if (now < r->capture_since_ms || now - r->capture_since_ms >= 15000U) {
+                if (ops->row_profiled_step) clear_capture(session, ops);
                 r->capture_pending = false; r->faulted = true;
+            } else if (error && ops->row_profiled_step) {
+                clear_capture(session, ops);
             }
             continue;
         }
@@ -169,6 +274,7 @@ void cerberus_remote_id_session_tick(cerberus_remote_id_session_t *session,
                 .tool = r->scan.active, .state = observation.state});
         if (had_owned && r->scan.active == SENTINEL_SCAN_NONE) {
             r->owned = false;
+            r->poll_attempted = false;
             if (session->running && r->scan.completed && !observation.radio_error &&
                 observation.state == SENTINEL_SCAN_COMPLETE) {
                 r->capture_pending = true; r->capture_since_ms = now;
@@ -181,6 +287,9 @@ void cerberus_remote_id_session_tick(cerberus_remote_id_session_t *session,
             r->error = CERBERUS_REMOTE_ID_ERROR_TOKEN_EXHAUSTED; r->faulted = true; continue;
         }
         cerberus_remote_id_command_result_t result = ops->command(ops->context, radio_id(i), start, &observation);
+        /* A command can change the scan generation even when its reply is
+         * lost. Never reuse a pre-command observation for the next owner. */
+        r->poll_attempted = false;
         (void)sentinel_scan_session_ack(&r->scan, command,
             result.error ? SENTINEL_SCAN_FAILED : SENTINEL_SCAN_ACCEPTED, (uint32_t)now);
         r->error = result.error;

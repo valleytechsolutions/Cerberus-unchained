@@ -1,5 +1,20 @@
 # SD resources
 
+Download the [rev144 SD asset ZIP](https://463n7.github.io/Cerberus-unchained/downloads/cerberus-unchained-sd-assets-rev144.zip)
+and its [SHA-256 checksum](https://463n7.github.io/Cerberus-unchained/downloads/cerberus-unchained-sd-assets-rev144.zip.sha256).
+The [flasher page's SD section](https://463n7.github.io/Cerberus-unchained/#sd-assets)
+shows the correct folder placement and step-by-step copy instructions.
+The pack is unchanged from rev136 and remains compatible; existing users can
+keep their current assets. Manual upload settings use a separate, private
+profile described in [the upload guide](../docs/WARDRIVE_UPLOADS.md).
+
+Extract the ZIP on your computer. With Cerberus powered off, use a card reader
+to copy its `CERBERUS` folder to the top level of a FAT32 microSD card. The database
+belongs at `CERBERUS/RECON.DB`, not `CERBERUS/CERBERUS/RECON.DB`. Back up an existing
+card first, merge the supplied files, and preserve your logs, recordings and
+custom files. Safely eject the card, insert it with Cerberus powered off, then boot.
+Firmware flashing does not populate the SD card.
+
 Copy the contents of this `sdcard/` directory to the FAT32 card root. The
 `CERBERUS/RECON.DB` file is the single runtime vendor database; it includes
 source/checksum/license metadata. `CERBERUS/PORTAL/INDEX.HTM` is the optional

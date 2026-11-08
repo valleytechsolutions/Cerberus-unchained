@@ -8,10 +8,17 @@
 #include "radio_test.h"
 #include "wifi_ap_job.h"
 #include "sentinel_watch_motion.h"
+#include "sentinel_watch_profile.h"
 #include "wifi_probe_observation.h"
 #include "wifi_relation_observation.h"
 #include "csi_protocol.h"
 #include "mac_monitor_protocol.h"
+#include "wifi_scan_band.h"
+#include "dual_ble_protocol.h"
+#include "probe_sniff_protocol.h"
+#include "mesh_observation_protocol.h"
+#include "wifi_packet_count_protocol.h"
+#include "wifi_capture_plan.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -19,7 +26,7 @@ extern "C" {
 
 #define CERBERUS_PROTOCOL_VERSION_V1 1U
 #define CERBERUS_PROTOCOL_VERSION 2U
-#define CERBERUS_C5_FIRMWARE_VERSION 60U
+#define CERBERUS_C5_FIRMWARE_VERSION 90U
 #define CERBERUS_SPI_MAGIC 0x43455242UL
 #define CERBERUS_SPI_TRANSFER_SIZE 32U
 #define CERBERUS_SPI_FRAME_PAYLOAD_SIZE 22U
@@ -141,6 +148,107 @@ typedef enum {
     CERBERUS_SPI_COMMAND_WIFI_RELATION_STATUS = 112,
     CERBERUS_SPI_COMMAND_WIFI_RELATION_CHUNK = 113,
     CERBERUS_SPI_COMMAND_WIFI_RELATION_CLOCK = 114,
+    CERBERUS_SPI_COMMAND_WIFI_SCAN_BAND_START = 115,
+    CERBERUS_SPI_COMMAND_DUAL_BLE_INFO = 116,
+    CERBERUS_SPI_COMMAND_DUAL_BLE_START = 117,
+    CERBERUS_SPI_COMMAND_DUAL_BLE_STATUS = 118,
+    CERBERUS_SPI_COMMAND_DUAL_BLE_STOP = 119,
+    CERBERUS_SPI_COMMAND_DUAL_BLE_RELEASE = 120,
+    CERBERUS_SPI_COMMAND_DUAL_BLE_ROW_TIME = 121,
+    CERBERUS_SPI_COMMAND_DUAL_BLE_TRACK_STATUS = 122,
+    CERBERUS_SPI_COMMAND_WIFI_SCAN_BAND_INFO = 123,
+    CERBERUS_SPI_COMMAND_WIFI_SCAN_BAND_STATUS = 124,
+    CERBERUS_SPI_COMMAND_WIFI_SCAN_BAND_STOP = 125,
+    CERBERUS_SPI_COMMAND_DUAL_BLE_SNAPSHOT_BEGIN = 126,
+    CERBERUS_SPI_COMMAND_DUAL_BLE_SNAPSHOT_READ = 127,
+    CERBERUS_SPI_COMMAND_DUAL_BLE_SNAPSHOT_STATUS = 128,
+    CERBERUS_SPI_COMMAND_DUAL_BLE_SNAPSHOT_INVENTORY = 129,
+    CERBERUS_SPI_COMMAND_DUAL_BLE_SNAPSHOT_READ_METADATA = 130,
+    CERBERUS_SPI_COMMAND_DUAL_BLE_ANALYZER_SAMPLE = 131,
+    CERBERUS_SPI_COMMAND_DUAL_BLE_SNAPSHOT_READ_FAMILY = 132,
+    CERBERUS_SPI_COMMAND_DUAL_BLE_SNAPSHOT_READ_RESPONSE = 133,
+    CERBERUS_SPI_COMMAND_DUAL_BLE_SNAPSHOT_READ_RESPONSE_COMPACT = 134,
+    CERBERUS_SPI_COMMAND_WIFI_CHANNEL_SURVEY_SESSION_INFO = 135,
+    CERBERUS_SPI_COMMAND_WIFI_CHANNEL_SURVEY_SESSION_START = 136,
+    CERBERUS_SPI_COMMAND_WIFI_CHANNEL_SURVEY_SESSION_STOP = 137,
+    CERBERUS_SPI_COMMAND_WIFI_CHANNEL_SURVEY_SESSION_STATUS = 138,
+    CERBERUS_SPI_COMMAND_WIFI_CHANNEL_SURVEY_SESSION_READ = 139,
+    CERBERUS_SPI_COMMAND_WIFI_PROBE_SNIFF_INFO = 140,
+    CERBERUS_SPI_COMMAND_WIFI_PROBE_SNIFF_START = 141,
+    CERBERUS_SPI_COMMAND_WIFI_PROBE_SNIFF_STATUS = 142,
+    CERBERUS_SPI_COMMAND_WIFI_PROBE_SNIFF_STOP = 143,
+    CERBERUS_SPI_COMMAND_WIFI_PROBE_SNIFF_READ = 144,
+    CERBERUS_SPI_COMMAND_WIFI_PROBE_SNIFF_RELEASE = 145,
+    CERBERUS_SPI_COMMAND_MESH_OBSERVATION_INFO = 146,
+    CERBERUS_SPI_COMMAND_MESH_OBSERVATION_START = 147,
+    CERBERUS_SPI_COMMAND_MESH_OBSERVATION_STATUS = 148,
+    CERBERUS_SPI_COMMAND_MESH_OBSERVATION_STOP = 149,
+    CERBERUS_SPI_COMMAND_MESH_OBSERVATION_PEEK = 150,
+    CERBERUS_SPI_COMMAND_MESH_OBSERVATION_READ = 151,
+    CERBERUS_SPI_COMMAND_MESH_OBSERVATION_ACK = 152,
+    CERBERUS_SPI_COMMAND_MESH_OBSERVATION_RELEASE = 153,
+    CERBERUS_SPI_COMMAND_MESH_LOCATE_INFO = 154,
+    CERBERUS_SPI_COMMAND_MESH_LOCATE_START = 155,
+    CERBERUS_SPI_COMMAND_MESH_LOCATE_STATUS = 156,
+    CERBERUS_SPI_COMMAND_MESH_LOCATE_STOP = 157,
+    CERBERUS_SPI_COMMAND_MESH_LOCATE_PEEK = 158,
+    CERBERUS_SPI_COMMAND_MESH_LOCATE_READ = 159,
+    CERBERUS_SPI_COMMAND_MESH_LOCATE_RELEASE = 160,
+    CERBERUS_SPI_COMMAND_WIFI_PACKET_COUNT_INFO = 161,
+    CERBERUS_SPI_COMMAND_WIFI_PACKET_COUNT_BEGIN = 162,
+    CERBERUS_SPI_COMMAND_WIFI_PACKET_COUNT_TARGET = 163,
+    CERBERUS_SPI_COMMAND_WIFI_PACKET_COUNT_START = 164,
+    CERBERUS_SPI_COMMAND_WIFI_PACKET_COUNT_STATUS = 165,
+    CERBERUS_SPI_COMMAND_WIFI_PACKET_COUNT_STOP = 166,
+    CERBERUS_SPI_COMMAND_WIFI_PACKET_COUNT_PEEK = 167,
+    CERBERUS_SPI_COMMAND_WIFI_PACKET_COUNT_READ = 168,
+    CERBERUS_SPI_COMMAND_WIFI_PACKET_COUNT_RELEASE = 169,
+    CERBERUS_SPI_COMMAND_WIFI_PACKET_COUNT_RAW_READ = 170,
+    CERBERUS_SPI_COMMAND_WIFI_PACKET_COUNT_RAW_ACK = 171,
+    CERBERUS_SPI_COMMAND_WIFI_PACKET_MONITOR_SESSION_INFO = 172,
+    CERBERUS_SPI_COMMAND_WIFI_PACKET_MONITOR_SESSION_START = 173,
+    CERBERUS_SPI_COMMAND_WIFI_PACKET_MONITOR_SESSION_STOP = 174,
+    CERBERUS_SPI_COMMAND_WIFI_PACKET_MONITOR_SESSION_STATUS = 175,
+    CERBERUS_SPI_COMMAND_WIFI_PACKET_MONITOR_SESSION_SAMPLE = 176,
+    CERBERUS_SPI_COMMAND_WIFI_PACKET_MONITOR_RECORD_START = 177,
+    CERBERUS_SPI_COMMAND_WIFI_PACKET_MONITOR_RECORD_PEEK = 178,
+    CERBERUS_SPI_COMMAND_WIFI_PACKET_MONITOR_RECORD_READ = 179,
+    CERBERUS_SPI_COMMAND_WIFI_PACKET_MONITOR_RECORD_RAW_READ = 180,
+    CERBERUS_SPI_COMMAND_WIFI_PACKET_MONITOR_RECORD_RAW_ACK = 181,
+    CERBERUS_SPI_COMMAND_WIFI_PACKET_MONITOR_RECORD_RELEASE = 182,
+    CERBERUS_SPI_COMMAND_WIFI_PACKET_MONITOR_RECORD_STATUS = 183,
+    CERBERUS_SPI_COMMAND_WARDRIVE_START = 184,
+    CERBERUS_SPI_COMMAND_WARDRIVE_STATUS = 185,
+    CERBERUS_SPI_COMMAND_WARDRIVE_READ = 186,
+    CERBERUS_SPI_COMMAND_WARDRIVE_STOP = 187,
+    CERBERUS_SPI_COMMAND_WARDRIVE_RELEASE = 188,
+    CERBERUS_SPI_COMMAND_WARDRIVE_PAUSE = 189,
+    CERBERUS_SPI_COMMAND_WARDRIVE_RESUME = 190,
+    CERBERUS_SPI_COMMAND_WIFI_CHANNEL_ANALYZER_INFO = 191,
+    CERBERUS_SPI_COMMAND_WIFI_CHANNEL_ANALYZER_START = 192,
+    CERBERUS_SPI_COMMAND_WIFI_CHANNEL_ANALYZER_STATUS = 193,
+    CERBERUS_SPI_COMMAND_WIFI_CHANNEL_ANALYZER_STOP = 194,
+    CERBERUS_SPI_COMMAND_WIFI_CHANNEL_ANALYZER_SAMPLE = 195,
+    CERBERUS_SPI_COMMAND_WIFI_CHANNEL_ANALYZER_HINT_PEEK = 196,
+    CERBERUS_SPI_COMMAND_WIFI_CHANNEL_ANALYZER_HINT_READ = 197,
+    CERBERUS_SPI_COMMAND_WIFI_FOX_HUNT_INFO = 198,
+    CERBERUS_SPI_COMMAND_WIFI_FOX_HUNT_START = 199,
+    CERBERUS_SPI_COMMAND_WIFI_FOX_HUNT_STATUS = 200,
+    CERBERUS_SPI_COMMAND_WIFI_FOX_HUNT_STOP = 201,
+    CERBERUS_SPI_COMMAND_WIFI_FOX_HUNT_SIGNAL = 202,
+    CERBERUS_SPI_COMMAND_WIFI_CAPTURE_PLAN = 203,
+    CERBERUS_SPI_COMMAND_WIFI_CAPTURE_TARGET = 204,
+    CERBERUS_SPI_COMMAND_WIFI_CAPTURE_HOP_STATUS = 205,
+    CERBERUS_SPI_COMMAND_WATCH_PROFILE_BEGIN = 206,
+    CERBERUS_SPI_COMMAND_WATCH_PROFILE_READ = 207,
+    CERBERUS_SPI_COMMAND_WIFI_AP_SURVEY_INFO = 208,
+    CERBERUS_SPI_COMMAND_WIFI_AP_SURVEY_START = 209,
+    CERBERUS_SPI_COMMAND_WIFI_AP_SURVEY_STATUS = 210,
+    CERBERUS_SPI_COMMAND_WIFI_AP_SURVEY_RENEW = 211,
+    CERBERUS_SPI_COMMAND_WIFI_AP_SURVEY_STOP = 212,
+    CERBERUS_SPI_COMMAND_WIFI_AP_SURVEY_RELEASE = 213,
+    CERBERUS_SPI_COMMAND_WIFI_AP_SURVEY_SNAPSHOT_BEGIN = 214,
+    CERBERUS_SPI_COMMAND_WIFI_AP_SURVEY_SNAPSHOT_READ = 215,
 } cerberus_spi_command_t;
 
 typedef enum {
@@ -226,6 +334,7 @@ _Static_assert(sizeof(cerberus_net_scan_result_t) == CERBERUS_SPI_FRAME_PAYLOAD_
 #define CERBERUS_WATCH_TIMING_MIN_FIRMWARE 53U
 #define CERBERUS_WATCH_MOTION_MIN_FIRMWARE 56U
 #define CERBERUS_REMOTE_ID_MIN_FIRMWARE 54U
+#define CERBERUS_REMOTE_ID_PROFILE_MIN_FIRMWARE 89U
 #define CERBERUS_REMOTE_ID_FOLLOW_MIN_FIRMWARE 55U
 #define CERBERUS_REMOTE_ID_FOLLOW_MAX_AGE_MS 30000U
 #define CERBERUS_REMOTE_ID_WINDOW_MIN_MS 1000U
@@ -391,6 +500,53 @@ typedef struct __attribute__((packed)) {
 _Static_assert(sizeof(cerberus_watch_scan_motion_payload_t) == CERBERUS_SPI_FRAME_PAYLOAD_SIZE,
     "Watch motion fits one unchanged SPI frame");
 
+/* Capability89 immutable, copied Remote ID projection. BEGIN is read-only:
+ * every successful call creates a fresh projection and age baseline. Retrying
+ * READ never changes its bytes. Epoch0 discovers the completed bank; a nonzero
+ * epoch requires that exact bank. Projection IDs are never reused in one boot.
+ * The existing observation and motion wire layouts remain unchanged. */
+#define CERBERUS_WATCH_PROFILE_CHUNK_SIZE 16U
+typedef struct __attribute__((packed)) {
+    uint64_t capture_epoch;
+    uint8_t radio, generation, index, reserved;
+} cerberus_watch_profile_begin_request_t;
+typedef struct __attribute__((packed)) {
+    uint64_t capture_epoch;
+    uint32_t projection;
+    int32_t error_code;
+    uint16_t object_length;
+    uint8_t radio, generation, index, reserved;
+} cerberus_watch_profile_begin_payload_t;
+typedef struct __attribute__((packed)) {
+    uint64_t capture_epoch;
+    uint32_t projection;
+    uint8_t radio, generation, index, chunk;
+} cerberus_watch_profile_read_request_t;
+typedef struct __attribute__((packed)) {
+    uint32_t projection;
+    uint8_t chunk, length, data[CERBERUS_WATCH_PROFILE_CHUNK_SIZE];
+} cerberus_watch_profile_read_payload_t;
+typedef struct __attribute__((packed)) {
+    uint64_t capture_epoch;
+    uint32_t projection;
+    int32_t error_code;
+} cerberus_watch_profile_read_error_t;
+typedef struct __attribute__((packed)) {
+    cerberus_watch_observation_t observation;
+    sentinel_watch_motion_t motion;
+    sentinel_watch_profile_t profile;
+    uint32_t group_age_ms[SENTINEL_WATCH_PROFILE_GROUPS];
+    uint64_t source_age_ms, motion_age_ms;
+    uint8_t timing_flags, group_valid_mask;
+} cerberus_watch_profile_projection_t;
+enum { CERBERUS_WATCH_PROFILE_SOURCE_TIMED=1U, CERBERUS_WATCH_PROFILE_MOTION_TIMED=2U };
+_Static_assert(sizeof(cerberus_watch_profile_begin_request_t)==12U,"Watch profile BEGIN request");
+_Static_assert(sizeof(cerberus_watch_profile_begin_payload_t)==22U,"Watch profile BEGIN reply");
+_Static_assert(sizeof(cerberus_watch_profile_read_request_t)==16U,"Watch profile READ request");
+_Static_assert(sizeof(cerberus_watch_profile_read_payload_t)==22U,"Watch profile READ reply");
+_Static_assert(sizeof(cerberus_watch_profile_read_error_t)==16U,"Watch profile READ failure");
+_Static_assert(sizeof(cerberus_watch_profile_projection_t)==224U,"Watch profile copied image");
+
 /* All received advertising reports are counted before the 32-entry inventory.
    Controller duplicate filtering is disabled. valid_reports means complete,
    structurally valid AD data, not a recognized device. identities is an exact
@@ -459,6 +615,11 @@ typedef struct __attribute__((packed)) {
  * A frame stays pinned until its generation/sequence ACK. READ chunks are
  * padded to 20 bytes; the consumer copies min(20, length-offset) bytes. */
 #define CERBERUS_WIFI_CAPTURE_MIN_FIRMWARE 45U
+#define CERBERUS_WIFI_EAPOL_MIN_FIRMWARE 85U
+#define CERBERUS_WIFI_EAPOL_PLAN_MIN_FIRMWARE 87U
+#define CERBERUS_WIFI_FRAME_SCOPE_MIN_FIRMWARE 88U
+#define CERBERUS_WIFI_CAPTURE_PLAN_MIN_FIRMWARE 86U
+#define CERBERUS_WIFI_SAE_MONITOR_MIN_FIRMWARE 86U
 #define CERBERUS_WIFI_CAPTURE_SAE_MIN_FIRMWARE 48U
 #define CERBERUS_WIFI_CAPTURE_BEACON_MIN_FIRMWARE 50U
 #define CERBERUS_WIFI_CAPTURE_HOP_MIN_FIRMWARE 50U
@@ -478,6 +639,9 @@ enum {
     /* v50: channel=0, mode=BEACON only, no BSSID filter. The C5 cycles
      * SDK-supported 2.4/5 GHz channels without restarting generation. */
     CERBERUS_WIFI_CAPTURE_FLAG_HOP = 2U,
+    /* v86: HOP|PLAN, SAE/250 ms, channel zero, no single-BSSID flag.
+     * v87 also permits EAPOL with optional BEACON context at 2000 ms. */
+    CERBERUS_WIFI_CAPTURE_FLAG_PLAN = 4U,
 };
 enum {
     CERBERUS_WIFI_CAPTURE_IDLE = 0U,
@@ -501,7 +665,7 @@ typedef struct __attribute__((packed)) {
     uint8_t pending;
     uint32_t accepted;
     uint32_t dropped_full;
-    uint16_t dropped_other;
+    uint16_t dropped_other; /* v87 also counts deferred EAPOL beacon context. */
     int32_t error_code;
 } cerberus_wifi_capture_status_payload_t;
 typedef struct __attribute__((packed)) {
@@ -529,6 +693,45 @@ typedef struct __attribute__((packed)) {
 typedef struct __attribute__((packed)) {
     uint32_t generation;
 } cerberus_wifi_capture_stop_request_t;
+
+/* Planned capture keeps the legacy START/frame-transfer layout. An
+ * all-zero PLAN request queries staging without modifying or owning RF. */
+enum {
+    CERBERUS_WIFI_CAPTURE_PLAN_EMPTY,
+    CERBERUS_WIFI_CAPTURE_PLAN_STAGING,
+    CERBERUS_WIFI_CAPTURE_PLAN_READY,
+};
+typedef struct __attribute__((packed)) {
+    uint32_t generation;
+    uint64_t channel_mask;
+    uint16_t dwell_ms;
+    uint8_t target_count, reserved;
+} cerberus_wifi_capture_plan_request_t;
+typedef struct __attribute__((packed)) {
+    uint32_t generation;
+    uint8_t index, bssid[6];
+} cerberus_wifi_capture_target_request_t;
+typedef struct __attribute__((packed)) {
+    uint32_t generation;
+    uint64_t channel_mask;
+    uint32_t target_present_mask;
+    uint8_t target_count, state;
+    int32_t error_code;
+} cerberus_wifi_capture_plan_status_payload_t;
+typedef struct __attribute__((packed)) {
+    uint32_t generation;
+    uint64_t attempted_mask, applied_mask;
+    uint16_t completed_sweeps;
+} cerberus_wifi_capture_hop_status_payload_t;
+typedef struct __attribute__((packed)) {
+    uint32_t generation;
+    int32_t error_code;
+} cerberus_wifi_capture_hop_error_payload_t;
+_Static_assert(sizeof(cerberus_wifi_capture_plan_request_t) == 16U, "Capture plan request");
+_Static_assert(sizeof(cerberus_wifi_capture_target_request_t) == 11U, "Capture target request");
+_Static_assert(sizeof(cerberus_wifi_capture_plan_status_payload_t) == 22U, "Capture plan status");
+_Static_assert(sizeof(cerberus_wifi_capture_hop_status_payload_t) == 22U, "Capture hop status");
+_Static_assert(sizeof(cerberus_wifi_capture_hop_error_payload_t) == 8U, "Capture hop error");
 
 #define CERBERUS_STATUS_PAYLOAD_LEGACY_SIZE 16U
 
@@ -565,6 +768,27 @@ typedef struct __attribute__((packed)) {
     uint8_t reserved[2];
     int32_t error_code;
 } cerberus_wifi_scan_status_payload_t;
+
+/* Additive commands: old zero-payload WIFI_SCAN_START remains dual-band.
+ * INFO returns the C5-issued epoch. A new start requires epoch+1; every
+ * accepted ordinary/default scan advances it. Same-current-token retries
+ * never rescan, and old tokens cannot adopt or stop a later bank. */
+typedef struct __attribute__((packed)) {
+    uint64_t session_id;
+    uint8_t band;
+} cerberus_wifi_scan_band_request_t;
+
+typedef struct __attribute__((packed)) {
+    cerberus_wifi_scan_status_payload_t status;
+    uint64_t session_id;
+    uint8_t band;
+    uint8_t bound;
+} cerberus_wifi_scan_band_response_t;
+
+_Static_assert(sizeof(cerberus_wifi_scan_band_request_t) <= CERBERUS_SPI_FRAME_PAYLOAD_SIZE,
+    "band scan request fits SPI");
+_Static_assert(sizeof(cerberus_wifi_scan_band_response_t) <= CERBERUS_SPI_FRAME_PAYLOAD_SIZE,
+    "band scan response fits SPI");
 
 typedef struct __attribute__((packed)) {
     uint8_t generation;
@@ -633,6 +857,10 @@ typedef struct __attribute__((packed)) {
 #define CERBERUS_WIFI_CHANNEL_SURVEY_DWELL_MS 100U
 #define CERBERUS_WIFI_CHANNEL_SURVEY_MAX_RESULTS 25U
 #define CERBERUS_WIFI_CHANNEL_SURVEY_MIN_FIRMWARE 46U
+/* Paired UI cleanup requires explicit IDLE acknowledgement after checked Stop. */
+#define CERBERUS_WIFI_CHANNEL_SURVEY_CLEANUP_MIN_FIRMWARE 69U
+/* Per-row dwell is measured (ceil milliseconds), rate uses its microseconds. */
+#define CERBERUS_WIFI_CHANNEL_SURVEY_MEASURED_MIN_FIRMWARE 81U
 
 typedef enum {
     CERBERUS_WIFI_CHANNEL_SURVEY_BAND_24 = 1,
@@ -680,8 +908,75 @@ typedef struct __attribute__((packed)) {
     int8_t strongest_rssi;
     uint16_t sample_count;
     uint32_t updated_ms; /* since survey start; compare with status.elapsed_ms */
-    uint16_t dwell_ms;
+    uint16_t dwell_ms; /* capability 81+: measured ceil(ms); older peers: target */
 } cerberus_wifi_channel_survey_result_payload_t;
+
+/* Scoped survey control (capability 70). The independently seeded 64-bit
+ * session counter never wraps within a boot. Its random initial value reduces
+ * accidental cross-boot collision; it is not eternal uniqueness/authentication.
+ * INFO returns the latest epoch without renewing. START accepts only epoch+1,
+ * or replays the exact retained session/band without rearming. */
+#define CERBERUS_WIFI_CHANNEL_SURVEY_SESSION_MIN_FIRMWARE 70U
+#define CERBERUS_WIFI_CHANNEL_SURVEY_SESSION_LEASE_MS 10000U
+#define CERBERUS_WIFI_CHANNEL_SURVEY_SESSION_BOUND 1U
+#define CERBERUS_WIFI_CHANNEL_SURVEY_SESSION_RADIO_HELD 2U
+#define CERBERUS_WIFI_CHANNEL_SURVEY_SESSION_CANCELLED 4U
+#define CERBERUS_WIFI_CHANNEL_SURVEY_READ_STATUS 0U
+#define CERBERUS_WIFI_CHANNEL_SURVEY_READ_RESULT 1U
+#define CERBERUS_WIFI_CHANNEL_SURVEY_READ_PART_BYTES 9U
+#define CERBERUS_WIFI_CHANNEL_SURVEY_READ_PARTS 3U
+
+typedef struct __attribute__((packed)) {
+    uint64_t session_id;
+    uint8_t band;
+} cerberus_wifi_channel_survey_session_start_t;
+
+typedef struct __attribute__((packed)) {
+    uint64_t session_id;
+} cerberus_wifi_channel_survey_session_request_t;
+
+/* Failed scoped commands echo the requested session, never a replacement's
+ * identity. If that session was not accepted, all fields except session/error
+ * are zero. BOUND persists for the retained completed job; RADIO_HELD is the
+ * queued worker or unresolved SDK reservation. CANCELLED cannot be renewed. */
+typedef struct __attribute__((packed)) {
+    uint64_t session_id;
+    int32_t error_code;
+    uint8_t state;
+    uint8_t band;
+    uint8_t generation;
+    uint8_t flags;
+    uint8_t result_count;
+    uint8_t completed_count;
+    uint16_t total_sweeps;
+    uint16_t dwell_ms;
+} cerberus_wifi_channel_survey_session_status_t;
+
+/* Part0/pin0 freezes exactly one legacy22-byte status or result. Parts1/2
+ * require its full session/pin/kind/index. One global pin can be replaced by
+ * a newer read; superseded continuations fail, never mix metric revisions.
+ * READ does not renew ownership. Pin exhaustion fails closed without wrap. */
+typedef struct __attribute__((packed)) {
+    uint64_t session_id;
+    uint32_t pin;
+    uint8_t kind;
+    uint8_t index;
+    uint8_t part;
+} cerberus_wifi_channel_survey_session_read_t;
+
+typedef struct __attribute__((packed)) {
+    uint64_t session_id;
+    uint32_t pin;
+    uint8_t part;
+    uint8_t data[CERBERUS_WIFI_CHANNEL_SURVEY_READ_PART_BYTES];
+} cerberus_wifi_channel_survey_session_chunk_t;
+/* Successful parts contain9/9/4 bytes, last5 zero. Errors echo request.session
+ * and request.part, pin0, signed error LE in data[0..3], remaining bytes zero.
+ * Full metrics cost three exchanges, with no new result bank/task. */
+_Static_assert(sizeof(cerberus_wifi_channel_survey_session_start_t)==9U,"survey start wire");
+_Static_assert(sizeof(cerberus_wifi_channel_survey_session_status_t)==22U,"survey status wire");
+_Static_assert(sizeof(cerberus_wifi_channel_survey_session_read_t)==15U,"survey read wire");
+_Static_assert(sizeof(cerberus_wifi_channel_survey_session_chunk_t)==22U,"survey chunk wire");
 
 /* Count-only fixed-channel management-frame monitor. Each sample covers one
  * completed 200 ms interval. Sequence plus generation makes ring overwrites
@@ -1315,6 +1610,7 @@ typedef struct __attribute__((packed)) {
 typedef enum {
     CERBERUS_FRAGMENT_OBJECT_NONE = 0,
     CERBERUS_FRAGMENT_OBJECT_C5_DIAGNOSTIC_SNAPSHOT = 1,
+    CERBERUS_FRAGMENT_OBJECT_DEVICE_IDENTITY = 2,
 } cerberus_fragment_object_t;
 
 typedef struct __attribute__((packed)) {
@@ -1445,6 +1741,39 @@ static inline bool cerberus_protocol_frame_is_valid(const cerberus_spi_frame_t *
         frame->protocol_version == CERBERUS_PROTOCOL_VERSION &&
         frame->payload_length <= CERBERUS_SPI_FRAME_PAYLOAD_SIZE &&
         frame->crc16 == cerberus_protocol_crc16(frame, offsetof(cerberus_spi_frame_t, crc16));
+}
+
+static inline bool cerberus_protocol_prepare_packet_count_raw(cerberus_packet_count_raw_frame_t *out,
+    uint8_t sequence,const cerberus_packet_count_raw_chunk_t *payload)
+{
+    if(!out||!payload)return false;
+    memset(out,0,sizeof(*out));out->magic=CERBERUS_SPI_MAGIC;
+    out->protocol_version=CERBERUS_PROTOCOL_VERSION;out->command=CERBERUS_PACKET_COUNT_COMMAND_RAW_READ;
+    out->sequence=sequence;out->payload_length=sizeof(*payload);out->payload=*payload;
+    out->crc16=cerberus_protocol_crc16(out,offsetof(cerberus_packet_count_raw_frame_t,crc16));return true;
+}
+static inline bool cerberus_protocol_packet_count_raw_valid(const cerberus_packet_count_raw_frame_t *p)
+{
+    return p&&p->magic==CERBERUS_SPI_MAGIC&&p->protocol_version==CERBERUS_PROTOCOL_VERSION&&
+        p->command==CERBERUS_PACKET_COUNT_COMMAND_RAW_READ&&p->payload_length==sizeof(p->payload)&&
+        p->crc16==cerberus_protocol_crc16(p,offsetof(cerberus_packet_count_raw_frame_t,crc16));
+}
+
+static inline bool cerberus_protocol_prepare_monitor_record_raw(cerberus_packet_count_raw_frame_t *out,
+    uint8_t sequence, const cerberus_packet_count_raw_chunk_t *payload)
+{
+    if (!cerberus_protocol_prepare_packet_count_raw(out, sequence, payload)) return false;
+    out->command = CERBERUS_SPI_COMMAND_WIFI_PACKET_MONITOR_RECORD_RAW_READ;
+    out->crc16 = cerberus_protocol_crc16(out, offsetof(cerberus_packet_count_raw_frame_t, crc16));
+    return true;
+}
+
+static inline bool cerberus_protocol_monitor_record_raw_valid(const cerberus_packet_count_raw_frame_t *p)
+{
+    return p && p->magic == CERBERUS_SPI_MAGIC && p->protocol_version == CERBERUS_PROTOCOL_VERSION &&
+        p->command == CERBERUS_SPI_COMMAND_WIFI_PACKET_MONITOR_RECORD_RAW_READ &&
+        p->payload_length == sizeof(p->payload) &&
+        p->crc16 == cerberus_protocol_crc16(p, offsetof(cerberus_packet_count_raw_frame_t, crc16));
 }
 
 static inline bool cerberus_protocol_prepare_event_batch(

@@ -122,8 +122,8 @@ static void check_wifi_age_controls(const char *all_path,const char *recent_path
         .age_label=age,.subtitle="SWEEP COMPLETE / TAP AGAIN TO RESCAN",
         .hint="32 RETAINED NETWORKS / AGE FILTER ABOVE",
         .total_count=32U,.page_count=8U,.has_next=true,.row_count=4U,
-        .rows={{.name="Yasin Family Home",.detail="02:11:22:33:44:50 / CH 6",.badge="2.4G / WPA2",.rssi=-42,.signal_valid=true},
-               {.name="Yasin Family Home",.detail="02:11:22:33:44:51 / CH 36",.badge="5G / WPA2",.rssi=-49,.signal_valid=true},
+        .rows={{.name="Example Test Net",.detail="02:11:22:33:44:50 / CH 6",.badge="2.4G / WPA2",.rssi=-42,.signal_valid=true},
+               {.name="Example Test Net",.detail="02:11:22:33:44:51 / CH 36",.badge="5G / WPA2",.rssi=-49,.signal_valid=true},
                {.name="Workshop network",.detail="02:11:22:33:44:52 / CH 11",.badge="2.4G / WPA2",.rssi=-70,.signal_valid=true},
                {.name="Hidden network",.detail="02:11:22:33:44:53 / CH 44",.badge="5G / WPA2",.rssi=-82,.signal_valid=true}}};
     assert(sentinel_scan_view_draw(&view,0U)==ESP_OK);
@@ -145,7 +145,8 @@ static void check_wifi_age_controls(const char *all_path,const char *recent_path
     assert(sentinel_scan_view_hit_test(&view,250U,113U)==SENTINEL_VIEW_NONE);
     assert(sentinel_scan_view_hit_test(&view,250U,126U)==SENTINEL_VIEW_ROW0);
     unsigned before=calls;
-    view.sort_label="SIGNAL >"; /* Wi-Fi has no sort route or sort label. */
+    /* Legacy/no-sort Wi-Fi callers retain the state badge and old hit areas.
+     * The ordinary-list fixture exercises the new explicit sort control. */
     assert(sentinel_scan_view_update(&view,1U)==ESP_OK&&calls==before);
     assert_drawn_text(244U,58U,"CAPTURED");
     assert(sentinel_scan_view_hit_test(&view,250U,58U)==SENTINEL_VIEW_NONE);
@@ -210,6 +211,29 @@ esp_err_t cerberus_display_draw_mono_bitmap(uint16_t x,uint16_t y,uint16_t w,uin
         screen[(y+row)*320+x+col]=data[row*((w+7)/8)+col/8]&(0x80>>(col%8))?fg:bg;
     return ESP_OK;
 }
+static void check_error_stop_control(void)
+{
+    sentinel_scan_view_t view={.kind=SENTINEL_VIEW_BLE,.state=SENTINEL_VIEW_ERROR,
+        .stop_action=true,.subtitle="S3 ERROR / C5 ERROR / TAP C5",
+        .hint="RETRY EACH RECEIVER IN C5 VIEW"};
+    assert(sentinel_scan_view_draw(&view,0U)==ESP_OK);
+    assert_drawn_text(106U,381U,"STOP");
+    assert(sentinel_scan_view_hit_test(&view,100U,380U)==SENTINEL_VIEW_PAUSE);
+    static uint16_t before_screen[320U*480U];
+    memcpy(before_screen,screen,sizeof(screen));
+    unsigned before=calls;
+    view.stop_action=false;
+    assert(sentinel_scan_view_update(&view,1U)==ESP_OK&&calls>before);
+    assert_drawn_text(106U,381U,"SCAN");
+    for(unsigned y=0U;y<480U;++y)for(unsigned x=0U;x<320U;++x)
+        if(x<84U||x>=152U||y<364U||y>=406U)
+            assert(screen[y*320U+x]==before_screen[y*320U+x]);
+    before=calls;assert(sentinel_scan_view_update(&view,2U)==ESP_OK&&calls==before);
+    view.state=SENTINEL_VIEW_LIVE;
+    assert(sentinel_scan_view_update(&view,3U)==ESP_OK);
+    assert_drawn_text(106U,381U,"STOP"); /* Existing callers retain their default. */
+}
+
 int main(int argc,char **argv)
 {
     assert(argc==9);
@@ -217,8 +241,8 @@ int main(int argc,char **argv)
         .count_label="NETWORKS SELECTED",.subtitle="TAP NETWORKS TO TOGGLE / THEN ATTACKS",
         .hint="0 SELECTED / 7 IN SWEEP / CLEAR ABOVE",.tools_label="ATTACKS",.tools_disabled=true,.selection_mode=true,
         .total_count=7,.page_count=2,.has_next=true,.row_count=4,
-        .rows={{.name="Yasin Family Home",.detail="02:11:22:33:44:50 / CH 6",.badge="2.4G / WPA2 / TAP TO SELECT",.rssi=-42,.signal_valid=true},
-               {.name="Yasin Family Home",.detail="02:11:22:33:44:51 / CH 36",.badge="5G / WPA2 / TAP TO SELECT",.rssi=-49,.signal_valid=true},
+        .rows={{.name="Example Test Net",.detail="02:11:22:33:44:50 / CH 6",.badge="2.4G / WPA2 / TAP TO SELECT",.rssi=-42,.signal_valid=true},
+               {.name="Example Test Net",.detail="02:11:22:33:44:51 / CH 36",.badge="5G / WPA2 / TAP TO SELECT",.rssi=-49,.signal_valid=true},
                {.name="A full thirty-two character SSID",.detail="02:11:22:33:44:52 / CH 11",.badge="2.4G / WPA2 / TAP TO SELECT",.rssi=-70,.signal_valid=true},
                {.name="Hidden network",.detail="02:11:22:33:44:53 / CH 44",.badge="5G / WPA2 / TAP TO SELECT",.rssi=-82,.signal_valid=true}}};
     assert(sentinel_scan_view_draw(&v,0)==ESP_OK);
@@ -264,6 +288,7 @@ int main(int argc,char **argv)
     assert(sentinel_scan_view_hit_test(&v,250,65)==SENTINEL_VIEW_NONE);
     check_age_controls(&v,argv[3],argv[4],argv[5]);
     check_wifi_age_controls(argv[6],argv[7],argv[8]);
+    check_error_stop_control();
     sentinel_scan_session_t s;sentinel_scan_session_init(&s);
     sentinel_scan_session_select_snapshot(&s,SENTINEL_SCAN_WIFI);
     sentinel_scan_observation_t idle={.valid=true};

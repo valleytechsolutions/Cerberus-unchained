@@ -59,6 +59,7 @@ static void discovery_raw_original(cerberus_s3_ble_record_t *record,
     record->advertisement_flags = report->length > length ? CERBERUS_BLE_ADVERTISEMENT_TRUNCATED : 0U;
     if (!valid) record->advertisement_flags |= CERBERUS_BLE_ADVERTISEMENT_MALFORMED;
     record->last_advertisement_ms = now;
+    record->focus.discovery.raw_advertisement_sequence = record->focus.discovery.advertisement_sequence;
     record->advertisement_sid = report->sid;
     record->advertisement_sid_valid = report->sid_valid;
     if (record->reports_seen != UINT16_MAX) ++record->reports_seen;
@@ -92,6 +93,7 @@ static bool discovery_apply(cerberus_s3_ble_record_t *record,
         source->scan_response_sequence = sequence;
         source->scan_response_observed_ms = now;
         source->flags |= CERBERUS_S3_BLE_EVIDENCE_RESPONSE_VALID;
+        copy_discovery_response(source, report);
     } else {
         /* Invalidate before any malformed/incomplete return, including SID
          * changes. No subsequent response may bind the previous original. */

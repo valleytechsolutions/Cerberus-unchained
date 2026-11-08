@@ -1,17 +1,53 @@
 /* Private Recon controls on the existing UI task. No second radio owner. */
+#include "recon_recorder.h"
+static const char *recon_record_label(const cerberus_recon_recorder_status_t *status)
+{
+    switch (status->state) {
+    case CERBERUS_RECON_RECORDER_STARTING: return "STARTING";
+    case CERBERUS_RECON_RECORDER_RECORDING: return "RECORDING";
+    case CERBERUS_RECON_RECORDER_STOPPING: return "SAVING";
+    case CERBERUS_RECON_RECORDER_COMPLETE: return "SAVED";
+    case CERBERUS_RECON_RECORDER_ERROR: return status->session_name[0] ? "ERROR / PARTIAL" : "ERROR";
+    case CERBERUS_RECON_RECORDER_CANCELED: return "STOPPED / NO FILE";
+    default: return "OFF";
+    }
+}
 static esp_err_t recon_draw_options(void)
 {
     ESP_RETURN_ON_ERROR(cerberus_display_fill_rect(0, 0, 320, 480, UI_BACKGROUND), TAG, "recon options clear");
     ESP_RETURN_ON_ERROR(draw_header("RECON OPTIONS"), TAG, "recon options header");
-    char confidence[40];
-    snprintf(confidence, sizeof(confidence), "ALERT FILTER: %s", watch_state.minimum_confidence == SENTINEL_WATCH_CONFIDENCE_HIGH ?
+    cerberus_recon_recorder_status_t status;
+    cerberus_recon_recorder_get_status(&status);
+    char line[52], confidence[25];
+    snprintf(line, sizeof(line), "SD RECORD: %s", recon_record_label(&status));
+    ESP_RETURN_ON_ERROR(draw_centered(64, line, UI_GOOD, 1), TAG, "recon record status");
+    snprintf(line, sizeof(line), status.session_name[0] ? "/CERBERUS/RECON/%.6s" : "NO SD SESSION FOLDER", status.session_name);
+    ESP_RETURN_ON_ERROR(draw_centered(84, line, UI_TEXT, 1), TAG, "recon record folder");
+    if (status.error != ESP_OK)
+        snprintf(line, sizeof(line), "%.45s", esp_err_to_name(status.error));
+    else {
+        uint64_t missed = (uint64_t)status.counters.dropped + status.counters.invalid + status.counters.abandoned;
+        bool missed_lower_bound = missed > UINT32_MAX || status.counters.dropped == UINT32_MAX ||
+            status.counters.invalid == UINT32_MAX || status.counters.abandoned == UINT32_MAX;
+        snprintf(line, sizeof(line), "WRITTEN %lu%s / MISSED %lu%s", (unsigned long)status.counters.written,
+            status.counters.written == UINT32_MAX ? "+" : "", (unsigned long)(missed > UINT32_MAX ? UINT32_MAX : missed),
+            missed_lower_bound ? "+" : "");
+    }
+    ESP_RETURN_ON_ERROR(draw_centered(102, line, UI_MUTED, 1), TAG, "recon record counts");
+    bool can_stop = status.worker_active && (status.state == CERBERUS_RECON_RECORDER_STARTING ||
+        status.state == CERBERUS_RECON_RECORDER_RECORDING);
+    ESP_RETURN_ON_ERROR(draw_button(8, 120, 304, 44, can_stop ? "STOP AND SAVE RECORDING" :
+        status.worker_active ? "SAVING / PLEASE WAIT" : watch_paused ? "RESUME RECON TO RECORD" : "START SD RECORDING"), TAG, "recon record control");
+    snprintf(confidence, sizeof(confidence), "ALERT: %s", watch_state.minimum_confidence == SENTINEL_WATCH_CONFIDENCE_HIGH ?
         "HIGH ONLY" : watch_state.minimum_confidence == SENTINEL_WATCH_CONFIDENCE_MEDIUM ? "MEDIUM +" : "ALL");
     const char *labels[] = {confidence, watch_state.muted ? "ALERTS: MUTED" : "ALERTS: ON", "TYPE FILTER",
-        recon_confirm == 4 ? "TAP AGAIN: RESET IGNORE / SNOOZE" : "RESET IGNORE / SNOOZE",
-        recon_confirm == 5 ? "TAP AGAIN: CLEAR SESSION LOG" : "CLEAR SESSION LOG", "SCENE GALLERY"};
-    for (unsigned i = 0; i < 6; ++i)
-        ESP_RETURN_ON_ERROR(draw_button(8, 72 + i * 52, 304, 44, labels[i]), TAG, "recon option");
-    ESP_RETURN_ON_ERROR(draw_centered(393, "SETTINGS AND LOG LAST UNTIL POWER OFF", UI_MUTED, 1), TAG, "recon lifetime");
+        "RESET IGNORE / SNOOZE", "CLEAR LIVE HISTORY", watch_radar ? "VIEW: RADAR" : "VIEW: DASHBOARD", "NEARBY INVENTORY"};
+    for (unsigned i = 0; i < 7; ++i)
+        ESP_RETURN_ON_ERROR(draw_button(8 + (i % 2U) * 156, 170 + (i / 2U) * 54, 148, 44, labels[i]), TAG, "recon option");
+    const char *confirmation = recon_confirm == 4 ? "TAP AGAIN: RESET IGNORE / SNOOZE" :
+        recon_confirm == 5 ? "TAP AGAIN: CLEAR LIVE HISTORY" : recon_message;
+    ESP_RETURN_ON_ERROR(draw_centered(390, confirmation, UI_GOOD, 1), TAG, "recon confirmation");
+    ESP_RETURN_ON_ERROR(draw_centered(405, "LIVE: VOLATILE / SAVED SD: KEPT", UI_MUTED, 1), TAG, "recon saved lifetime");
     return draw_button(64, 426, 192, 44, "BACK TO RECON");
 }
 static esp_err_t recon_draw_actions(void)
@@ -31,7 +67,7 @@ static esp_err_t recon_draw_actions(void)
             ESP_RETURN_ON_ERROR(draw_button(8 + (i % 2) * 156, 242 + (i / 2) * 54, 148, 44, labels[i]), TAG, "recon duration");
     }
     ESP_RETURN_ON_ERROR(draw_centered(358, recon_message, UI_GOOD, 1), TAG, "recon action status");
-    ESP_RETURN_ON_ERROR(draw_centered(387, "OBSERVATIONS CONTINUE IN SESSION LOG", UI_MUTED, 1), TAG, "recon action effect");
+    ESP_RETURN_ON_ERROR(draw_centered(387, "LIVE HINT HISTORY / SD RECORD IS SEPARATE", UI_MUTED, 1), TAG, "recon action effect");
     return draw_button(64, 426, 192, 44, "BACK TO EVIDENCE");
 }
 static esp_err_t recon_draw_signal(uint32_t now)
@@ -67,9 +103,25 @@ static bool recon_handle_control_tap(uint16_t x, uint16_t y, uint32_t now)
         watch_page = watch_page == WATCH_OPTIONS ? WATCH_LIVE : watch_page == WATCH_SIGNAL ? WATCH_ACTIONS : WATCH_DETAILS;
         recon_confirm = 0; return true;
     }
-    if (watch_page == WATCH_OPTIONS && x >= 8 && x < 312 && y >= 72 && y < 376 && (y - 72) % 52 < 44) {
-        unsigned action = (y - 72) / 52;
+    if (watch_page == WATCH_OPTIONS && x >= 8 && x < 312 && y >= 120 && y < 164) {
+        cerberus_recon_recorder_status_t status;
+        cerberus_recon_recorder_get_status(&status);
+        recon_confirm = 0; recon_message[0] = 0;
+        if (status.worker_active) {
+            if (status.state == CERBERUS_RECON_RECORDER_STARTING || status.state == CERBERUS_RECON_RECORDER_RECORDING)
+                cerberus_recon_recorder_stop();
+        } else if (!watch_paused) {
+            esp_err_t error = cerberus_recon_recorder_start();
+            if (error != ESP_OK) snprintf(recon_message, sizeof(recon_message), "%.48s", esp_err_to_name(error));
+        }
+        return true;
+    }
+    if (watch_page == WATCH_OPTIONS && x >= 8 && x < 312 && (x - 8) % 156 < 148 &&
+        y >= 170 && y < 376 && (y - 170) % 54 < 44) {
+        unsigned action = ((y - 170) / 54) * 2U + (x - 8) / 156;
+        if (action >= 7U) return false;
         unsigned confirmation = recon_confirm; recon_confirm = 0;
+        recon_message[0] = 0;
         if (action == 0) sentinel_watch_set_alert_filter(&watch_state,
             (sentinel_watch_confidence_t)(watch_state.minimum_confidence % 3 + 1), watch_state.muted, now);
         else if (action == 1) sentinel_watch_set_alert_filter(&watch_state, watch_state.minimum_confidence, !watch_state.muted, now);
@@ -79,7 +131,19 @@ static bool recon_handle_control_tap(uint16_t x, uint16_t y, uint32_t now)
         } else if (action == 4) {
             if (confirmation == 5) { sentinel_watch_clear_history(&watch_state); watch_history_page = 0; }
             else recon_confirm = 5;
-        } else { watch_page = WATCH_DEMO; watch_demo_scene = 0; }
+        } else if (action == 5U) {
+            watch_radar = !watch_radar;
+            if(recon_inventory_ui)recon_inventory_ui->paint_valid=false;
+            snprintf(recon_message,sizeof(recon_message),"%s",watch_radar?
+                "RADAR: SIGNAL ONLY / NO DIRECTION":"DASHBOARD: RETAINED OBSERVATIONS");
+        } else {
+            if (recon_inventory_ui) {
+                recon_inventory_ui->filter = CERBERUS_RECON_INVENTORY_ALL;
+                recon_inventory_ui->page = 0U;
+                recon_inventory_ui->paint_valid = false;
+            }
+            watch_page = WATCH_INVENTORY;
+        }
         return true;
     }
     if (watch_page != WATCH_ACTIONS || watch_detail.radio == SENTINEL_WATCH_RADIO_ENVIRONMENT) return false;

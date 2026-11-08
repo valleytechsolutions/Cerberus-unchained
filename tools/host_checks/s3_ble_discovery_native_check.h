@@ -68,6 +68,15 @@ static void check_discovery_native(void)
     DN(bank.records[0].observed_ms == original_time && bank.records[0].peer.rssi == -75 &&
         bank.records[0].focus.discovery.scan_response_observed_ms == tick &&
         bank.records[0].advertisement.length == sizeof(ordinary));
+    DN(bank.records[0].focus.discovery.scan_response.length == sizeof(findmy) &&
+        bank.records[0].focus.discovery.scan_response.original_length == sizeof(findmy) &&
+        !memcmp(bank.records[0].focus.discovery.scan_response.data,findmy,sizeof(findmy)) &&
+        bank.records[0].focus.discovery.raw_advertisement_sequence ==
+            bank.records[0].focus.discovery.advertisement_sequence);
+    uint64_t response_source=UINT64_MAX;
+    DN(cerberus_s3_ble_discovery_response(&bank.records[0].focus,&bank.records[0].advertisement,
+        bank.records[0].generation,bank.records[0].observed_ms,original_time,bank.meta.source_now_ms,
+        &response_source)==CERBERUS_S3_BLE_RESPONSE_PRESENT && response_source==tick);
     DN(cerberus_s3_ble_discovery_bank_valid(&bank));
     DN(cerberus_s3_ble_discovery_inventory_apply(&history, &bank) == CERBERUS_BLE_INVENTORY_APPLIED &&
         history.count == 1U && history.entries[0].original_source_ms == original_time);
@@ -76,6 +85,10 @@ static void check_discovery_native(void)
         row->advertisement.address, row->advertisement.address_type, row->advertisement.event_type,
         row->advertisement.flags, row->advertisement.data, row->advertisement.length) == CERBERUS_FINDMY_PROFILE_NONE);
     frozen = bank;
+    snapshot->records[0].focus.discovery.scan_response.length=32;
+    DN(cerberus_s3_ble_scanner_copy_discovery(epoch,&bank)==ESP_ERR_INVALID_STATE && all_zero(&bank,sizeof(bank)));
+    snapshot->records[0].focus.discovery.scan_response.length=sizeof(findmy);
+    DN(frozen.records[0].focus.discovery.scan_response.length==sizeof(findmy));
     DN(cerberus_s3_ble_scanner_copy_discovery(epoch, &bank) == ESP_OK && bank.meta.revision == frozen.meta.revision);
     DN(cerberus_s3_ble_discovery_inventory_apply(&history, &bank) == CERBERUS_BLE_INVENTORY_DUPLICATE);
     fail_discovery_lock = true;
@@ -88,6 +101,9 @@ static void check_discovery_native(void)
     emit_hc_report(ordinary, sizeof(ordinary), -50, false, 90U, 3U);
     DN(cerberus_s3_ble_scanner_copy_discovery(epoch, &bank) == ESP_OK && bank.meta.status.stored_count == 1U);
     DN(!(bank.records[0].focus.category_bits & CERBERUS_S3_BLE_FOCUS_FIND_MY));
+    DN(cerberus_s3_ble_response_storage_valid(&bank.records[0].focus.discovery) &&
+        bank.records[0].focus.discovery.scan_response.length==0 &&
+        frozen.records[0].focus.discovery.scan_response.length==sizeof(findmy));
     DN(cerberus_s3_ble_discovery_inventory_apply(&history, &bank) == CERBERUS_BLE_INVENTORY_APPLIED && history.count == 0U);
     DN(frozen.records[0].focus.category_bits & CERBERUS_S3_BLE_FOCUS_FIND_MY);
     /* One coherent invalid record rejects the whole copy before any output. */
@@ -226,6 +242,10 @@ static void check_discovery_native(void)
         bank.records[0].observed_ms == UINT32_MAX && bank.records[0].focus.discovery.scan_response_observed_ms == 0U);
     DN(cerberus_s3_ble_discovery_inventory_apply(&history, &bank) == CERBERUS_BLE_INVENTORY_APPLIED &&
         history.count == 1U && history.entries[0].original_source_ms == UINT32_MAX);
+    DN(cerberus_s3_ble_discovery_response(&bank.records[0].focus,&bank.records[0].advertisement,
+        bank.records[0].generation,bank.records[0].observed_ms,history.entries[0].original_source_ms,
+        bank.meta.source_now_ms,&response_source)==CERBERUS_S3_BLE_RESPONSE_PRESENT &&
+        response_source==(uint64_t)UINT32_MAX+1U);
     discovery_native_complete();
     DN(cerberus_s3_ble_scanner_release_discovery(epoch) == ESP_OK);
     clock_base_us = 0U;

@@ -72,9 +72,8 @@ bool cerberus_wardrive_observation_valid(const cerberus_wardrive_observation_t *
     for (size_t i = 0; i < 6U; ++i) any_nonzero |= observation->address[i] != 0U;
     if (!any_nonzero) return false;
     if (observation->type == CERBERUS_WARDRIVE_WIFI)
-        return !observation->ble_evidence.flags && observation->channel != 0U &&
-            observation->radio != CERBERUS_WARDRIVE_RADIO_S3;
-    return observation->radio == CERBERUS_WARDRIVE_RADIO_S3 &&
+        return !observation->ble_evidence.flags && observation->channel != 0U;
+    return observation->radio <= CERBERUS_WARDRIVE_RADIO_S3 &&
         observation->channel == 0U;
 }
 

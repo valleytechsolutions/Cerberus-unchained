@@ -19,9 +19,9 @@ def main() -> None:
     node = ROOT / "web/node_modules"
     lock = json.loads((ROOT / "web/package-lock.json").read_text())["packages"]
     sections = [
-        "CERBERUS SENTINEL — THIRD-PARTY SOFTWARE NOTICES\n\n"
+        "CERBERUS UNCHAINED — THIRD-PARTY SOFTWARE NOTICES\n\n"
         "The following notices apply to their named components, not to the Cerberus\n"
-        "project as a whole. Third-party projects do not endorse Cerberus Sentinel.\n"
+        "project as a whole. Third-party projects do not endorse Cerberus Unchained or Sentinel.\n"
         "Watch catalog notices and protocol-source attributions are also distributed\n"
         "inside each firmware release directory.\n"
     ]
@@ -92,6 +92,13 @@ def main() -> None:
     append("Project Nayuki QR Code generator", "https://www.nayuki.io/page/qr-code-generator-library", qrcode)
     append("Watch broadcast signature catalog", "Cerberus Sentinel / docs/WATCH_THIRD_PARTY_NOTICES.md",
            (ROOT / "docs/WATCH_THIRD_PARTY_NOTICES.md").read_text(encoding="utf-8"))
+    for license_file in sorted((ROOT / "LICENSES").rglob("*.txt")):
+        append(f"Firmware attribution: {license_file.name}",
+               license_file.relative_to(ROOT).as_posix(), license_file.read_text(encoding="utf-8"))
+    for license_file in sorted((ROOT / "web/public/fonts").glob("*-LICENSE.txt")):
+        append(f"Bundled typography: {license_file.name}",
+               license_file.relative_to(ROOT / "web/public").as_posix(),
+               license_file.read_text(encoding="utf-8"))
     output = ROOT / "web/public/notices.txt"
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text("\n".join(sections), encoding="utf-8", newline="\n")

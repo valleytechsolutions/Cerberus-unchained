@@ -1,63 +1,113 @@
-# Optional ATGM336H location adapter foundation
+# Optional GPS adapter in the main firmware
 
-The preserved Wardriving firmware configures the S3's UART2 at **9600 8N1**:
-receiver TX into **S3 GPIO1** (UART RX), S3 GPIO2 as UART TX, and an optional
-1 PPS input on **GPIO46**. These assignments come from the preserved
-`integration/baselines/wardriving/shared/cerberus_pins.h` and its `gps.c`.
-The Unified pin map does not currently allocate GPIO1, GPIO2, or GPIO46.
-Physical routing and voltage still need verification on the expansion board.
-The integrated adapter claims **only UART2 RX on GPIO1**; it does not drive
-GPIO2 or claim GPIO46. GPIO46 is a boot strapping pin and should not be used
-for PPS without board-level validation. There is no GPS receiver on the
-current test device.
+The integrated receiver uses **S3 UART2 RX on GPIO1, 9600 baud, 8N1**. GPS is
+optional and defaults OFF. The UART driver and existing reader task are
+allocated only when GPS is enabled for a Wardriving session; opening GPS DATA
+or received NMEA does not start them. There is no GPS receiver connected to the
+current test device, and physical pin routing/input remain unaccepted.
 
-`s3_main/main/wardrive_gps_core.{h,c}` is original, hardware-independent NMEA
-code for the main firmware. It accepts bounded UART byte chunks or complete
-lines, requires a two-digit XOR checksum, parses GP/GN and other two-letter
-talker `RMC`/`GGA` sentences, and validates coordinates, fix fields, date, and
-time. It never stores a placeholder location. Its status is derived each time
-from monotonic age:
+The preserved Wardriving firmware also describes GPIO2 TX and GPIO46 PPS.
+The integrated adapter does not drive GPIO2 or claim GPIO46. Its original pin
+reference and source hashes are recorded in
+[the preserved Wardriving inventory](WARDRIVING_SOURCE_INVENTORY.md).
+This is one optional peripheral service in the main application, not a separate
+GPS firmware image or a second UART owner.
 
-| State | Condition | Snapshot coordinates |
+## Parser and evidence
+
+`wardrive_gps_core.c` is original hardware-independent Cerberus code. The
+bounded assembler accepts UART chunks, requires an exact two-digit XOR
+checksum, and parses two-letter-talker RMC/GGA sentences. Coordinates, numeric
+fields, dates and times are validated. It never substitutes a placeholder
+location. The two-digit year uses an 80 pivot: 00-79 map to 2000-2079 and 80-99
+to 1980-1999; future century handling remains a separate concern.
+
+| Internal state | Meaning | Coordinates |
 | --- | --- | --- |
-| `ABSENT` | No checksum-valid sentence in 10 seconds, or none yet | Withheld |
-| `NO_FIX` | Recent receiver sentence, but no current valid fix | Withheld |
+| `ABSENT` | No checksum-valid sentence yet or within 10 seconds | Withheld |
+| `NO_FIX` | Recent sentence, no current valid navigation fix | Withheld |
 | `STALE` | Recent sentence, last valid fix older than 5 seconds | Withheld |
-| `FRESH` | Recent sentence and a valid fix no older than 5 seconds | Exposed |
+| `FRESH` | Current valid fix no older than 5 seconds | Available |
 
-An explicit `RMC V` or `GGA` quality zero clears the current fix. A malformed
-coordinate or GGA numeric field cannot refresh it. An `RMC` date and time that
-pass validation supply a full UTC value; a `GGA` update retains that value only
-when it reports the same UTC second within one second of the RMC. A fresh
-location without a valid RMC date/time has `utc_valid=false`. The NMEA
-two-digit year uses an 80 pivot (`00`–`79` map to 2000–2079, `80`–`99` to
-1980–1999); a future date source should validate its century independently.
+`ABSENT` describes received evidence, not proof of missing hardware. The GPS
+view calls this **NO RECENT NMEA**. A checksum-valid sentence is not necessarily
+a supported or semantically valid RMC/GGA message.
 
-The current source also has `s3_main/main/wardrive_gps_uart.{h,c}`. During a
-Wardriving session it installs UART2, allocates a bounded 4096-byte receive
-buffer and a reader task, timestamps received NMEA chunks with the S3
-monotonic clock, and feeds the parser under a mutex. Stop waits for the reader
-to exit before deleting the UART driver. The service prewarms the S3 BLE host
-before allocating the Wardriving worker and optional GPS reader, preserving
-the first-use BLE heap gate. Missing GPS input leaves the receiver `ABSENT`
-and does not prevent C5 Wi-Fi or S3 BLE scanning.
+An explicit RMC V or GGA quality zero invalidates coordinates. UTC requires a
+checksum-checked RMC date/time; a GGA can retain that UTC only for the same UTC
+second within one second of receipt. Snapshot UTC/coordinates remain withheld
+unless their existing validity rules pass. A fresh location can still have
+unknown UTC, and therefore fail the stricter geotagged-row gate.
 
-The Wardriving page now shows `ABSENT`, `NO FIX`, `STALE`, or `FRESH`, plus
-whether UTC was validated. A UART setup or read error is shown separately.
-The output remains `UNLOC###.CSV` even with a fresh fix: no coordinates are
-written to it, and there is no WiGLE writer yet. Each row now labels the GPS
-receiver state **at append time** and can include the latest validated RMC UTC
-value. Neither field is claimed as the RF observation time; scan results can
-be buffered before they are appended. A future geotagged writer
-must accept an individual observation only with `FRESH`,
-`coordinates_valid`, and validated `utc_valid`, with an observation-time
-provenance check. PPS would not replace a valid NMEA fix and date.
+Rev122 adds GGA age and independent satellite/HDOP validity. RMC or unrelated
+sentences cannot freshen those fields. Empty, invalid or older-than-five-second
+values are unavailable, not known zero. Quality-zero GGA can still update valid
+satellite/HDOP metadata independently of coordinates. HDOP is dimensionless;
+it is never labelled accuracy in metres. Plain signed decimal grammar excludes
+exponents, hexadecimal values, whitespace, NaN and infinity.
 
-The UART integration is source work after the installed rev47 test build. No
-receiver, pin routing, or on-device GPS/WiGLE behavior has been accepted.
+## Reader, observer and cleanup
 
-Run `tools/check_wardrive_gps_core.py` to compile the production parser and
-exercise streaming chunks, checksum rejection, overflow, fix loss and age,
-invalid coordinates/date/altitude, and UTC provenance. Build the S3 target to
-check the UART adapter against ESP-IDF. These checks do not establish receiver
-or pin acceptance.
+The UART uses a 1,024-byte RX ring and the existing 3,584-byte reader stack.
+The reader polls at 100 ms and feeds one synchronized parser. GPS OFF does not
+consume this driver/ring/task allocation. The S3 keeps parsing optional GPS
+and receiving BLE while C5 performs Wardriving Wi-Fi work.
+
+Rev122 separates installed driver, reader, startup, stop request and error
+state. An error after driver installation preserves cleanup ownership.
+Current-valid data is withheld after reader failure or Stop. The existing
+Wardriving worker remains STOPPING while driver cleanup is unresolved, retrying
+before it frees its workspace or reports a terminal state. Radio/file draining
+precedes this paced GPS cleanup. Successful release clears the current cleanup
+error; the adapter retains the last UART failure separately. Snapshot reads do
+not perform SDK cleanup. Start/Stop remain serialized by the existing
+Wardriving worker; observer APIs do not become additional driver owners.
+
+The received-NMEA viewer optionally attaches to that already-running reader.
+An eight-row PSRAM trace stores bounded original payload bytes, LF/CRLF
+termination, sequence, receiver epoch, UART receipt time and parser outcome.
+Its UI copy is also optional PSRAM. There is no per-line allocation, extra
+reader task or internal-RAM fallback. GPS OFF entry allocates neither trace nor
+copy. Viewer exit releases the exact observer token; a lock timeout retains that
+token and storage for a 250 ms paced UI retry, also while hidden or showing
+DATA. Each observer lock attempt is bounded at 25 ms; begin uses two attempts
+around allocation. Those are configured wait/retry limits, not measured UI
+latency or a guarantee of release within one interval.
+
+At most 127 payload bytes are retained per line. Full retention and validity
+are separate: a complete bad-checksum line remains invalid; overflow is
+explicitly incomplete. Parser overflow, framing/control/overflow discards and
+trace evictions are reported as distinct, potentially overlapping counters.
+UART loss before parsing is not measured by those counters. Sequence exhaustion
+stops new trace publication without stopping the parser; retained rows remain
+readable. A new receiver epoch clears the ring, preventing mixed-session rows.
+
+The UI shows two rows per page. Paging pauses a stable value copy and displays
+receipt ages at that copy time. Location starts hidden; every raw payload is
+erased from hidden copies, including malformed and unrecognized lines. Hiding
+also erases a paused copy immediately. Showing location again requires LIVE
+to obtain new unmasked bytes. This viewer preference does not alter saved
+logging or the separate address-display preference. Back to Summary and
+observer cleanup do not themselves stop the existing Wardriving session.
+
+## Recording and acceptance
+
+Current main-firmware logging supports both unlocated and WiGLE streams; see
+[GPS logging](WARDRIVE_GPS_LOGGING.md). Valid observations use exactly one
+stream. GPS at result receipt is not synchronized RF observation time. Opening
+these views does not change logging eligibility or initiate recording.
+
+[Rev122](DUAL_RADIO_REV122.md) records the completed implementation, focused
+checks and independent reviews. All 130 host suites, five native builds, the
+linked resource audit and matched package verification pass. The native trace
+ring is 1,304 bytes and its UI copy 1,320 bytes: 2,624 optional PSRAM bytes before
+allocator overhead or transient failed-attachment candidates. S3 fixed data/BSS
+increases by 128 bytes; C5 fixed data/BSS is unchanged. The parser core grows
+from 240 to 264 bytes while its snapshot remains 104 bytes. The selected reader
+entry frame grows from 288 to 320 bytes within the unchanged configured reader
+stack; this is not a full call-chain bound or a measured runtime safety margin.
+
+GPS hardware, live location display,
+located-file content, sustained UART operation and PPS remain physically
+unverified. Standalone GPS acquisition, generated NMEA/serial output, tracker,
+POI and geofence parity are separate work.

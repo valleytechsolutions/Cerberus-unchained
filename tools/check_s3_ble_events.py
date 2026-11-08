@@ -1,5 +1,6 @@
 """Exercise the production S3 BLE scanner with a deterministic NimBLE event queue."""
 from pathlib import Path
+import os
 import subprocess
 import sys
 
@@ -81,6 +82,9 @@ for name in ("sdkconfig.h", "esp_heap_caps.h", "esp_timer.h", "freertos/FreeRTOS
 #define ESP_LOGW(tag,fmt,...) do { (void)(tag); } while (0)
 #define ESP_LOGE(tag,fmt,...) do { (void)(tag); } while (0)
 ''')
+env = os.environ.copy()
+env["ZIG_GLOBAL_CACHE_DIR"] = str(out / "zig-cache")
+env["ZIG_LOCAL_CACHE_DIR"] = str(out / "zig-local")
 for extended in (0, 1):
     exe = out / f"s3-ble-events-{extended}-check.exe"
     subprocess.run([
@@ -96,8 +100,8 @@ for extended in (0, 1):
         str(root / "shared/sentinel_watch_protocol.c"),
         str(root / "s3_main/main/sentinel_watch_detect.c"),
         str(root / "s3_main/main/ble_analyzer.c"), "-o", str(exe),
-    ], check=True)
-    subprocess.run([str(exe)], check=True)
+    ], check=True, env=env)
+    subprocess.run([str(exe)], check=True, env=env)
 
 # Additive inventory diagnostics remain canonical and RF-free in disabled builds.
 disabled = out / "disabled"
@@ -143,7 +147,106 @@ int main(void)
     memset(&discovery, 0xa5, sizeof(discovery));
     if(cerberus_s3_ble_scanner_discovery_diagnostics(&discovery)!=ESP_OK ||
         memcmp(&discovery,&empty_discovery,sizeof(discovery))) return 11;
-    puts("Disabled inventory diagnostics: canonical empty output, explicit unsupported, no host dependencies passed.");
+    cerberus_s3_ble_discovery_record_t reacquire[4], empty_reacquire[4] = {0};
+    memset(&discovery,0xa5,sizeof(discovery));
+    if(cerberus_s3_ble_scanner_start_reacquire((uint8_t[6]){1},0,&discovery)!=ESP_ERR_NOT_SUPPORTED ||
+        memcmp(&discovery,&empty_discovery,sizeof(discovery))) return 30;
+    memset(reacquire,0xa5,sizeof(reacquire));
+    if(cerberus_s3_ble_scanner_copy_reacquire(1,reacquire,&discovery)!=ESP_ERR_NOT_SUPPORTED ||
+        memcmp(reacquire,empty_reacquire,sizeof(reacquire)) || memcmp(&discovery,&empty_discovery,sizeof(discovery))) return 31;
+    cerberus_s3_ble_analyzer_state_t analyzer, empty_analyzer={0};
+    memset(&analyzer,0xa5,sizeof(analyzer));
+    if(cerberus_s3_ble_scanner_analyzer_start(&analyzer)!=ESP_ERR_NOT_SUPPORTED ||
+        memcmp(&analyzer,&empty_analyzer,sizeof(analyzer))) return 12;
+    memset(&analyzer,0xa5,sizeof(analyzer));
+    if(cerberus_s3_ble_scanner_analyzer_get_state(&analyzer)!=ESP_ERR_NOT_SUPPORTED ||
+        memcmp(&analyzer,&empty_analyzer,sizeof(analyzer))) return 13;
+    memset(&analyzer,0xa5,sizeof(analyzer));
+    if(cerberus_s3_ble_scanner_analyzer_stop(&analyzer)!=ESP_ERR_NOT_SUPPORTED ||
+        memcmp(&analyzer,&empty_analyzer,sizeof(analyzer))) return 14;
+    if(cerberus_s3_ble_scanner_analyzer_start(NULL)!=ESP_ERR_INVALID_ARG ||
+        cerberus_s3_ble_scanner_analyzer_get_state(NULL)!=ESP_ERR_INVALID_ARG ||
+        cerberus_s3_ble_scanner_analyzer_stop(NULL)!=ESP_ERR_INVALID_ARG ||
+        cerberus_s3_ble_scanner_analyzer_release()!=ESP_ERR_NOT_SUPPORTED) return 15;
+    cerberus_s3_ble_track_state_t track, empty_track={0};
+    memset(&track,0xa5,sizeof(track));
+    if(cerberus_s3_ble_scanner_track_start(&track)!=ESP_ERR_NOT_SUPPORTED ||
+        memcmp(&track,&empty_track,sizeof(track))) return 16;
+    memset(&track,0xa5,sizeof(track));
+    if(cerberus_s3_ble_scanner_track_get_state(&track)!=ESP_ERR_NOT_SUPPORTED ||
+        memcmp(&track,&empty_track,sizeof(track))) return 17;
+    memset(&track,0xa5,sizeof(track));
+    if(cerberus_s3_ble_scanner_track_stop(&track)!=ESP_ERR_NOT_SUPPORTED ||
+        memcmp(&track,&empty_track,sizeof(track))) return 18;
+    if(cerberus_s3_ble_scanner_track_start(NULL)!=ESP_ERR_INVALID_ARG ||
+        cerberus_s3_ble_scanner_track_get_state(NULL)!=ESP_ERR_INVALID_ARG ||
+        cerberus_s3_ble_scanner_track_stop(NULL)!=ESP_ERR_INVALID_ARG ||
+        cerberus_s3_ble_scanner_track_release()!=ESP_ERR_NOT_SUPPORTED) return 19;
+    cerberus_s3_ble_passive_state_t passive,empty_passive={0};
+    cerberus_s3_ble_discovery_record_t row,empty_row={0};
+    cerberus_watch_scan_status_payload_t watch,empty_watch={0};
+    cerberus_watch_observation_t result,empty_result={0};
+    cerberus_watch_receive_timing_t timing,motion_timing,empty_timing={0};
+    sentinel_watch_motion_t motion,empty_motion={0};
+    cerberus_ble_activity_payload_t activity,empty_activity={0};
+    memset(&passive,0xa5,sizeof(passive));
+    if(cerberus_s3_ble_scanner_passive_start(0,&passive)!=ESP_ERR_NOT_SUPPORTED ||
+        memcmp(&passive,&empty_passive,sizeof(passive)))return 20;
+    memset(&passive,0xa5,sizeof(passive));
+    if(cerberus_s3_ble_scanner_passive_get_state(1,&passive)!=ESP_ERR_NOT_SUPPORTED ||
+        memcmp(&passive,&empty_passive,sizeof(passive)))return 21;
+    memset(&passive,0xa5,sizeof(passive));
+    if(cerberus_s3_ble_scanner_passive_stop(1,&passive)!=ESP_ERR_NOT_SUPPORTED ||
+        memcmp(&passive,&empty_passive,sizeof(passive)))return 22;
+    if(cerberus_s3_ble_scanner_passive_start(0,NULL)!=ESP_ERR_INVALID_ARG ||
+        cerberus_s3_ble_scanner_passive_get_state(0,&passive)!=ESP_ERR_INVALID_ARG ||
+        cerberus_s3_ble_scanner_passive_stop(1,NULL)!=ESP_ERR_INVALID_ARG ||
+        cerberus_s3_ble_scanner_passive_release(1)!=ESP_ERR_NOT_SUPPORTED)return 23;
+    memset(&passive,0xa5,sizeof(passive));memset(&row,0xa5,sizeof(row));
+    if(cerberus_s3_ble_scanner_passive_copy_row(1,0,&row,&passive)!=ESP_ERR_NOT_SUPPORTED ||
+        memcmp(&row,&empty_row,sizeof(row)) || memcmp(&passive,&empty_passive,sizeof(passive)))return 24;
+    memset(&watch,0xa5,sizeof(watch));memset(&result,0xa5,sizeof(result));
+    if(cerberus_s3_ble_scanner_passive_get_watch_status(1,&watch)!=ESP_ERR_NOT_SUPPORTED ||
+        memcmp(&watch,&empty_watch,sizeof(watch)) ||
+        cerberus_s3_ble_scanner_passive_get_watch_result(1,0,&result)!=ESP_ERR_NOT_SUPPORTED ||
+        memcmp(&result,&empty_result,sizeof(result)))return 25;
+    memset(&result,0xa5,sizeof(result));memset(&timing,0xa5,sizeof(timing));
+    memset(&motion,0xa5,sizeof(motion));memset(&motion_timing,0xa5,sizeof(motion_timing));
+    if(cerberus_s3_ble_scanner_passive_get_watch_detailed_result(1,0,&result,&timing,&motion,&motion_timing)!=ESP_ERR_NOT_SUPPORTED ||
+        memcmp(&result,&empty_result,sizeof(result)) || memcmp(&timing,&empty_timing,sizeof(timing)) ||
+        memcmp(&motion,&empty_motion,sizeof(motion)) || memcmp(&motion_timing,&empty_timing,sizeof(motion_timing)))return 26;
+    memset(&activity,0xa5,sizeof(activity));
+    if(cerberus_s3_ble_scanner_passive_get_activity(1,&activity)!=ESP_ERR_NOT_SUPPORTED ||
+        memcmp(&activity,&empty_activity,sizeof(activity)))return 27;
+    cerberus_c5_ble_result_t wardrive_rows[33];
+    cerberus_s3_ble_wardrive_evidence_t wardrive_evidence[33];
+    memset(wardrive_rows,0xa5,sizeof(wardrive_rows));
+    memset(wardrive_evidence,0xa5,sizeof(wardrive_evidence));
+    memset(&passive,0xa5,sizeof(passive));
+    if(cerberus_s3_ble_scanner_passive_copy_wardrive(1,32,wardrive_rows,wardrive_evidence,32,&passive)!=ESP_ERR_NOT_SUPPORTED ||
+        memcmp(&passive,&empty_passive,sizeof(passive)))return 28;
+    for(size_t i=0;i<32*sizeof(*wardrive_rows);++i)if(((uint8_t *)wardrive_rows)[i])return 29;
+    for(size_t i=0;i<32*sizeof(*wardrive_evidence);++i)if(((uint8_t *)wardrive_evidence)[i])return 30;
+    if(((uint8_t *)&wardrive_rows[32])[0]!=0xa5 || ((uint8_t *)&wardrive_evidence[32])[0]!=0xa5)return 31;
+    if(cerberus_s3_ble_scanner_passive_copy_wardrive(1,0,NULL,NULL,0,&passive)!=ESP_ERR_NOT_SUPPORTED ||
+        cerberus_s3_ble_scanner_passive_copy_wardrive(0,0,NULL,NULL,0,&passive)!=ESP_ERR_INVALID_ARG ||
+        cerberus_s3_ble_scanner_passive_copy_wardrive(1,0,NULL,NULL,0,NULL)!=ESP_ERR_INVALID_ARG ||
+        cerberus_s3_ble_scanner_passive_copy_wardrive(1,32,wardrive_rows,wardrive_evidence,33,&passive)!=ESP_ERR_INVALID_ARG)return 32;
+    cerberus_watch_profile_evidence_t profile,empty_profile={0};
+    for(unsigned missing=0;missing<=5U;++missing){
+        memset(&result,0xa5,sizeof(result));memset(&timing,0xa5,sizeof(timing));
+        memset(&motion,0xa5,sizeof(motion));memset(&motion_timing,0xa5,sizeof(motion_timing));
+        memset(&profile,0xa5,sizeof(profile));
+        if(cerberus_s3_ble_scanner_get_watch_profiled_result(255,0,UINT64_MAX,
+            missing==0U?NULL:&result,missing==1U?NULL:&timing,missing==2U?NULL:&motion,
+            missing==3U?NULL:&motion_timing,missing==4U?NULL:&profile)!=ESP_ERR_NOT_SUPPORTED)return 33;
+        if((missing!=0U&&memcmp(&result,&empty_result,sizeof(result)))||
+           (missing!=1U&&memcmp(&timing,&empty_timing,sizeof(timing)))||
+           (missing!=2U&&memcmp(&motion,&empty_motion,sizeof(motion)))||
+           (missing!=3U&&memcmp(&motion_timing,&empty_timing,sizeof(motion_timing)))||
+           (missing!=4U&&memcmp(&profile,&empty_profile,sizeof(profile))))return 34;
+    }
+    puts("Disabled scanner diagnostics, passive leases and Remote ID profiles: canonical empty output, explicit unsupported, no host dependencies passed.");
     return 0;
 }
 ''')
@@ -154,5 +257,5 @@ subprocess.run([
     "-I", str(root / "shared"), "-I", str(root / "s3_main/main"),
     str(disabled / "check.c"), str(root / "s3_main/main/s3_ble_scanner.c"),
     "-o", str(exe),
-], check=True)
-subprocess.run([str(exe)], check=True)
+], check=True, env=env)
+subprocess.run([str(exe)], check=True, env=env)

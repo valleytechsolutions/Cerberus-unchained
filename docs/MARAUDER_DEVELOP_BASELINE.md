@@ -9,6 +9,39 @@ Observed on 2026-10-29 from `https://github.com/justcallmekoko/ESP32Marauder.git
 
 The two commits have the **same Git tree**, `8b5d8ede62ce3e4e78941ca5b10abfb97896ec60`. An explicit fetch of `refs/heads/master` into the separate `develop` checkout followed by `git diff --quiet` returned zero. The old checkout at `../integration/marauder-source` was not changed; the new checkout is `../integration/marauder-develop-2026-10-29`. These are snapshots. Recheck the remote before future parity claims because `develop` can advance.
 
+### Rechecked on 2026-11-05 UTC
+
+The read-only GitHub branch API still reports develop at
+`79cc6bcba1db6679baee1dab2b0c1ad5010e6363`. Rev139 refreshes Wardriving, GPS
+and storage/upload evidence in the coverage ledger without claiming complete
+parity. The additional Wardrift adapter references the separate public PR #1634;
+that open contribution is not presented as merged develop functionality.
+
+### Rechecked on 2026-11-01
+
+The GitHub `develop` branch remains at
+`79cc6bcba1db6679baee1dab2b0c1ad5010e6363`, with tree
+`8b5d8ede62ce3e4e78941ca5b10abfb97896ec60`. The clean local reference at
+`../integration/marauder-develop-2026-10-29` reports the same commit and tree.
+The rev97 ledger was regenerated and checked against that local reference,
+including the five recorded source-file hashes. This recheck updates source
+attribution; it does not establish implementation or hardware parity.
+
+The rev107 source review rechecked `develop` through the GitHub commit API on
+2026-11-01; it still returned `79cc6bcba1db6679baee1dab2b0c1ad5010e6363`.
+The six focused BLE family workflows were inspected at that pinned revision.
+The additional check establishes the reviewed upstream revision, not feature
+completion or physical acceptance.
+
+### Rechecked on 2026-11-02
+
+The GitHub commit API resolved `develop` to
+`79cc6bcba1db6679baee1dab2b0c1ad5010e6363` again during the Mesh Locate design
+review. The current source inventory remains pinned to that same revision;
+this recheck does not change any feature-completion or hardware-acceptance status.
+The resolved upstream commit is
+[v1.20.0 develop](https://github.com/justcallmekoko/ESP32Marauder/commit/79cc6bcba1db6679baee1dab2b0c1ad5010e6363).
+
 ## Source difference, `develop` versus pinned `master`
 
 | Surface | `develop` | Added | Removed | Changed |
@@ -60,3 +93,9 @@ git -C ../integration/marauder-develop-2026-10-29 diff --name-status refs/remote
 ```
 
 The two tree IDs must match and the last command must print no paths for this snapshot. The source inventory's SHA-256 values give a second byte-level check of the five parser inputs.
+
+## November 8, 2026 recheck
+
+The GitHub develop ref still resolves to `79cc6bcba1db6679baee1dab2b0c1ad5010e6363`.
+The rev150 GPS track/POI source audit and remaining acceptance limits are in
+[GPS recording](GPS_RECORDING.md). This recheck does not establish full parity.

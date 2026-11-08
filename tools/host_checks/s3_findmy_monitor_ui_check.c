@@ -14,8 +14,10 @@
 #undef cerberus_display_draw_text
 #include "privacy.h"
 static char drawn[8192];
+static unsigned monitor_fail_text_after;
 esp_err_t cerberus_display_draw_text(uint16_t x,uint16_t y,const char *s,uint16_t fg,uint16_t bg,uint8_t scale)
 {
+    if(monitor_fail_text_after && !--monitor_fail_text_after)return ESP_FAIL;
     size_t used=strlen(drawn);assert(used+strlen(s)+2U<sizeof(drawn));
     snprintf(drawn+used,sizeof(drawn)-used,"%s\n",s);
     return framebuffer_draw_text(x,y,s,fg,bg,scale);
@@ -51,6 +53,7 @@ static bool ble_selected_from_monitor, ble_selected_raw_frozen, ble_attack_selec
 static bool ble_selected_original_time64_valid;
 static uint64_t ble_selected_original_ms64;
 static uint64_t ble_selected_source_ceiling_ms64;
+static uint64_t ble_selected_scan_epoch;
 static bool ble_findmy_running, ble_findmy_scan_owned, ble_findmy_stopping;
 static bool ble_findmy_exit_pending, ble_findmy_select_pending;
 static uint8_t ble_findmy_generation;
@@ -79,7 +82,8 @@ static int64_t esp_timer_get_time(void) { return (int64_t)clock_ms * 1000; }
 static void *heap_caps_calloc(size_t n, size_t s, unsigned cap)
 { (void)cap; return fail_alloc ? NULL : calloc(n,s); }
 static void heap_caps_free(void *p) { free(p); }
-static esp_err_t draw_detail_page(void) { return ESP_OK; }
+static unsigned monitor_draw_calls;
+static esp_err_t draw_detail_page(void) { ++monitor_draw_calls; return ESP_OK; }
 static void make_ble_name_safe(char *name) { (void)name; }
 static void set_ble_action_message(const char *s, unsigned c) { (void)s;(void)c; }
 static bool ble_attack_capture_selected_ad(uint8_t i) { (void)i; return true; }
@@ -105,7 +109,6 @@ static esp_err_t cerberus_s3_ble_scanner_get_focus(uint8_t g,uint8_t i,cerberus_
 { if(!valid_get(g,i))return ESP_ERR_INVALID_STATE; *p=fixture.focus; return ESP_OK; }
 
 #include "findmy_selected_impl.h"
-#include "findmy_monitor_ui_impl.h"
 #include "ble_display_age_impl.h"
 #include "findmy_detail_draw_impl.h"
 static cerberus_findmy_monitor_record_t *live_ble_evidence;
@@ -129,6 +132,7 @@ static void save(const char *prefix,const char *suffix)
     for(unsigned i=0;i<320*480;++i){uint16_t p=screen[i];uint8_t rgb[]={(uint8_t)((p>>11)*255/31),(uint8_t)(((p>>5)&63)*255/63),(uint8_t)((p&31)*255/31)};assert(fwrite(rgb,1,3,f)==3);}assert(!fclose(f));
 }
 
+static void ble_findmy_monitor_tick(uint32_t now, bool asleep);
 static void tick(uint32_t now) { clock_ms=now; ble_findmy_monitor_tick(now,false); }
 static void reset(void)
 {
@@ -217,109 +221,45 @@ static void check_display_age64(void)
     assert(strstr(drawn,"ADV HINT FMNA / 3s")&&strstr(drawn,"RSP HINT DULT / 2s"));
     ble_selected_original_time64_valid=false;
 }
+#ifndef CERBERUS_FINDMY_MONITOR_DEFER_IMPLEMENTATION
+#include "findmy_monitor_shared_fake.h"
+#include "findmy_monitor_ui_impl.h"
+#include "findmy_monitor_cases.h"
+#endif
+
 int main(int argc,char **argv)
 {
-    assert(argc==2);
-    check_display_age64();
-    reset(); ble_findmy_monitor_open(); tick(100);
-    assert(starts==1 && ble_findmy_scan_owned);
-    scan.state=CERBERUS_BLE_SCAN_COMPLETE; scan.stored_count=1; owner=CERBERUS_S3_BLE_OWNER_NONE;
-    tick(8200);
-    assert(starts==2 && ble_findmy_monitor->count==1 && ble_findmy_sweeps==1);
-    /* Production renderer freezes the identity used by the real row route. */
-    drawn[0]='\0';assert(draw_ble_findmy_monitor()==ESP_OK);
-    assert(strstr(drawn,"ACTIVE SCAN / RSP=SCAN RESPONSE / HINTS ONLY"));
-    assert(strstr(drawn,"ADV HINT APPLE / 8s"));
-    assert(strstr(drawn,"RSP NO MATCHED FIND MY HINT"));
-    ble_findmy_monitor_tap(30,90); hold_stop=true; tick(8500);
-    assert(stops==1 && ble_findmy_stopping && ble_mode==UI_BLE_MODE_FINDMY_MONITOR);
-    tick(8800); assert(ble_findmy_stopping); /* idle snapshot is not host release */
-    owner=CERBERUS_S3_BLE_OWNER_NONE; tick(9100);
-    assert(ble_mode==UI_BLE_MODE_DETAIL && ble_selected_from_monitor && ble_selected_scan_ms==100);
-    unsigned before=getters; ++scan.generation; memset(&fixture,0,sizeof(fixture));
-    uint32_t observed=0;
-    assert(selected_findmy_profile(0,&ble_selected_result,&observed)==CERBERUS_FINDMY_PROFILE_AIRTAG);
-    assert(observed==100 && getters==before && !cerberus_findmy_ui_fresh(observed,30101));
-    /* The new ordinary-list frozen proof guards the original in full-width
-     * time; response freshness or a complete low32 wrap cannot revive Sound. */
-    ble_selected_original_time64_valid=true; ble_selected_original_ms64=100;
-    clock_ms=30100;
-    assert(selected_findmy_profile(0,&ble_selected_result,&observed)==CERBERUS_FINDMY_PROFILE_AIRTAG);
-    clock_ms=30101;
-    assert(selected_findmy_profile(0,&ble_selected_result,&observed)==CERBERUS_FINDMY_PROFILE_NONE && observed==0);
-    clock_ms=99;
-    assert(selected_findmy_profile(0,&ble_selected_result,&observed)==CERBERUS_FINDMY_PROFILE_NONE);
-    clock_ms=(INT64_C(1)<<32)+100;
-    assert(selected_findmy_profile(0,&ble_selected_result,&observed)==CERBERUS_FINDMY_PROFILE_NONE);
-    ble_selected_original_ms64=(UINT64_C(1)<<32)+100;
-    assert(selected_findmy_profile(0,&ble_selected_result,&observed)==CERBERUS_FINDMY_PROFILE_AIRTAG);
-    assert(observed==100 && getters==before);
-    ble_selected_original_time64_valid=false;
-    /* Existing central connection does not trap Back from a stopped monitor. */
-    ble_mode=UI_BLE_MODE_FINDMY_MONITOR; owner=CERBERUS_S3_BLE_OWNER_CENTRAL;
-    ble_findmy_request_stop(true,false); tick(9400);
-    assert(ble_mode==UI_BLE_MODE_LIST && !ble_findmy_monitor && owner==CERBERUS_S3_BLE_OWNER_CENTRAL);
-    reset(); fail_alloc=true; ble_findmy_monitor_open(); ble_findmy_request_stop(true,false); tick(100);
-    assert(ble_mode==UI_BLE_MODE_LIST && !ble_findmy_stopping);
-    reset(); ble_findmy_monitor_open(); tick(100); hold_stop=true;
-    ble_findmy_request_stop(false,true); ble_findmy_request_stop(true,false); tick(400);
-    owner=CERBERUS_S3_BLE_OWNER_NONE; tick(700);
-    assert(ble_mode==UI_BLE_MODE_LIST && !ble_findmy_monitor && !ble_findmy_select_pending);
-    reset(); owner=CERBERUS_S3_BLE_OWNER_CENTRAL; ble_findmy_monitor_open(); tick(100); tick(12200);
-    assert(!ble_findmy_running && starts==0 && ble_findmy_error==ESP_ERR_INVALID_STATE);
-    ble_findmy_request_stop(true,false); tick(12500); assert(!ble_findmy_monitor);
-    reset(); ble_findmy_monitor_open(); tick(100); ++scan.generation;
-    tick(500); assert(!ble_findmy_running && !ble_findmy_scan_owned);
-    ble_findmy_request_stop(true,false); tick(800); assert(stops==0 && !ble_findmy_monitor);
+    assert(argc==2);check_display_age64();
     reset(); fixture.observed_ms=100; fixture.generation=4; fixture.index=3;
-    owner=CERBERUS_S3_BLE_OWNER_SCANNER; scan.generation=5;
-    ble_select_frozen_live(&fixture); tick(500);
-    assert(ble_findmy_stopping && !ble_selected_raw_frozen && stops==0);
-    memset(&fixture,0,sizeof(fixture)); owner=CERBERUS_S3_BLE_OWNER_NONE; tick(800);
-    assert(ble_mode==UI_BLE_MODE_DETAIL && ble_selected_raw_frozen && !ble_selected_from_monitor);
-    assert(ble_selected_scan_index==3 && ble_selected_scan_ms==100 && ble_selected_result.address[0]==7);
-    before=getters; assert(selected_findmy_profile(3,&ble_selected_result,&observed)==CERBERUS_FINDMY_PROFILE_AIRTAG);
-    assert(getters==before && observed==100 && !cerberus_findmy_ui_fresh(observed,30101));
-
-    /* Response-only FMNA128 is discoverable and selectable, without becoming
-     * an active Sound profile or replacing original advertisement time. */
-    reset();fixture.advertisement.length=3;fixture.advertisement.data[0]=2;
-    fixture.advertisement.data[1]=1;fixture.advertisement.data[2]=6;bind_fixture(1U);
-    fixture.focus.discovery.findmy_scan_response=(cerberus_ble_findmy_hints_t){CERBERUS_BLE_FINDMY_HINT_FMNA,CERBERUS_BLE_FINDMY_UUID128};
-    fixture.focus.discovery.scan_response_sequence=2;fixture.focus.discovery.scan_response_observed_ms=1100;
-    fixture.focus.discovery.flags|=CERBERUS_S3_BLE_EVIDENCE_RESPONSE_VALID;
-    fixture.focus.category_bits=CERBERUS_S3_BLE_FOCUS_FIND_MY;
-    ble_findmy_monitor_open();tick(100);scan.state=CERBERUS_BLE_SCAN_COMPLETE;scan.stored_count=1;owner=CERBERUS_S3_BLE_OWNER_NONE;tick(8200);
-    assert(ble_findmy_monitor->count==1);masked=true;drawn[0]='\0';cerberus_display_fill_rect(0,0,320,480,UI_BACKGROUND);
-    assert(draw_ble_findmy_monitor()==ESP_OK);assert(strstr(drawn,"ADV NO FIND MY HINT"));assert(strstr(drawn,"RSP HINT FMNA128 / 7s"));
-    assert(!strstr(drawn,"07:00:00:00:00:00"));save(argv[1],"response-monitor");
-    ble_findmy_monitor_tap(30,90);tick(8500);assert(ble_mode==UI_BLE_MODE_DETAIL && ble_selected_raw_frozen);
-    assert(ble_selected_sound_profile==CERBERUS_FINDMY_PROFILE_NONE);
-    assert(ble_findmy_selected.observed_ms==100 && ble_findmy_selected.focus.discovery.scan_response_observed_ms==1100);
-    cerberus_s3_ble_focus_t frozen=ble_selected_focus;
-    ++scan.generation;memset(&fixture,0,sizeof(fixture));clock_ms=12100;ble_filter=CERBERUS_S3_BLE_FILTER_FIND_MY;
-    drawn[0]='\0';assert(actual_hint_detail()==ESP_OK);assert(strstr(drawn,"RSP HINT FMNA128 / 11s"));
-    assert(!memcmp(&frozen,&ble_selected_focus,sizeof(frozen)));
-    assert(selected_findmy_profile(ble_selected_scan_index,&ble_selected_result,&observed)==CERBERUS_FINDMY_PROFILE_NONE);
-
-    /* Mixed profile/UUID-width provenance fits every native row and both
-     * detail lines. A six-row render exercises the actual screen limits. */
-    ble_mode=UI_BLE_MODE_FINDMY_MONITOR;ble_findmy_running=false;ble_findmy_monitor->count=6;
-    for(unsigned i=0;i<6;++i){ble_findmy_monitor->records[i]=ble_findmy_selected;
-        ble_findmy_monitor->records[i].peer.address[0]=(uint8_t)(7+i);
-        ble_findmy_monitor->records[i].focus.discovery.findmy_advertisement=(cerberus_ble_findmy_hints_t){7,7};
-        ble_findmy_monitor->records[i].focus.discovery.findmy_scan_response=(cerberus_ble_findmy_hints_t){7,7};}
-    drawn[0]='\0';cerberus_display_fill_rect(0,0,320,480,UI_BACKGROUND);assert(draw_ble_findmy_monitor()==ESP_OK);
-    assert(strstr(drawn,"ADV HINT APPLE FMNA16+32+128 DULT / 12s"));save(argv[1],"mixed-monitor");
-    ble_selected_focus=ble_findmy_monitor->records[0].focus;
-    drawn[0]='\0';cerberus_display_fill_rect(0,0,320,480,UI_BACKGROUND);assert(actual_hint_detail()==ESP_OK);
-    assert(strstr(drawn,"ADV HINT APPLE FMNA16+32+128 DULT / 12s"));assert(strstr(drawn,"RSP HINT APPLE FMNA16+32+128 DULT / 11s"));save(argv[1],"mixed-detail");
-    /* Other focused detail categories preserve their existing rendering. */
-    ble_filter=CERBERUS_S3_BLE_FILTER_META_HINT;drawn[0]='\0';assert(actual_hint_detail()==ESP_OK);assert(!drawn[0]);
-    ble_filter=CERBERUS_S3_BLE_FILTER_FIND_MY;live_ble_evidence=ble_findmy_monitor->records;actual_hint_badge();
-    assert(!strcmp(live_badges[0],"ADV MIXED / RSP MIXED / HINTS"));
-    ble_filter=CERBERUS_S3_BLE_FILTER_ALL;strcpy(live_badges[0],"CONNECTABLE");actual_hint_badge();assert(!strcmp(live_badges[0],"CONNECTABLE"));
-    free(ble_findmy_monitor);ble_findmy_monitor=NULL;
-    puts("Find My Monitor UI: production source/age rendering, frozen response-only selection, unchanged raw Sound gate, active sweeps, Stop/Back and owner isolation passed");
+    ble_findmy_selected=fixture;ble_selected_result=fixture.peer;
+    ble_selected_raw_frozen=true;ble_selected_original_time64_valid=true;
+    ble_selected_original_ms64=100;clock_ms=30100;
+    uint32_t observed=0;unsigned before=getters;
+    assert(selected_findmy_profile(3,&ble_selected_result,&observed)==CERBERUS_FINDMY_PROFILE_AIRTAG);
+    assert(observed==100&&getters==before);
+    clock_ms=30101;assert(selected_findmy_profile(3,&ble_selected_result,&observed)==CERBERUS_FINDMY_PROFILE_NONE);
+    clock_ms=(INT64_C(1)<<32)+100;assert(selected_findmy_profile(3,&ble_selected_result,&observed)==CERBERUS_FINDMY_PROFILE_NONE);
+    ble_selected_original_ms64=(UINT64_C(1)<<32)+100;
+    assert(selected_findmy_profile(3,&ble_selected_result,&observed)==CERBERUS_FINDMY_PROFILE_AIRTAG);
+    fixture.focus.discovery.findmy_advertisement=(cerberus_ble_findmy_hints_t){7,7};
+    fixture.focus.discovery.findmy_scan_response=(cerberus_ble_findmy_hints_t){7,7};
+    ble_selected_focus=fixture.focus;ble_selected_original_time64_valid=false;
+    clock_ms=12100;ble_filter=CERBERUS_S3_BLE_FILTER_FIND_MY;drawn[0]=0;
+    assert(actual_hint_detail()==ESP_OK);save(argv[1],"mixed-detail");
+    live_ble_evidence=&fixture;actual_hint_badge();
+    assert(strstr(live_badges[0],"ADV MIXED / RSP MIXED / HINTS"));
+    /* Keep the reusable scanner/host boundary scaffold for inherited suites. */
+    (void)cerberus_s3_ble_scanner_start_active;(void)cerberus_s3_ble_scanner_stop;
+    (void)cerberus_s3_ble_scanner_get_status;(void)cerberus_s3_ble_scanner_get_result;
+    (void)cerberus_s3_ble_scanner_get_focus;(void)cerberus_s3_ble_host_owner;
+    (void)cerberus_s3_wifi_owner;(void)heap_caps_calloc;(void)heap_caps_free;
+    (void)refresh_ble_scan_status;(void)make_ble_name_safe;(void)set_ble_action_message;
+    (void)ble_attack_capture_selected_ad;(void)open_tool_page;(void)draw_detail_page;
+    (void)draw_small_button;(void)tick;(void)ble_findmy_generation;(void)ble_findmy_sweeps;
+    (void)ble_findmy_last_tick;(void)ble_findmy_scan_owned;(void)ble_page_offset;
+#ifndef CERBERUS_FINDMY_MONITOR_DEFER_IMPLEMENTATION
+    check_monitor(argv[1]);
+#endif
+    puts("Find My monitor: frozen source presentation, shared owner controls and historical detail checks passed");
     return 0;
 }

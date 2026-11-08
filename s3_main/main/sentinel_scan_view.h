@@ -42,13 +42,15 @@ typedef struct {
     sentinel_view_state_t state;
     const char *subtitle;
     const char *count_label; /* Optional summary label; at most 18 visible characters. */
-    const char *sort_label; /* Optional BLE sort control in the upper-right badge. */
+    const char *sort_label; /* Optional ordinary Wi-Fi/BLE upper-right sort control. */
     const char *age_label; /* Optional Wi-Fi/BLE age control below the state/sort badge. */
     const char *message;
     const char *hint; /* Capture age / context; always visible at y352 when nonempty. */
     const char *tools_label; /* Optional action for the bottom-right control. */
+    bool stop_action; /* An outstanding request can need Stop even in ERROR. */
     bool tools_disabled;
     bool selection_mode;
+    bool band_control; /* Ordinary Wi-Fi left summary cycles the retained-band filter. */
     uint8_t selection_count;
     uint16_t total_count;
     uint16_t page;       /* Zero-based page index. */
@@ -76,17 +78,20 @@ typedef enum {
     SENTINEL_VIEW_CLEAR,
     SENTINEL_VIEW_SORT,
     SENTINEL_VIEW_AGE,
+    SENTINEL_VIEW_BAND,
 } sentinel_view_action_t;
 
 /* Owns y=48..410 only. Caller owns the header and the navigation footer.
  * Result cards: x8,y126+56*row,w304,h52 (4 per page).
  * Controls: y364,h42; Prev x8,w68; Stop/Scan x84,w68; Next x160,w68;
  * Tools x236,w76. Disabled controls are not returned by hit testing.
- * BLE summary controls: x224..311,y48..97 is Sort unless age_label is
- * nonempty; then Sort uses y48..73 and Age y74..97. Wi-Fi age_label uses
- * the same lower Age area with a noninteractive state badge above it.
+ * Ordinary Wi-Fi/BLE controls: x224..311,y48..97 is Sort unless age_label is
+ * nonempty; then Sort uses y48..73 and Age y74..97. Without sort_label the
+ * upper badge remains a noninteractive state label. Wi-Fi band_control uses
+ * the left summary x8..215,y48..97; its current label is count_label.
  * Age is unavailable for other kinds, selection-mode or OFFLINE views.
- * Left summary ends before x216. Wi-Fi never returns Sort.
+ * Sort and band controls are local views of retained rows and remain available
+ * offline; they never apply to selection-mode or non-Wi-Fi/BLE kinds.
  * Strings need only remain valid for the duration of each call.
  * Preserve the last actual records during a new sweep by passing them again.
  */

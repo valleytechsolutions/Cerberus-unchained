@@ -24,6 +24,7 @@ subprocess.run([
     "-I", str(root / "tools/host_checks/stubs"),
     "-I", str(root / "s3_main/main"), "-I", str(root / "shared"),
     str(root / "tools/host_checks/c5_ready_handshake_check.c"),
+    str(root / "s3_main/main/s3_wifi_relation.c"),
     "-o", str(exe),
 ], check=True, env=env)
 subprocess.run([str(exe)], check=True, env=env)

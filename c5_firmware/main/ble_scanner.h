@@ -8,6 +8,10 @@ extern "C" {
 #endif
 
 esp_err_t cerberus_ble_scanner_init(void);
+/* Scoped companion commands always return a bound status or an explicit
+ * rejection; they never adopt/stop an unrelated legacy scan. */
+bool cerberus_ble_dual_command(uint8_t command, const void *request,
+    size_t request_size, void *response, size_t *response_size);
 uint8_t cerberus_ble_scanner_get_boot_count(void);
 uint8_t cerberus_ble_scanner_get_phase(void);
 esp_err_t cerberus_ble_scanner_start(void);
@@ -27,8 +31,9 @@ esp_err_t cerberus_ble_scanner_get_result(
     uint8_t generation,
     uint8_t index,
     cerberus_ble_scan_result_payload_t *result);
-/* RAW_ADVERTISEMENT returns one bounded packet. Scan responses are not
-   solicited, captured, or merged with advertisements. */
+/* RAW_ADVERTISEMENT returns one bounded original. Explicit companion
+ * response scans capture a separate source through full or compact response projections;
+ * response bytes are never merged into this legacy original API. */
 esp_err_t cerberus_ble_scanner_get_data_chunk(
     uint8_t generation,
     uint8_t index,
@@ -62,3 +67,5 @@ esp_err_t cerberus_ble_gatt_read_get_data(
 #ifdef __cplusplus
 }
 #endif
+
+bool cerberus_ble_wardrive_ready(void);

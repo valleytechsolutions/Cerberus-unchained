@@ -9,7 +9,7 @@ import subprocess
 import sys
 from datetime import datetime, timezone
 
-from package_sentinel import RECEIPT, ROOT, TARGETS, inspect_target, package, source_snapshot
+from package_sentinel import RECEIPT, ROOT, TARGETS, inspect_target, package, source_snapshot, sha256
 
 
 def build(name: str) -> None:
@@ -48,12 +48,26 @@ def main() -> int:
         for name in TARGETS if args.target == "all" else [args.target]:
             build(name)
         if args.target == "all":
+            from build_unified import verify_console_stack
+            from check_mesh_locate_iram import verify as verify_locate_iram
+            console_proof = verify_console_stack(ROOT)
+            locate_proof = verify_locate_iram(ROOT)
+            console_files = ("artifacts/integration/s3-console-stack.json",
+                             "artifacts/integration/s3-console-stack.txt")
+            console_evidence = {name: sha256(ROOT / name) for name in console_files}
+            locate_files = ("artifacts/integration/c5-mesh-locate-iram.json",
+                            "artifacts/integration/c5-mesh-locate-iram.txt")
+            locate_evidence = {name: sha256(ROOT / name) for name in locate_files}
             final = source_snapshot()
             if initial != final:
                 raise RuntimeError("Build inputs changed during compilation. Run the matched build again after edits/dependency resolution finish")
             receipt = {"format": 1, "built_utc": datetime.now(timezone.utc).isoformat(),
                        "platformio": platformio, "source": final,
-                       "targets": {name: inspect_target(name) for name in TARGETS}}
+                       "targets": {name: inspect_target(name) for name in TARGETS},
+                       "native_console_stack": console_proof,
+                       "native_console_evidence": console_evidence,
+                       "native_mesh_locate_iram": locate_proof,
+                       "native_mesh_locate_evidence": locate_evidence}
             RECEIPT.parent.mkdir(parents=True, exist_ok=True)
             RECEIPT.write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
             print(f"Matched build receipt: {RECEIPT}")

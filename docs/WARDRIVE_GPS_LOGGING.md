@@ -14,4 +14,26 @@ The 14-column layout follows the [WiGLE CSV 1.6 specification](https://api.wigle
 
 The optional GPS UART retains its 3,584-byte reader stack and uses a 1,024-byte RX ring. At 9600 baud/8N1 that ring holds over one second of input, while the task polls every 100 ms. Post-NimBLE startup reserves are derived from the 32 KiB scanner gate and 6 KiB worker stack: 43,008 bytes without GPS; 45,568 bytes with GPS, including RX, reader stack, and 2 KiB for UART/task bookkeeping. Both admit the measured rev51 post-Stop free heap of 45,980 bytes. Actual GPS hardware and stack margin still require device validation.
 
-Two compact storage stream states occupy less static RAM than the former single stream's generic path buffers. The second dedupe table and 384-byte row buffer live in PSRAM. Host checks cover GPS acquisition/loss/recovery, UTF-8 fallback, BLE layout, retry/rotation, dual-file Stop and USB ownership, and the known no-GPS restart heap regression. These source changes require a new firmware build and hardware acceptance; no GPS module is connected during development.
+Two compact storage stream states occupy less static RAM than the former single stream's generic path buffers. The second dedupe table and 384-byte row buffer live in PSRAM. Host checks cover GPS acquisition/loss/recovery, UTF-8 fallback, BLE layout, retry/rotation, dual-file Stop and USB ownership, and the known no-GPS restart heap regression. Passing host and native builds does not establish hardware acceptance; no GPS module is connected during development.
+
+## GPS Data/NMEA candidate
+
+[Rev122](DUAL_RADIO_REV122.md) adds views of the existing optional receiver,
+independent GGA satellite/HDOP freshness and retained UART cleanup. Opening the
+views does not start recording or change the one-second fix/UTC row gate.
+NMEA history is an optional in-memory observer, not an SD trace. Viewer-local
+location hiding erases entire raw-line copies but does not redact or modify
+the existing recording files. Paging freezes the display copy and labels ages
+at copy; overflow, discards, eviction and sequence exhaustion are explicit,
+without claiming lossless UART history. A failed observer release retains its
+token for paced cleanup; a failed UART release keeps the service STOPPING until
+its existing worker completes cleanup after radio/file draining.
+
+Implementation, focused checks and independent reviews are complete. All 130
+host suites, five native builds, linked resource measurements and matched
+package verification pass. The optional NMEA ring and UI copy total 2,624 bytes
+of PSRAM before allocator overhead; the existing UART ring and reader stack
+allocations are unchanged. The milestone separates fixed-section and selected
+entry-frame measurements from running heap/stack margins. No GPS hardware or
+located-file acceptance is inferred from this evidence; rev113 remains the
+last verified installed build.

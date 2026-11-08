@@ -22,6 +22,7 @@
 #define pdTRUE 1
 #define pdFALSE 0
 #define pdMS_TO_TICKS(ms) (ms)
+#define portMAX_DELAY UINT32_MAX
 #define portMUX_INITIALIZER_UNLOCKED 0
 #define portENTER_CRITICAL(lock) ((void)(lock))
 #define portEXIT_CRITICAL(lock) ((void)(lock))
@@ -42,6 +43,8 @@ static int64_t esp_timer_get_time(void);
 static void esp_rom_delay_us(uint32_t);
 static int gpio_get_level(int);
 static esp_err_t spi_device_polling_transmit(spi_device_handle_t,spi_transaction_t *);
+static esp_err_t spi_device_polling_start(spi_device_handle_t,spi_transaction_t *,TickType_t);
+static esp_err_t spi_device_polling_end(spi_device_handle_t,TickType_t);
 static BaseType_t xSemaphoreTake(SemaphoreHandle_t,TickType_t);
 static BaseType_t xSemaphoreGive(SemaphoreHandle_t);
 static esp_err_t radio_bus_init(void);
@@ -56,8 +59,10 @@ static esp_err_t gpio_isr_handler_add(int,void(*)(void *),void *);
 static esp_err_t gpio_intr_disable(int);
 #include "c5_spi_transport_impl.h"
 #include "c5_watch_link.h"
+#include "c5_wifi_relation_link_impl.h"
+#include "c5_wifi_scan_link_impl.h"
 
-static uint32_t clock_us, low_at, high_at;
+static int64_t clock_us, low_at, high_at;
 static bool high_level, scheduled, irq_enabled, fail_mutex, held;
 static unsigned transfers, requests, releases, install_calls, handler_calls;
 static unsigned corrupt_crc, wrong_sequence, wrong_command, wrong_length;
@@ -68,8 +73,17 @@ static bool watch_invalid_chunk, watch_invalid_record, activity_invalid;
 static esp_err_t service_error, handler_error, spi_error;
 static void (*irq_handler)(void *);
 static cerberus_spi_frame_t reply;
+static bool passive_model;
+static uint8_t passive_ssid_length;
+static unsigned fail_spi_at, rollback_transfer;
+static uint32_t transfer_cost_us, delayed_low_us, delayed_high_us;
+static TickType_t last_mutex_ticks;
+static unsigned polling_starts, polling_ends, fail_start_at;
+static spi_transaction_t *submitted_transaction;
 enum pulse_kind {EARLY, DELAYED, NONE, NO_ISR, STUCK_LOW, REQUEST_ONLY, LEGACY};
 static enum pulse_kind pulse;
+static bool separate_pulses;
+static enum pulse_kind request_pulse, response_pulse;
 
 static void falling(void)
 {
@@ -90,6 +104,7 @@ static int gpio_get_level(int pin) {assert(pin==44);return high_level;}
 static BaseType_t xSemaphoreTake(SemaphoreHandle_t mutex,TickType_t ticks)
 {
     assert(mutex==(void *)1&&!held);
+    last_mutex_ticks = ticks;
     if (fail_mutex) {clock_us += ticks*1000U;return pdFALSE;}
     clock_us += mutex_wait_us;held=true;return pdTRUE;
 }
@@ -120,10 +135,51 @@ static size_t model_reply_payload(const cerberus_spi_frame_t *frame, uint8_t *pa
 {
     if (frame->command == CERBERUS_SPI_COMMAND_STATUS) {
         cerberus_status_payload_t value = {
-            .ready = 1U, .firmware_version = CERBERUS_WATCH_MIN_FIRMWARE,
+            .ready = 1U, .firmware_version = passive_model ? 60U : CERBERUS_WATCH_MIN_FIRMWARE,
             .capabilities = watch_unsupported ? 0U :
-                CERBERUS_C5_CAP_WATCH_OBSERVATIONS | CERBERUS_C5_CAP_BLE_ACTIVITY,
+                CERBERUS_C5_CAP_WATCH_OBSERVATIONS | CERBERUS_C5_CAP_BLE_ACTIVITY |
+                    (passive_model ? CERBERUS_C5_CAP_WIFI_2_4_GHZ | CERBERUS_C5_CAP_WIFI_5_GHZ : 0U),
         };
+        memcpy(payload, &value, sizeof(value)); return sizeof(value);
+    }
+    if (frame->command == CERBERUS_SPI_COMMAND_WIFI_SCAN_RESULT) {
+        cerberus_wifi_scan_result_request_t query;
+        assert(passive_model && frame->payload_length == sizeof(query));
+        memcpy(&query, frame->payload, sizeof(query));
+        assert(query.generation == 7U && query.index == 0U);
+        cerberus_wifi_scan_result_payload_t value = {.generation = 7U, .index = 0U,
+            .rssi = -44, .channel = 36U, .security = CERBERUS_WIFI_SECURITY_WPA2,
+            .ssid_length = passive_ssid_length, .bssid = {2, 3, 4, 5, 6, 7},
+            .observation_age_ms = 17U, .observation_source_ms = 91U,
+            .observation_flags = CERBERUS_WIFI_OBSERVATION_VALID | CERBERUS_WIFI_OBSERVATION_BEACON,
+            .observation_channel = 36U};
+        memcpy(payload, &value, sizeof(value)); return sizeof(value);
+    }
+    if (frame->command == CERBERUS_SPI_COMMAND_WIFI_SCAN_SSID) {
+        cerberus_wifi_scan_ssid_request_t query;
+        assert(passive_model && frame->payload_length == sizeof(query));
+        memcpy(&query, frame->payload, sizeof(query));
+        const unsigned offset = query.chunk * CERBERUS_WIFI_SSID_CHUNK_SIZE;
+        assert(query.generation == 7U && query.index == 0U && offset < passive_ssid_length);
+        unsigned count = passive_ssid_length - offset;
+        if (count > CERBERUS_WIFI_SSID_CHUNK_SIZE) count = CERBERUS_WIFI_SSID_CHUNK_SIZE;
+        cerberus_wifi_scan_ssid_payload_t value = {7U, 0U, query.chunk, (uint8_t)count, {0}};
+        for (unsigned i = 0U; i < count; ++i) value.bytes[i] = (uint8_t)('A' + (offset + i) % 26U);
+        memcpy(payload, &value, sizeof(value)); return sizeof(value);
+    }
+    if (frame->command == CERBERUS_SPI_COMMAND_WIFI_RELATION_STATUS) {
+        assert(passive_model && frame->payload_length == 1U && frame->payload[0] == 7U);
+        cerberus_wifi_relation_status_t value = {.epoch = UINT64_C(0x100000007), .generation = 7U,
+            .state = CERBERUS_WIFI_RELATION_COMPLETE, .flags = CERBERUS_WIFI_RELATION_AVAILABLE};
+        memcpy(payload, &value, sizeof(value)); return sizeof(value);
+    }
+    if (frame->command == CERBERUS_SPI_COMMAND_WIFI_RELATION_CLOCK) {
+        cerberus_wifi_relation_clock_query_t query;
+        assert(passive_model && frame->payload_length == sizeof(query));
+        memcpy(&query, frame->payload, sizeof(query));
+        assert(query.epoch == UINT64_C(0x100000007) && query.generation == 7U);
+        cerberus_wifi_relation_clock_t value = {.epoch = query.epoch, .source_now_us = 500000U,
+            .generation = 7U};
         memcpy(payload, &value, sizeof(value)); return sizeof(value);
     }
     if (frame->command == CERBERUS_SPI_COMMAND_WATCH_SCAN_STATUS) {
@@ -174,14 +230,16 @@ static size_t model_reply_payload(const cerberus_spi_frame_t *frame, uint8_t *pa
         if (activity_invalid) value.valid_reports = 13U;
         memcpy(payload, &value, sizeof(value)); return sizeof(value);
     }
-    cerberus_wifi_scan_status_payload_t value = {.generation = 7, .state = CERBERUS_WIFI_SCAN_RUNNING};
+    cerberus_wifi_scan_status_payload_t value = {.generation = 7,
+        .state = passive_model ? CERBERUS_WIFI_SCAN_COMPLETE : CERBERUS_WIFI_SCAN_RUNNING};
     memcpy(payload, &value, sizeof(value)); return sizeof(value);
 }
 
 static esp_err_t spi_device_polling_transmit(spi_device_handle_t device,spi_transaction_t *tx)
 {
     assert(device==(void *)2&&tx->length==CERBERUS_SPI_TRANSFER_SIZE*8U&&held);
-    ++transfers;clock_us+=3U;
+    ++transfers;clock_us += transfer_cost_us;
+    if (transfers == rollback_transfer) clock_us -= 100000;
     bool request=tx->tx_buffer!=NULL;
     if (request) {
         ++requests;
@@ -201,12 +259,32 @@ static esp_err_t spi_device_polling_transmit(spi_device_handle_t device,spi_tran
             --corrupt_watch_crc; reply.payload[0] ^= 1U;
         }
     } else memcpy(tx->rx_buffer,&reply,sizeof(reply));
+    if (transfers == fail_spi_at) return ESP_FAIL;
     if (spi_error!=ESP_OK) return spi_error;
-    if (pulse==EARLY || (pulse==REQUEST_ONLY&&request)) {falling();high_level=true;}
-    else if (pulse==DELAYED) {scheduled=true;low_at=clock_us+40U;high_at=clock_us+80U;}
-    else if (pulse==NO_ISR) high_level=false;
-    else if (pulse==STUCK_LOW) falling();
+    enum pulse_kind kind = separate_pulses ? (request ? request_pulse : response_pulse) : pulse;
+    if (kind==EARLY || (kind==REQUEST_ONLY&&request)) {falling();high_level=true;}
+    else if (kind==DELAYED) {scheduled=true;low_at=clock_us+delayed_low_us;high_at=clock_us+delayed_high_us;}
+    else if (kind==NO_ISR) high_level=false;
+    else if (kind==STUCK_LOW) falling();
     return ESP_OK;
+}
+
+static esp_err_t spi_device_polling_start(spi_device_handle_t device,
+    spi_transaction_t *transaction, TickType_t wait)
+{
+    assert(device == (void *)2 && held && !submitted_transaction && wait == portMAX_DELAY);
+    ++polling_starts;
+    if (polling_starts == fail_start_at) return ESP_FAIL; /* No wire clocks. */
+    submitted_transaction = transaction;
+    return ESP_OK;
+}
+static esp_err_t spi_device_polling_end(spi_device_handle_t device, TickType_t wait)
+{
+    assert(submitted_transaction && held && wait == portMAX_DELAY);
+    ++polling_ends;
+    esp_err_t error = spi_device_polling_transmit(device, submitted_transaction);
+    submitted_transaction = NULL;
+    return error;
 }
 
 static void reset_case(enum pulse_kind kind)
@@ -219,6 +297,13 @@ static void reset_case(enum pulse_kind kind)
     watch_status_calls = corrupt_watch_crc = 0U;
     watch_unsupported = watch_status_changes = watch_invalid_status = false;
     watch_invalid_chunk = watch_invalid_record = activity_invalid = false;
+    passive_ready_pending = false; passive_ready_epoch = 0U;
+    passive_model = separate_pulses = false; passive_ssid_length = 32U;
+    peer_firmware_version = 60U; fail_spi_at = rollback_transfer = 0U;
+    transfer_cost_us = 3U; delayed_low_us = 40U; delayed_high_us = 80U;
+    last_mutex_ticks = 0U;
+    assert(!submitted_transaction);
+    polling_starts = polling_ends = fail_start_at = 0U;
 }
 static void scan_ok(void)
 {
@@ -312,6 +397,282 @@ static void watch_lock_checks(void)
     assert(!transfers && !releases && !held && !transport_diagnostics.mutex_timeouts);
 }
 
+/* Unlike the protocol-only readers, these cases execute production mutex,
+ * framing, bounded READY waits and row/fence adapters. Only the SDK boundary,
+ * GPIO levels/ISR pulses and monotonic clock are simulated. */
+static uint32_t passive_deadline(unsigned ahead_ms)
+{ return (uint32_t)((uint64_t)clock_us / 1000U) + ahead_ms; }
+
+static void passive_status_faults(void)
+{
+    const enum pulse_kind kinds[] = {EARLY, DELAYED, NONE, NO_ISR, STUCK_LOW, REQUEST_ONLY, LEGACY};
+    const unsigned expected_transfers[] = {2U, 2U, 1U, 1U, 1U, 2U, 0U};
+    for (unsigned i = 0U; i < sizeof(kinds) / sizeof(kinds[0]); ++i) {
+        reset_case(kinds[i]); passive_model = true;
+        cerberus_wifi_scan_status_payload_t status; memset(&status, 0xa5, sizeof(status));
+        const esp_err_t error = c5_spi_link_get_wifi_scan_status_once(1000U, &status);
+        assert(transfers == expected_transfers[i] && releases == 1U && !held);
+        assert(transport_diagnostics.exchanges == 1U && !transport_diagnostics.legacy_fallbacks);
+        assert(last_mutex_ticks == 20U && transport_diagnostics.max_mutex_hold_us == (uint32_t)clock_us);
+        if (i < 2U) {
+            assert(error == ESP_OK && status.generation == 7U && status.state == CERBERUS_WIFI_SCAN_COMPLETE);
+            assert(clock_us == (i ? 166 : 6) && !passive_ready_pending);
+        } else {
+            assert(error == ESP_ERR_TIMEOUT && bytes_zero(&status, sizeof(status)));
+            assert(clock_us == C5_PASSIVE_READY_BUDGET_US && passive_ready_pending == (i != 6U));
+            assert(transport_diagnostics.max_exchange_us == C5_PASSIVE_READY_BUDGET_US);
+        }
+    }
+    for (unsigned fault = 0U; fault < 4U; ++fault) {
+        reset_case(EARLY); passive_model = true;
+        if (!fault) corrupt_crc = 1U;
+        if (fault == 1U) wrong_sequence = 1U;
+        if (fault == 2U) wrong_command = 1U;
+        if (fault == 3U) wrong_length = 1U;
+        cerberus_wifi_scan_status_payload_t status; memset(&status, 0xa5, sizeof(status));
+        assert(c5_spi_link_get_wifi_scan_status_once(1000U, &status) == ESP_ERR_INVALID_RESPONSE);
+        assert(requests == 1U && transfers == 2U && releases == 1U && !held && !passive_ready_pending);
+        assert(bytes_zero(&status, sizeof(status)) && !transport_diagnostics.legacy_fallbacks);
+        /* A malformed frame is terminal for that call; a fresh call recovers
+         * after the completed edge cycle, without a hidden internal retry. */
+        assert(c5_spi_link_get_wifi_scan_status_once(1000U, &status) == ESP_OK && requests == 2U);
+    }
+    for (unsigned after = 0U; after < 2U; ++after) {
+        reset_case(EARLY); passive_model = true; fail_spi_at = after + 1U;
+        cerberus_wifi_scan_status_payload_t status; memset(&status, 0xa5, sizeof(status));
+        assert(c5_spi_link_get_wifi_scan_status_once(1000U, &status) == ESP_FAIL);
+        assert(bytes_zero(&status, sizeof(status)) && !held && releases == 1U &&
+            transfers == after + 1U && passive_ready_pending && transport_diagnostics.spi_errors == 1U);
+    }
+    reset_case(REQUEST_ONLY); passive_model = true;
+    cerberus_spi_frame_t request, discarded, response;
+    assert(cerberus_protocol_prepare_frame(&request, CERBERUS_SPI_COMMAND_WIFI_SCAN_STATUS, 93U, NULL, 0U));
+    memset(&discarded, 0xa5, sizeof(discarded)); memset(&response, 0xa5, sizeof(response));
+    assert(take_link_mutex(20U) == pdTRUE);
+    assert(spi_request_response_passive(&request, &discarded, &response, sizeof(request), 1000U) == ESP_ERR_TIMEOUT);
+    give_link_mutex();
+    assert(bytes_zero(&discarded, sizeof(discarded)) && bytes_zero(&response, sizeof(response)) &&
+        transfers == 2U && passive_ready_pending && !held);
+}
+
+static void passive_time_and_lock(void)
+{
+    cerberus_wifi_scan_status_payload_t status;
+    reset_case(EARLY); passive_model = true; c5_spi = NULL;
+    memset(&status, 0xa5, sizeof(status));
+    assert(c5_spi_link_get_wifi_scan_status_once(1000U, &status) == ESP_ERR_INVALID_STATE);
+    assert(bytes_zero(&status, sizeof(status)) && !held && !transfers && releases == 1U &&
+        !passive_ready_pending && !polling_starts && !polling_ends);
+    c5_spi = (void *)2;
+    assert(c5_spi_link_get_wifi_scan_status_once(1000U, &status) == ESP_OK && transfers == 2U && !held);
+    reset_case(EARLY); passive_model = true; fail_mutex = true;
+    memset(&status, 0xa5, sizeof(status));
+    assert(c5_spi_link_get_wifi_scan_status_once(10U, &status) == ESP_ERR_TIMEOUT);
+    assert(bytes_zero(&status, sizeof(status)) && !held && !transfers && !releases &&
+        last_mutex_ticks == 10U && clock_us == 10000 && transport_diagnostics.mutex_timeouts == 1U);
+    reset_case(EARLY); passive_model = true; mutex_wait_us = 10000U;
+    assert(c5_spi_link_get_wifi_scan_status_once(10U, &status) == ESP_ERR_TIMEOUT);
+    assert(!transfers && releases == 1U && !held && !passive_ready_pending);
+    reset_case(EARLY); passive_model = true; mutex_wait_us = 7000U;
+    assert(c5_spi_link_get_wifi_scan_status_once(1000U, &status) == ESP_OK);
+    assert(clock_us == 7006 && transport_diagnostics.max_mutex_wait_us == 7000U &&
+        transport_diagnostics.max_exchange_us == 6U && transport_diagnostics.max_mutex_hold_us == 6U);
+
+    reset_case(LEGACY); passive_model = true; clock_us = 999;
+    assert(c5_spi_link_get_wifi_scan_status_once(1U, &status) == ESP_ERR_TIMEOUT);
+    assert(clock_us == 1000 && !transfers && !held && releases == 1U && bytes_zero(&status, sizeof(status)));
+    reset_case(EARLY); passive_model = true; clock_us = 999;
+    assert(c5_spi_link_get_wifi_scan_status_once(1U, &status) == ESP_ERR_TIMEOUT);
+    assert(clock_us == 1002 && transfers == 1U && passive_ready_pending && !held);
+    reset_case(EARLY); passive_model = true; clock_us = 1000;
+    assert(c5_spi_link_get_wifi_scan_status_once(1U, &status) == ESP_ERR_TIMEOUT);
+    assert(!transfers && !releases && bytes_zero(&status, sizeof(status)));
+
+    reset_case(DELAYED); passive_model = true; delayed_low_us = 1000; delayed_high_us = 2600;
+    assert(c5_spi_link_get_wifi_scan_status_once(1000U, &status) == ESP_ERR_TIMEOUT);
+    assert(clock_us == 5000 && transfers == 2U && passive_ready_pending && bytes_zero(&status, sizeof(status)));
+    reset_case(DELAYED); passive_model = true; delayed_low_us = 500; delayed_high_us = 1000;
+    high_level = false; scheduled = true; low_at = 0; high_at = 1500;
+    assert(c5_spi_link_get_wifi_scan_status_once(3U, &status) == ESP_ERR_TIMEOUT);
+    assert(clock_us == 3000 && transfers == 2U && passive_ready_pending);
+    reset_case(EARLY); passive_model = true; transfer_cost_us = 7000;
+    assert(c5_spi_link_get_wifi_scan_status_once(1000U, &status) == ESP_ERR_TIMEOUT);
+    assert(clock_us == 7000 && transfers == 1U && passive_ready_pending);
+    /* An in-flight SDK call can exceed the software budget. No subsequent
+     * transfer is admitted, and no hard physical latency bound is claimed. */
+    assert(transport_diagnostics.max_exchange_us == 7000U && !held && bytes_zero(&status, sizeof(status)));
+
+    reset_case(DELAYED); passive_model = true; clock_us = (int64_t)UINT32_MAX - 50;
+    atomic_store(&ready_fall_epoch, UINT32_MAX);
+    const int64_t start = clock_us;
+    assert(c5_spi_link_get_wifi_scan_status_once(passive_deadline(20U), &status) == ESP_OK);
+    assert(clock_us - start == 166 && ready_epoch() == 1U && !passive_ready_pending);
+    reset_case(DELAYED); passive_model = true;
+    clock_us = ((int64_t)UINT32_MAX - 1) * 1000 + 950;
+    assert(c5_spi_link_get_wifi_scan_status_once(2U, &status) == ESP_OK && !held);
+    reset_case(EARLY); passive_model = true; clock_us = -1;
+    assert(c5_spi_link_get_wifi_scan_status_once(10U, &status) == ESP_ERR_INVALID_STATE);
+    assert(!transfers && !releases && bytes_zero(&status, sizeof(status)));
+    reset_case(EARLY); passive_model = true; clock_us = 1000000; rollback_transfer = 1U;
+    assert(c5_spi_link_get_wifi_scan_status_once(2000U, &status) == ESP_ERR_INVALID_STATE);
+    assert(transfers == 1U && passive_ready_pending && !held && bytes_zero(&status, sizeof(status)));
+}
+
+static void passive_recovery(void)
+{
+    for (unsigned failed_start = 1U; failed_start <= 2U; ++failed_start) {
+        for (unsigned legacy = 0U; legacy < 2U; ++legacy) {
+            reset_case(EARLY); passive_model = true; fail_start_at = failed_start;
+            cerberus_wifi_scan_status_payload_t status;
+            assert(c5_spi_link_get_wifi_scan_status_once(1000U, &status) == ESP_FAIL);
+            assert(polling_starts == failed_start && polling_ends == failed_start - 1U &&
+                transfers == failed_start - 1U && !passive_ready_pending && !held &&
+                bytes_zero(&status, sizeof(status)));
+            const unsigned prior_transfers = transfers;
+            fail_start_at = 0U;
+            assert((legacy ? c5_spi_link_get_wifi_scan_status(&status) :
+                c5_spi_link_get_wifi_scan_status_once(1000U, &status)) == ESP_OK);
+            assert(transfers == prior_transfers + 2U && !held && !passive_ready_pending &&
+                status.generation == 7U && !transport_diagnostics.ready_fall_timeouts);
+        }
+    }
+    for (unsigned failed_end = 1U; failed_end <= 2U; ++failed_end) {
+        reset_case(EARLY); passive_model = true; fail_spi_at = failed_end;
+        cerberus_wifi_scan_status_payload_t status;
+        assert(c5_spi_link_get_wifi_scan_status_once(1000U, &status) == ESP_FAIL);
+        assert(polling_starts == failed_end && polling_ends == failed_end && passive_ready_pending);
+        const unsigned before = transfers;
+        fail_spi_at = 0U;
+        assert(c5_spi_link_get_wifi_scan_status_once(1000U, &status) == ESP_ERR_TIMEOUT && transfers == before);
+        falling(); high_level = true;
+        assert(c5_spi_link_get_wifi_scan_status_once(1000U, &status) == ESP_OK && transfers == before + 2U);
+        assert(!held && !passive_ready_pending);
+    }
+    for (unsigned legacy = 0U; legacy < 2U; ++legacy) {
+        reset_case(NONE); passive_model = true;
+        atomic_store(&ready_fall_epoch, UINT32_MAX); /* Recovery must survive epoch wrap. */
+        cerberus_wifi_scan_status_payload_t status;
+        assert(c5_spi_link_get_wifi_scan_status_once(1000U, &status) == ESP_ERR_TIMEOUT);
+        assert(requests == 1U && transfers == 1U && passive_ready_pending && high_level);
+        unsigned old_requests = requests, old_transfers = transfers;
+        if (legacy) assert(c5_spi_link_get_wifi_scan_status(&status) == ESP_ERR_INVALID_RESPONSE);
+        else assert(c5_spi_link_get_wifi_scan_status_once(1000U, &status) == ESP_ERR_TIMEOUT);
+        /* Stale high cannot authorize a request; no new clocks or legacy
+         * fallback are allowed while the exact previous edge is absent. */
+        assert(requests == old_requests && transfers == old_transfers && !held && passive_ready_pending &&
+            !transport_diagnostics.legacy_fallbacks && bytes_zero(&status, sizeof(status)));
+        falling(); high_level = true; pulse = EARLY;
+        assert((legacy ? c5_spi_link_get_wifi_scan_status(&status) :
+            c5_spi_link_get_wifi_scan_status_once(1000U, &status)) == ESP_OK);
+        assert(!passive_ready_pending && !held && requests == old_requests + 1U && transfers == old_transfers + 2U);
+    }
+    reset_case(REQUEST_ONLY); passive_model = true;
+    cerberus_wifi_scan_status_payload_t status;
+    assert(c5_spi_link_get_wifi_scan_status_once(1000U, &status) == ESP_ERR_TIMEOUT);
+    assert(transfers == 2U && passive_ready_pending && ready_epoch() == 1U);
+    assert(c5_spi_link_get_wifi_scan_status_once(1000U, &status) == ESP_ERR_TIMEOUT && transfers == 2U);
+    falling(); high_level = true; pulse = EARLY;
+    assert(c5_spi_link_get_wifi_scan_status_once(1000U, &status) == ESP_OK && transfers == 4U);
+    assert(!passive_ready_pending && ready_epoch() == 4U);
+    /* Recovery itself shares the next call's budget with its request/response. */
+    reset_case(NONE); passive_model = true;
+    assert(c5_spi_link_get_wifi_scan_status_once(1000U, &status) == ESP_ERR_TIMEOUT);
+    const int64_t began = clock_us;
+    scheduled = true; low_at = clock_us + 3000; high_at = clock_us + 4000;
+    pulse = DELAYED; delayed_low_us = 500; delayed_high_us = 1000;
+    assert(c5_spi_link_get_wifi_scan_status_once(1000U, &status) == ESP_ERR_TIMEOUT);
+    assert(clock_us - began == 5000 && transfers == 2U && requests == 2U && passive_ready_pending && !held);
+}
+
+static void passive_reader_routes(void)
+{
+    for (unsigned length = 0U; length <= 32U; ++length) {
+        reset_case(EARLY); passive_model = true; passive_ssid_length = (uint8_t)length;
+        cerberus_c5_wifi_scan_reader_t reader;
+        cerberus_c5_wifi_result_t row;
+        cerberus_s3_wifi_observation_t observation;
+        bool complete = false;
+        assert(c5_spi_link_wifi_scan_result_begin(&reader, 7U, 0U, 1000U) == ESP_OK);
+        while (!complete) {
+            const unsigned before = requests;
+            memset(&row, 0xa5, sizeof(row)); memset(&observation, 0xa5, sizeof(observation));
+            assert(c5_spi_link_wifi_scan_result_step(&reader, &row, &observation, &complete) == ESP_OK);
+            assert(requests == before + 1U && !held && !passive_ready_pending);
+            if (!complete) assert(bytes_zero(&row, sizeof(row)) && bytes_zero(&observation, sizeof(observation)));
+        }
+        assert(requests == 1U + (length + 17U) / 18U && releases == requests && row.ssid[length] == 0 &&
+            observation.valid && observation.request_started_us == 0U && observation.source_age_ms == 17U);
+        for (unsigned i = 0U; i < length; ++i) assert(row.ssid[i] == (char)('A' + i % 26U));
+    }
+    for (unsigned fault_step = 1U; fault_step <= 3U; ++fault_step) {
+        reset_case(EARLY); passive_model = true;
+        cerberus_c5_wifi_scan_reader_t reader;
+        cerberus_c5_wifi_result_t row;
+        cerberus_s3_wifi_observation_t observation;
+        bool complete = false;
+        assert(c5_spi_link_wifi_scan_result_begin(&reader, 7U, 0U, 1000U) == ESP_OK);
+        for (unsigned step = 1U; step <= fault_step; ++step) {
+            if (step == fault_step) pulse = NONE;
+            const esp_err_t error = c5_spi_link_wifi_scan_result_step(&reader, &row, &observation, &complete);
+            assert(error == (step == fault_step ? ESP_ERR_TIMEOUT : ESP_OK));
+        }
+        assert(requests == fault_step && !complete && !held && bytes_zero(&row, sizeof(row)) &&
+            bytes_zero(&observation, sizeof(observation)) && bytes_zero(&reader.pending, sizeof(reader.pending)));
+        assert(c5_spi_link_wifi_scan_result_step(&reader, &row, &observation, &complete) == ESP_ERR_TIMEOUT &&
+            requests == fault_step);
+        falling(); high_level = true; pulse = EARLY;
+        assert(c5_spi_link_wifi_scan_result_begin(&reader, 7U, 0U, 1000U) == ESP_OK);
+        while (!complete)
+            assert(c5_spi_link_wifi_scan_result_step(&reader, &row, &observation, &complete) == ESP_OK);
+        assert(requests == fault_step + 3U && !held && !passive_ready_pending && row.ssid[32] == 0 && observation.valid);
+    }
+    for (unsigned fault_step = 0U; fault_step <= 6U; ++fault_step) {
+        reset_case(EARLY); passive_model = true;
+        cerberus_c5_wifi_relation_reader_t reader;
+        cerberus_c5_wifi_relation_bank_t proof;
+        bool complete = false;
+        assert(c5_spi_link_wifi_relation_begin_check(&reader, 7U, 1000U) == ESP_OK && !reader.legacy_exchange);
+        unsigned step = 0U;
+        while (!complete) {
+            ++step; assert(step <= 6U);
+            if (step == fault_step) pulse = NONE;
+            memset(&proof, 0xa5, sizeof(proof));
+            const esp_err_t error = c5_spi_link_wifi_relation_step(&reader, &proof, &complete, NULL, NULL);
+            assert(requests == step && !held && releases == requests);
+            if (step == fault_step) {
+                assert(error == ESP_ERR_TIMEOUT && !complete && bytes_zero(&proof, sizeof(proof)) &&
+                    bytes_zero(&reader.pending, sizeof(reader.pending)));
+                assert(c5_spi_link_wifi_relation_step(&reader, &proof, &complete, NULL, NULL) == error && requests == step);
+                break;
+            }
+            assert(error == ESP_OK);
+            if (!complete) assert(bytes_zero(&proof, sizeof(proof)));
+        }
+        if (!fault_step) {
+            assert(complete && step == 6U && proof.status.epoch == UINT64_C(0x100000007) &&
+                proof.clock_valid && proof.request_started_us == 0U);
+            const cerberus_c5_wifi_relation_bank_t original = proof;
+            clock_us += 20000;
+            assert(c5_spi_link_wifi_relation_begin_check_expected(&reader, &original, 1000U) == ESP_OK);
+            complete = false;
+            while (!complete) assert(c5_spi_link_wifi_relation_step(&reader, &proof, &complete, NULL, NULL) == ESP_OK);
+            assert(requests == 12U && proof.request_started_us == original.request_started_us &&
+                proof.source_now_us == original.source_now_us && !held && !passive_ready_pending);
+        }
+    }
+    /* Blocking worker wrappers deliberately retain legacy timing/compatibility;
+     * the six exchanges succeed here even with no READY edges. */
+    for (unsigned copy = 0U; copy < 2U; ++copy) {
+        reset_case(NONE); passive_model = true;
+        cerberus_c5_wifi_relation_bank_t proof;
+        const esp_err_t error = copy ? c5_spi_link_copy_wifi_relations(7U, 2000U, &proof, NULL, 0U, NULL, NULL) :
+            c5_spi_link_get_wifi_relation_bank(7U, 2000U, &proof);
+        assert(error == ESP_OK && requests == 6U && !held && !passive_ready_pending &&
+            !polling_starts && !polling_ends && transport_diagnostics.legacy_fallbacks == 6U);
+        assert(proof.status.epoch == UINT64_C(0x100000007) && clock_us == 6 * 110006);
+    }
+}
+
 int main(void)
 {
     service_error=ESP_ERR_NO_MEM;
@@ -374,6 +735,11 @@ int main(void)
     unsigned before=transfers;c5_spi_link_get_transport_diagnostics(&snapshot);
     assert(transfers==before&&snapshot.ready_fall_edges==1U&&snapshot.exchanges==1U);
     watch_lock_checks();
+    passive_status_faults();
+    passive_time_and_lock();
+    passive_recovery();
+    passive_reader_routes();
     puts("C5 READY: pulses/faults/framing/metrics/init/wrap; Watch status/chunks/activity lock metrics, release paths and immutable validated snapshots passed.");
+    puts("Passive AP READY: actual row/status/fence routes, shared 5ms readiness budget, absolute deadlines, pending-edge recovery, no stale output/retry and common-path isolation passed; SDK calls are not preemptible.");
     return 0;
 }

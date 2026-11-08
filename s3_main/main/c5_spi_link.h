@@ -1,9 +1,22 @@
 #pragma once
+#include "wifi_packet_monitor_session.h"
+#include "wifi_channel_analyzer.h"
+#include "wifi_fox_hunt.h"
+#include "esp_err.h"
+#include "device_identity.h"
+#include "wardrive_stream.h"
+esp_err_t c5_spi_link_wardrive(uint8_t command,const cerberus_wd_request_t *query,void *reply);
 
 #include "cerberus_protocol.h"
 #include "s3_wifi_observation.h"
 #include "watch_receive_timing.h"
+#include "watch_profile_evidence.h"
 #include "wifi_probe_observation.h"
+#include "probe_sniff_core.h"
+#include "mesh_observation_protocol.h"
+#include "mesh_locate_protocol.h"
+#include "wifi_packet_count_protocol.h"
+#include "wifi_ap_survey_protocol.h"
 #include "s3_wifi_relation.h"
 #include "esp_err.h"
 #include <stdbool.h>
@@ -15,6 +28,10 @@ extern "C" {
 #endif
 
 esp_err_t c5_spi_link_test_start(const cerberus_radio_test_config_t *config,cerberus_radio_test_status_t *status);
+/* One exact, bounded exchange. RAW_READ clocks64 bytes; other commands32.
+ * Caller resolves uncertain mutations and validates source/session semantics. */
+esp_err_t c5_spi_link_wifi_packet_count_exchange(uint8_t command, const void *request,
+    size_t request_size, void *reply, size_t reply_size);
 esp_err_t c5_spi_link_test_status(uint16_t lease_job_id,cerberus_radio_test_status_t *status);
 esp_err_t c5_spi_link_ap_start(const cerberus_wifi_ap_job_t *request,cerberus_radio_test_status_t *status);
 esp_err_t c5_spi_link_ap_validate(const cerberus_wifi_ap_job_t *request);
@@ -35,6 +52,50 @@ typedef struct {
     uint8_t radio_state;
 } cerberus_c5_status_t;
 
+/* One command, bounded by 20 ms including mutex acquisition. INFO and START
+ * first read a fresh peer capability within the same budget; no mutation is
+ * automatically retried. READ clocks64 bytes; other commands clock32. */
+esp_err_t c5_spi_link_wifi_ap_survey_exchange(uint8_t command,const void *request,
+    size_t request_size,void *reply,size_t reply_size);
+typedef struct {
+    cerberus_ap_survey_snapshot_t *staging;
+    cerberus_c5_status_t peer;
+    uint64_t session_id,request_started_us,receipt_us,last_us;
+    uint32_t projection,deadline_ms;
+    uint16_t offset;
+    uint8_t phase,ap_count,relation_count,snapshot_flags;
+    esp_err_t error;
+} cerberus_c5_ap_survey_reader_t;
+/* Caller owns staging until cancellation or completion. No RF mutation.
+ * begin/cancel perform no I/O. Each step does at most one bounded exchange:
+ * peer, BEGIN,96 READs,final peer. Live collector revision may advance freely.
+ * Exact BEGIN request anchor and final receipt remain available in the reader.
+ * Failure/cancel clear the entire staging image; no partial publication. */
+esp_err_t c5_spi_link_wifi_ap_survey_reader_begin(cerberus_c5_ap_survey_reader_t *,
+    uint64_t session_id,cerberus_ap_survey_snapshot_t *staging,uint32_t deadline_ms);
+esp_err_t c5_spi_link_wifi_ap_survey_reader_step(cerberus_c5_ap_survey_reader_t *,bool *complete);
+void c5_spi_link_wifi_ap_survey_reader_cancel(cerberus_c5_ap_survey_reader_t *);
+
+typedef struct {
+    cerberus_device_identity_t pending;
+    cerberus_fragment_info_payload_t info;
+    cerberus_c5_status_t peer;
+    uint64_t last_us;
+    uint32_t deadline_ms;
+    uint16_t offset;
+    uint8_t phase;
+    esp_err_t error;
+} cerberus_device_identity_reader_t;
+
+/* Caller-owned reader, no allocation or RF mutation. Each step performs at
+ * most one exchange with a 20ms mutex wait and a shared 5ms READY budget.
+ * A hardware transaction already in flight is not preemptible. Partial or
+ * invalid metadata is never published. Cancel by discarding the reader after
+ * the current step; the peer's existing fragment buffer owns no radio lease. */
+void c5_spi_link_device_identity_begin(cerberus_device_identity_reader_t *, uint32_t deadline_ms);
+esp_err_t c5_spi_link_device_identity_step(cerberus_device_identity_reader_t *,
+    cerberus_device_identity_t *output, bool *complete);
+
 /* Passive ordinary-scan relationships. No station-target bank is read or
  * changed. Proof has full source-bank epoch plus peer identity and a local
  * request-start anchor; all row timestamps remain C5 callback uptime. */
@@ -49,13 +110,15 @@ typedef struct {
     uint32_t deadline_ms;
     esp_err_t error;
     uint8_t generation, capacity, phase, index, chunk;
-    bool anchored, check_only, expect_bank;
+    bool anchored, check_only, expect_bank, legacy_exchange;
 } cerberus_c5_wifi_relation_reader_t;
 
 /* Reader storage must initially be zeroed. Begin/cancel issue no SPI. Each
  * step performs at most one physical request/response attempt, with at most
- * 20 ms mutex wait. An in-flight READY exchange can overrun the deadline once;
- * afterward failure clears staging. Continue callbacks execute outside locks.
+ * 20 ms mutex wait. Incremental readers share a 5 ms software READY budget per
+ * exchange, capped by the original absolute deadline, with no legacy fallback.
+ * Hardware SPI already in flight is not preemptible; a late attempt fails and
+ * clears staging. Continue callbacks execute outside locks.
  * ESP_OK+complete=false means progress; only complete=true publishes proof.
  * Any error is terminal until begin, and clears all bounded caller rows.
  * Keep rows alive until cancel or terminal completion; no allocation occurs. */
@@ -68,12 +131,18 @@ esp_err_t c5_spi_link_wifi_relation_begin(cerberus_c5_wifi_relation_reader_t *,
 esp_err_t c5_spi_link_wifi_relation_begin_expected(cerberus_c5_wifi_relation_reader_t *,
     const cerberus_c5_wifi_relation_bank_t *expected, uint32_t deadline_ms,
     cerberus_wifi_relation_row_t *rows, size_t capacity);
+/* Status/clock/peer fences only. Begin performs no I/O; advance with the same
+ * step API. The expected variant retains the original source-time anchor. */
+esp_err_t c5_spi_link_wifi_relation_begin_check(cerberus_c5_wifi_relation_reader_t *,
+    uint8_t generation, uint32_t deadline_ms);
+esp_err_t c5_spi_link_wifi_relation_begin_check_expected(cerberus_c5_wifi_relation_reader_t *,
+    const cerberus_c5_wifi_relation_bank_t *expected, uint32_t deadline_ms);
 esp_err_t c5_spi_link_wifi_relation_step(cerberus_c5_wifi_relation_reader_t *,
     cerberus_c5_wifi_relation_bank_t *proof, bool *complete,
     cerberus_c5_relation_continue_fn, void *context);
 void c5_spi_link_wifi_relation_cancel(cerberus_c5_wifi_relation_reader_t *);
-/* Worker-only wrappers drive the same incremental reader. UI callers use
- * step once per tick. NOT_SUPPORTED occurs only on initial old-peer proof;
+/* Worker-only wrappers retain the ordinary legacy-compatible exchange policy.
+ * UI callers use bounded incremental steps. NOT_SUPPORTED occurs only on initial old-peer proof;
  * a supported peer changing/rebooting/malforming never permits fallback. */
 esp_err_t c5_spi_link_copy_wifi_relations(uint8_t generation, uint32_t deadline_ms,
     cerberus_c5_wifi_relation_bank_t *proof, cerberus_wifi_relation_row_t *rows,
@@ -122,6 +191,32 @@ typedef struct {
 esp_err_t c5_spi_link_get_wifi_scan_observed_result(uint8_t generation,
     uint8_t index, cerberus_c5_wifi_result_t *result,
     cerberus_s3_wifi_observation_t *observation);
+
+/* UI-owned reader for a single AP row. No allocation or RF command. Each step
+ * attempts at most one physical exchange, waits at most 20 ms for the mutex,
+ * and releases it before returning. All READY waits share a 5 ms software
+ * budget capped by the original deadline; no legacy fallback occurs. Hardware
+ * SPI already in flight is not preemptible, but a late attempt cannot publish.
+ * Begin/cancel issue no I/O. Outputs must not alias reader storage and are
+ * zero until complete. Every error is terminal until another begin. The
+ * containing snapshot must still fence its generation/bank before commit. */
+typedef struct {
+    cerberus_c5_wifi_result_t pending;
+    cerberus_s3_wifi_observation_t observation;
+    uint64_t last_local_us;
+    uint32_t deadline_ms, firmware_version;
+    esp_err_t error;
+    uint8_t generation, index, phase, ssid_length, copied;
+    bool clock_sampled;
+} cerberus_c5_wifi_scan_reader_t;
+esp_err_t c5_spi_link_wifi_scan_result_begin(cerberus_c5_wifi_scan_reader_t *,
+    uint8_t generation, uint8_t index, uint32_t deadline_ms);
+esp_err_t c5_spi_link_wifi_scan_result_step(cerberus_c5_wifi_scan_reader_t *,
+    cerberus_c5_wifi_result_t *, cerberus_s3_wifi_observation_t *, bool *complete);
+void c5_spi_link_wifi_scan_result_cancel(cerberus_c5_wifi_scan_reader_t *);
+/* One-attempt read for a snapshot's final status fence; never starts reception. */
+esp_err_t c5_spi_link_get_wifi_scan_status_once(uint32_t deadline_ms,
+    cerberus_wifi_scan_status_payload_t *);
 
 typedef struct {
     char name[CERBERUS_BLE_NAME_MAX_LENGTH + 1U];
@@ -183,6 +278,22 @@ typedef struct {
 void c5_spi_link_get_transport_diagnostics(cerberus_c5_transport_diagnostics_t *out);
 esp_err_t c5_spi_link_get_status(cerberus_c5_status_t *status);
 esp_err_t c5_spi_link_start_wifi_scan(cerberus_wifi_scan_status_payload_t *status);
+/* Firmware61+: INFO issues current epoch; start requires epoch+1. A lost reply
+ * can be retried with that same epoch. Every later ordinary scan revokes it.
+ * Old peers return NOT_SUPPORTED without receiving a start command. Each
+ * operation is one bounded attempt (20ms software budget; not SDK preemption).
+ * STATUS/STOP return NOT_FOUND for stale ownership, without stopping another
+ * job. A Stop reply still RUNNING means cleanup must continue, including when
+ * its error_code reports an SDK Stop failure. */
+esp_err_t c5_spi_link_wifi_scan_band_info(cerberus_wifi_scan_band_response_t *reply);
+esp_err_t c5_spi_link_start_wifi_scan_band(uint8_t band, uint64_t session_id,
+    cerberus_wifi_scan_status_payload_t *status);
+esp_err_t c5_spi_link_wifi_scan_band_status(uint8_t band, uint64_t session_id,
+    cerberus_wifi_scan_status_payload_t *status);
+esp_err_t c5_spi_link_stop_wifi_scan_band(uint8_t band, uint64_t session_id,
+    cerberus_wifi_scan_status_payload_t *status);
+esp_err_t c5_spi_link_dual_ble_exchange(uint8_t command, const void *request,
+    size_t request_size, void *response, size_t response_size);
 esp_err_t c5_spi_link_stop_wifi_scan(cerberus_wifi_scan_status_payload_t *status);
 esp_err_t c5_spi_link_get_wifi_scan_status(cerberus_wifi_scan_status_payload_t *status);
 esp_err_t c5_spi_link_get_wifi_radio_stats(cerberus_wifi_radio_stats_payload_t *stats);
@@ -194,6 +305,39 @@ esp_err_t c5_spi_link_wifi_channel_survey_status(
     cerberus_wifi_channel_survey_status_payload_t *status);
 esp_err_t c5_spi_link_wifi_channel_survey_result(uint8_t generation, uint8_t index,
     cerberus_wifi_channel_survey_result_payload_t *result);
+/* Capability70 exact survey ownership. Control replies retain accepted job
+ * errors; ESP_OK means a validated reply, not successful RF. A rejected query
+ * echoes the requested session with BOUND clear. No legacy Stop fallback.
+ * Each call uses one 20ms passive transport deadline and no command retries;
+ * INFO/START additionally refresh capability before the scoped command.
+ * Metrics freeze one22-byte projection and read it in three parts. */
+esp_err_t c5_spi_link_wifi_channel_survey_session_info(
+    cerberus_wifi_channel_survey_session_status_t *reply);
+esp_err_t c5_spi_link_wifi_channel_survey_session_start(uint64_t session_id, uint8_t band,
+    cerberus_wifi_channel_survey_session_status_t *reply);
+esp_err_t c5_spi_link_wifi_channel_survey_session_status(uint64_t session_id,
+    cerberus_wifi_channel_survey_session_status_t *reply);
+esp_err_t c5_spi_link_wifi_channel_survey_session_stop(uint64_t session_id,
+    cerberus_wifi_channel_survey_session_status_t *reply);
+esp_err_t c5_spi_link_wifi_channel_survey_session_metrics(uint64_t session_id,
+    uint8_t generation, uint8_t band, cerberus_wifi_channel_survey_status_payload_t *out);
+esp_err_t c5_spi_link_wifi_channel_survey_session_result(uint64_t session_id,
+    uint8_t generation, uint8_t index, cerberus_wifi_channel_survey_result_payload_t *out);
+/* Capability71 scoped passive Probe Sniff. Control is one command (INFO and
+ * START additionally refresh firmware); read advances exactly one wire part.
+ * Each call has one20ms passive deadline and no mutation retry. ESP_OK control
+ * means validated identity/shape; source error and ownership remain in reply. */
+esp_err_t c5_spi_link_probe_sniff_control(uint8_t command,
+    const cerberus_probe_sniff_start_t *request, cerberus_probe_sniff_control_t *reply);
+esp_err_t c5_spi_link_probe_sniff_read(const cerberus_probe_sniff_read_t *request,
+    cerberus_probe_sniff_chunk_t *reply);
+/* Capability72 scoped passive Mesh transport. Exactly one bounded command,
+ * with INFO/START capability refresh. No mutation retry; the controller handles
+ * uncertain delivery, ownership and semantic validation. Reply is always22B. */
+esp_err_t c5_spi_link_mesh_exchange(uint8_t command, const void *request,
+    size_t request_length, void *reply, size_t reply_length);
+esp_err_t c5_spi_link_mesh_locate_exchange(uint8_t command, const void *request,
+    size_t request_length, void *reply, size_t reply_length);
 esp_err_t c5_spi_link_wifi_packet_monitor_start(uint8_t channel,
     cerberus_wifi_packet_monitor_status_payload_t *status);
 esp_err_t c5_spi_link_wifi_packet_monitor_stop(uint8_t generation,
@@ -202,11 +346,52 @@ esp_err_t c5_spi_link_wifi_packet_monitor_status(
     cerberus_wifi_packet_monitor_status_payload_t *status);
 esp_err_t c5_spi_link_wifi_packet_monitor_sample(uint8_t generation,
     uint16_t sequence, cerberus_wifi_packet_monitor_sample_payload_t *sample);
+esp_err_t c5_spi_link_wifi_packet_monitor_session_info(cerberus_wifi_packet_monitor_session_status_t *out);
+esp_err_t c5_spi_link_wifi_packet_monitor_record_start(uint64_t session, uint8_t channel,
+    cerberus_wifi_packet_monitor_session_status_t *out);
+esp_err_t c5_spi_link_wifi_packet_monitor_record_exchange(uint8_t command,
+    const void *request, size_t request_size, void *reply, size_t reply_size);
+esp_err_t c5_spi_link_wifi_packet_monitor_session_start(uint64_t session, uint8_t channel,
+    cerberus_wifi_packet_monitor_session_status_t *out);
+esp_err_t c5_spi_link_wifi_packet_monitor_session_status(uint64_t session,
+    cerberus_wifi_packet_monitor_session_status_t *out);
+esp_err_t c5_spi_link_wifi_packet_monitor_session_stop(uint64_t session,
+    cerberus_wifi_packet_monitor_session_status_t *out);
+esp_err_t c5_spi_link_wifi_packet_monitor_session_sample(uint64_t session, uint16_t sequence,
+    cerberus_wifi_packet_monitor_session_sample_t *out);
+esp_err_t c5_spi_link_wifi_channel_analyzer_info(cerberus_wifi_channel_analyzer_status_t *out);
+esp_err_t c5_spi_link_wifi_channel_analyzer_start(uint64_t session, uint8_t channel,
+    cerberus_wifi_channel_analyzer_status_t *out);
+esp_err_t c5_spi_link_wifi_channel_analyzer_status(uint64_t session,
+    cerberus_wifi_channel_analyzer_status_t *out);
+esp_err_t c5_spi_link_wifi_channel_analyzer_stop(uint64_t session,
+    cerberus_wifi_channel_analyzer_status_t *out);
+esp_err_t c5_spi_link_wifi_channel_analyzer_sample(uint64_t session, uint32_t sequence,
+    cerberus_wifi_channel_analyzer_sample_t *out);
+esp_err_t c5_spi_link_wifi_channel_analyzer_hint_peek(uint64_t session,
+    cerberus_wifi_channel_analyzer_hint_status_t *out);
+esp_err_t c5_spi_link_wifi_channel_analyzer_hint_read(uint64_t session, uint32_t projection, uint8_t part,
+    cerberus_wifi_channel_analyzer_hint_part_t *out);
+esp_err_t c5_spi_link_wifi_fox_hunt_info(cerberus_wifi_fox_hunt_status_t *out);
+esp_err_t c5_spi_link_wifi_fox_hunt_start(const cerberus_wifi_fox_hunt_start_t *request,
+    cerberus_wifi_fox_hunt_status_t *out);
+esp_err_t c5_spi_link_wifi_fox_hunt_status(uint64_t session, cerberus_wifi_fox_hunt_status_t *out);
+esp_err_t c5_spi_link_wifi_fox_hunt_stop(uint64_t session, cerberus_wifi_fox_hunt_status_t *out);
+esp_err_t c5_spi_link_wifi_fox_hunt_signal(uint64_t session, cerberus_wifi_fox_hunt_signal_t *out);
 /* Wi-Fi capture needs C5 firmware revision 45+. `read_frame` verifies CRC32
  * into caller storage and deliberately leaves the record pending until ACK. */
 esp_err_t c5_spi_link_wifi_capture_start(
     const cerberus_wifi_capture_start_request_t *request,
     cerberus_wifi_capture_status_payload_t *status);
+/* Capability 86 planned SAE capture. Each command is one 20 ms passive exchange
+ * with a fresh capability check. Mutations are not automatically replayed. */
+esp_err_t c5_spi_link_wifi_capture_plan_stage(const cerberus_wifi_capture_plan_request_t *,
+    cerberus_wifi_capture_plan_status_payload_t *);
+esp_err_t c5_spi_link_wifi_capture_plan_status(cerberus_wifi_capture_plan_status_payload_t *);
+esp_err_t c5_spi_link_wifi_capture_plan_target(const cerberus_wifi_capture_target_request_t *,
+    cerberus_wifi_capture_plan_status_payload_t *);
+esp_err_t c5_spi_link_wifi_capture_hop_status(uint32_t generation,
+    cerberus_wifi_capture_hop_status_payload_t *);
 esp_err_t c5_spi_link_wifi_capture_status(cerberus_wifi_capture_status_payload_t *status);
 esp_err_t c5_spi_link_wifi_capture_peek(uint32_t generation,
     cerberus_wifi_capture_peek_payload_t *peek);
@@ -293,6 +478,38 @@ esp_err_t c5_spi_link_get_watch_detailed_result(uint8_t radio, uint8_t generatio
     uint8_t index, cerberus_watch_observation_t *result,
     cerberus_watch_receive_timing_t *timing, sentinel_watch_motion_t *motion,
     cerberus_watch_receive_timing_t *motion_timing);
+typedef struct {
+    cerberus_watch_observation_t observation;
+    cerberus_watch_receive_timing_t timing;
+    sentinel_watch_motion_t motion;
+    cerberus_watch_receive_timing_t motion_timing;
+    cerberus_watch_profile_evidence_t profile;
+    cerberus_c5_status_t peer;
+} cerberus_c5_watch_profile_result_t;
+typedef struct {
+    cerberus_watch_profile_projection_t image;
+    cerberus_c5_watch_profile_result_t pending;
+    cerberus_c5_status_t expected_peer, peer;
+    uint64_t expected_epoch, capture_epoch, started_us, last_us;
+    uint32_t projection, deadline_ms;
+    esp_err_t error;
+    uint8_t radio, generation, index, chunk, phase;
+    bool expect_peer, anchored;
+} cerberus_c5_watch_profile_reader_t;
+/* BEGIN/cancel perform no I/O. New peers: one passive exchange per step,
+ * <=20ms mutex wait, original absolute deadline, immutable copied projection.
+ * expected_epoch0 discovers the first row's full epoch; use that nonzero epoch
+ * for every later row in the same publication. The caller brackets the entire
+ * bank with peer/status proofs. No output is published before complete=true.
+ * Peers below89 use the unchanged detailed-row getter once, returning canonical
+ * unavailable profile evidence. That legacy step retains its old wire budget.
+ * Any supported-peer failure is explicit and never selects legacy fallback. */
+esp_err_t c5_spi_link_watch_profile_begin(cerberus_c5_watch_profile_reader_t *,
+    const cerberus_c5_status_t *expected_peer, uint8_t radio, uint8_t generation,
+    uint8_t index, uint64_t expected_epoch, uint32_t deadline_ms);
+esp_err_t c5_spi_link_watch_profile_step(cerberus_c5_watch_profile_reader_t *,
+    cerberus_c5_watch_profile_result_t *, bool *complete);
+void c5_spi_link_watch_profile_cancel(cerberus_c5_watch_profile_reader_t *);
 /* Revision 54+ bounded passive priority job. STATUS ID0 discovers the retained
  * high-water job; all mutations require an exact nonzero caller-chosen ID.
  * ESP_OK means a validated C5 reply, including REJECTED/error states. Only

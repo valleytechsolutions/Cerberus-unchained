@@ -28,7 +28,8 @@ static cerberus_s3_ble_attack_status_t active_status;
 static bool worker_running, stop_requested, attack_owns_host;
 static bool connection_active;
 static uint16_t connection_handle;
-static unsigned claimed_host_epoch;
+static cerberus_s3_ble_host_lease_t claimed_host_lease;
+static uint32_t callback_ticket;
 static uint32_t started_ms, last_touch_ms;
 
 static uint32_t now_ms(void) { return (uint32_t)(esp_timer_get_time() / 1000LL); }
@@ -65,20 +66,33 @@ static void record_heap(void)
     xSemaphoreGive(attack_mutex);
 }
 
-static int gap_event(struct ble_gap_event *event, void *unused)
+static int gap_event(struct ble_gap_event *event, void *arg)
 {
-    (void)unused;
 #ifdef CONFIG_BT_NIMBLE_ROLE_PERIPHERAL
     if (!event) return 0;
+    xSemaphoreTake(attack_mutex, portMAX_DELAY);
+    bool current = (uint32_t)(uintptr_t)arg != 0U &&
+        (uint32_t)(uintptr_t)arg == callback_ticket && attack_owns_host &&
+        cerberus_s3_ble_host_lease_valid(&claimed_host_lease);
+    cerberus_s3_ble_host_lease_t lease = claimed_host_lease;
+    xSemaphoreGive(attack_mutex);
+    if (!current) return 0;
     if (event->type == BLE_GAP_EVENT_CONNECT && event->connect.status == 0) {
         /* A connectable announcement can end while its link is still live.
          * Keep the host lease until the disconnect callback confirms closure. */
         xSemaphoreTake(attack_mutex, portMAX_DELAY);
+        if ((uint32_t)(uintptr_t)arg != callback_ticket ||
+            claimed_host_lease.token != lease.token ||
+            !cerberus_s3_ble_host_lease_valid(&lease)) {
+            xSemaphoreGive(attack_mutex);
+            return 0;
+        }
         connection_active = true;
         connection_handle = event->connect.conn_handle;
         active_status.connection_active = true;
         increment(&active_status.connections_accepted);
         xSemaphoreGive(attack_mutex);
+        if (!cerberus_s3_ble_host_lease_valid(&lease)) return 0;
         int rc = ble_gap_terminate(event->connect.conn_handle,
             BLE_ERR_REM_USER_CONN_TERM);
         if (rc != 0 && rc != BLE_HS_ENOTCONN) {
@@ -89,6 +103,12 @@ static int gap_event(struct ble_gap_event *event, void *unused)
         }
     } else if (event->type == BLE_GAP_EVENT_DISCONNECT) {
         xSemaphoreTake(attack_mutex, portMAX_DELAY);
+        if ((uint32_t)(uintptr_t)arg != callback_ticket ||
+            claimed_host_lease.token != lease.token ||
+            !cerberus_s3_ble_host_lease_valid(&lease)) {
+            xSemaphoreGive(attack_mutex);
+            return 0;
+        }
         if (connection_active &&
             connection_handle == event->disconnect.conn.conn_handle) {
             connection_active = false;
@@ -99,19 +119,15 @@ static int gap_event(struct ble_gap_event *event, void *unused)
          * Release the retained host then, so another BLE owner can proceed. */
         if (!connection_active && !worker_running && attack_owns_host &&
             !ble_gap_adv_active()) {
-            cerberus_s3_ble_owner_t owner = cerberus_s3_ble_host_owner();
-            if (owner == CERBERUS_S3_BLE_OWNER_ADVERTISER &&
-                cerberus_s3_ble_host_epoch() == claimed_host_epoch &&
-                cerberus_s3_ble_host_release(CERBERUS_S3_BLE_OWNER_ADVERTISER) == ESP_OK)
-                attack_owns_host = false;
-            else if (owner == CERBERUS_S3_BLE_OWNER_NONE ||
-                     cerberus_s3_ble_host_epoch() != claimed_host_epoch)
+            if (cerberus_s3_ble_host_release(&lease) == ESP_OK ||
+                !cerberus_s3_ble_host_lease_valid(&lease))
                 attack_owns_host = false;
         }
         xSemaphoreGive(attack_mutex);
     }
 #else
     (void)event;
+    (void)arg;
 #endif
     return 0;
 }
@@ -124,13 +140,12 @@ static bool has_connection(void)
     return active;
 }
 
-static esp_err_t stop_connection(unsigned host_epoch)
+static esp_err_t stop_connection(const cerberus_s3_ble_host_lease_t *lease)
 {
     uint32_t started = now_ms();
     uint32_t last_terminate_ms = 0U;
     while (has_connection()) {
-        if (!cerberus_s3_ble_host_synced() ||
-            cerberus_s3_ble_host_epoch() != host_epoch) {
+        if (!cerberus_s3_ble_host_lease_valid(lease)) {
             /* A host reset destroys every controller link. The shared host
              * owner is also reset, so never release a different new owner. */
             xSemaphoreTake(attack_mutex, portMAX_DELAY);
@@ -139,11 +154,13 @@ static esp_err_t stop_connection(unsigned host_epoch)
             xSemaphoreGive(attack_mutex);
             return ESP_FAIL;
         }
+        if (!cerberus_s3_ble_host_synced()) return ESP_ERR_INVALID_STATE;
         uint32_t now = now_ms();
         if (last_terminate_ms == 0U || (uint32_t)(now - last_terminate_ms) >= 100U) {
             xSemaphoreTake(attack_mutex, portMAX_DELAY);
             uint16_t handle = connection_handle;
             xSemaphoreGive(attack_mutex);
+            if (!cerberus_s3_ble_host_lease_valid(lease)) return ESP_ERR_INVALID_STATE;
             int rc = ble_gap_terminate(handle, BLE_ERR_REM_USER_CONN_TERM);
             if (rc != 0 && rc != BLE_HS_ENOTCONN) {
                 xSemaphoreTake(attack_mutex, portMAX_DELAY);
@@ -178,8 +195,9 @@ static uint32_t dwell_ms(const cerberus_ble_attack_frame_t *frame, uint16_t inte
     return frame->active_ms > minimum ? frame->active_ms : minimum;
 }
 
-static esp_err_t stop_advertiser(void)
+static esp_err_t stop_advertiser(const cerberus_s3_ble_host_lease_t *lease)
 {
+    if (!cerberus_s3_ble_host_lease_valid(lease)) return ESP_ERR_INVALID_STATE;
     if (!ble_gap_adv_active()) return ESP_OK;
     uint32_t started = now_ms();
     int rc = ble_gap_adv_stop();
@@ -193,30 +211,28 @@ static esp_err_t stop_advertiser(void)
         if ((uint32_t)(now_ms() - started) >= ATTACK_STOP_TIMEOUT_MS)
             return ESP_ERR_TIMEOUT;
         delay_ms(20U);
+        if (!cerberus_s3_ble_host_lease_valid(lease)) return ESP_ERR_INVALID_STATE;
         rc = ble_gap_adv_stop();
     }
     return (rc == 0 || rc == BLE_HS_EALREADY) ? ESP_OK : ESP_FAIL;
 }
 
 static void finish_worker(esp_err_t error, bool lease_expired, bool claimed,
-    unsigned host_epoch)
+    const cerberus_s3_ble_host_lease_t *lease)
 {
-    if (claimed) {
+    if (claimed && cerberus_s3_ble_host_lease_valid(lease)) {
         if (ble_gap_adv_active()) {
-            esp_err_t stop_error = stop_advertiser();
+            esp_err_t stop_error = stop_advertiser(lease);
             if (error == ESP_OK) error = stop_error;
         }
-        esp_err_t connection_error = stop_connection(host_epoch);
+        esp_err_t connection_error = stop_connection(lease);
         if (error == ESP_OK) error = connection_error;
         if (ble_gap_adv_active() || has_connection()) {
             /* Do not transfer the host to a scanner or central while the
              * controller still advertises or holds a link. */
             if (error == ESP_OK) error = ESP_ERR_TIMEOUT;
         } else {
-            cerberus_s3_ble_owner_t owner = cerberus_s3_ble_host_owner();
-            esp_err_t release_error = owner == CERBERUS_S3_BLE_OWNER_ADVERTISER ?
-                cerberus_s3_ble_host_release(CERBERUS_S3_BLE_OWNER_ADVERTISER) :
-                owner == CERBERUS_S3_BLE_OWNER_NONE ? ESP_OK : ESP_ERR_INVALID_STATE;
+            esp_err_t release_error = cerberus_s3_ble_host_release(lease);
             xSemaphoreTake(attack_mutex, portMAX_DELAY);
             attack_owns_host = false;
             xSemaphoreGive(attack_mutex);
@@ -224,6 +240,11 @@ static void finish_worker(esp_err_t error, bool lease_expired, bool claimed,
         }
     }
     xSemaphoreTake(attack_mutex, portMAX_DELAY);
+    if (claimed && attack_owns_host && !cerberus_s3_ble_host_lease_valid(lease)) {
+        attack_owns_host = false;
+        connection_active = active_status.connection_active = false;
+        if (error == ESP_OK) error = ESP_ERR_INVALID_STATE;
+    }
     active_status.error = error;
     active_status.elapsed_ms = (uint32_t)(now_ms() - started_ms);
     active_status.state = error != ESP_OK ? CERBERUS_S3_BLE_ATTACK_ERROR :
@@ -244,17 +265,20 @@ static void attack_worker(void *unused)
     esp_err_t error = result == CERBERUS_BLE_ATTACK_OK ? ESP_OK : ESP_ERR_INVALID_ARG;
     bool lease_expired = false;
     bool claimed = false;
+    cerberus_s3_ble_host_lease_t lease = {0};
+    uint32_t ticket = 0U;
     if (error == ESP_OK && !lease_or_stop(&lease_expired)) {
-        error = cerberus_s3_ble_host_claim(CERBERUS_S3_BLE_OWNER_ADVERTISER);
+        error = cerberus_s3_ble_host_claim(CERBERUS_S3_BLE_OWNER_ADVERTISER, &lease);
         claimed = error == ESP_OK;
         if (claimed) {
             xSemaphoreTake(attack_mutex, portMAX_DELAY);
             attack_owns_host = true;
-            claimed_host_epoch = cerberus_s3_ble_host_epoch();
+            claimed_host_lease = lease;
+            if (callback_ticket == UINT32_MAX) error = ESP_ERR_INVALID_STATE;
+            else ticket = ++callback_ticket;
             xSemaphoreGive(attack_mutex);
         }
     }
-    unsigned host_epoch = cerberus_s3_ble_host_epoch();
     if (claimed && cerberus_s3_wifi_owner() != CERBERUS_S3_WIFI_RECEIVER &&
         cerberus_s3_wifi_owner() != CERBERUS_S3_WIFI_PORTAL) {
         xSemaphoreTake(attack_mutex, portMAX_DELAY);
@@ -263,7 +287,7 @@ static void attack_worker(void *unused)
     } else if (claimed) error = ESP_ERR_INVALID_STATE;
 
     while (claimed && error == ESP_OK && !lease_or_stop(&lease_expired)) {
-        if (!cerberus_s3_ble_host_synced() || cerberus_s3_ble_host_epoch() != host_epoch) {
+        if (!cerberus_s3_ble_host_synced() || !cerberus_s3_ble_host_lease_valid(&lease)) {
             error = ESP_FAIL;
             break;
         }
@@ -297,6 +321,7 @@ static void attack_worker(void *unused)
         active_status.effective_interval_units = interval;
         xSemaphoreGive(attack_mutex);
         int rc = ble_hs_id_set_rnd(frame.address);
+        if (rc == 0 && !cerberus_s3_ble_host_lease_valid(&lease)) rc = ESP_ERR_INVALID_STATE;
         if (rc == 0) rc = ble_gap_adv_set_data(frame.data, frame.length);
         struct ble_gap_adv_params parameters = {
             .conn_mode = frame.connectable ? BLE_GAP_CONN_MODE_UND : BLE_GAP_CONN_MODE_NON,
@@ -304,8 +329,9 @@ static void attack_worker(void *unused)
             .itvl_min = interval,
             .itvl_max = interval,
         };
+        if (rc == 0 && !cerberus_s3_ble_host_lease_valid(&lease)) rc = ESP_ERR_INVALID_STATE;
         if (rc == 0) rc = ble_gap_adv_start(BLE_OWN_ADDR_RANDOM, NULL,
-            (int32_t)(dwell + 250U), &parameters, gap_event, NULL);
+            (int32_t)(dwell + 250U), &parameters, gap_event, (void *)(uintptr_t)ticket);
         xSemaphoreTake(attack_mutex, portMAX_DELAY);
         active_status.last_controller_rc = rc;
         if (rc == 0) increment(&active_status.controller_accepted_bursts);
@@ -321,12 +347,12 @@ static void attack_worker(void *unused)
             record_heap();
             delay_ms(10U);
         }
-        esp_err_t stop_error = stop_advertiser();
+        esp_err_t stop_error = stop_advertiser(&lease);
         if (stop_error != ESP_OK) {
             error = stop_error;
             break;
         }
-        stop_error = stop_connection(host_epoch);
+        stop_error = stop_connection(&lease);
         if (stop_error != ESP_OK) {
             error = stop_error;
             break;
@@ -335,7 +361,7 @@ static void attack_worker(void *unused)
         increment(&active_status.completed_bursts);
         xSemaphoreGive(attack_mutex);
     }
-    finish_worker(error, lease_expired, claimed, host_epoch);
+    finish_worker(error, lease_expired, claimed, &lease);
     vTaskDelete(NULL);
 }
 
@@ -390,6 +416,11 @@ esp_err_t cerberus_s3_ble_attack_start(const cerberus_s3_ble_attack_request_t *r
         return ESP_ERR_NO_MEM;
     }
     xSemaphoreTake(attack_mutex, portMAX_DELAY);
+    if (!worker_running && attack_owns_host &&
+        !cerberus_s3_ble_host_lease_valid(&claimed_host_lease)) {
+        attack_owns_host = false;
+        connection_active = active_status.connection_active = false;
+    }
     if (worker_running || attack_owns_host) {
         xSemaphoreGive(attack_mutex);
         status->error = ESP_ERR_INVALID_STATE;

@@ -11,6 +11,8 @@ root = Path(__file__).resolve().parents[1]
 source = (root / "s3_main/main/wardrive_service.c").read_text(encoding="utf-8")
 gps_header = (root / "s3_main/main/wardrive_gps_uart.h").read_text(encoding="utf-8")
 budget_defines = "\n".join(re.findall(r"^#define (?:WARDRIVE_WORKER_STACK|CERBERUS_WARDRIVE_GPS_(?:RX_BUFFER|TASK_STACK)_BYTES) .*", source + "\n" + gps_header, re.M))
+attempt_start = source.index("typedef struct {", source.index("static esp_err_t recent_error;"))
+attempt_type = source[attempt_start:source.index("} wardrive_recent_attempt_t;", attempt_start) + len("} wardrive_recent_attempt_t;")]
 workspace = source[source.index("/* These bounded buffers"):source.index(
     "static uint32_t open_file_rows;")]
 helpers = source[source.index("static esp_err_t allocate_workspace(void)"):source.index(
@@ -22,7 +24,7 @@ worker = source[source.index("static void wardrive_worker(void *unused)"):source
     "static esp_err_t wardrive_start_with_idle_probes_paused(")]
 start = source[source.index("static esp_err_t wardrive_start_with_idle_probes_paused("):source.index(
     "void cerberus_wardrive_request_stop(void)")]
-assert start.index("cerberus_s3_ble_host_claim(CERBERUS_S3_BLE_OWNER_SCANNER)") < start.index(
+assert start.index("cerberus_s3_ble_host_claim(CERBERUS_S3_BLE_OWNER_SCANNER, &warm_lease)") < start.index(
     "allocate_workspace();") < start.index("field_survey_snapshot(&expansion_stage);")
 assert stop.index("stop_own_scans(") < stop.index(
     "if (wardrive_file_open) (void)save_open_file(keep);")
@@ -39,6 +41,8 @@ program = r'''
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include "wardrive_rssi_filter.h"
+#include "wardrive_geofence.h"
 #define CERBERUS_WIFI_SCAN_MAX_RESULTS 32U
 #define CERBERUS_BLE_SCAN_MAX_RESULTS 32U
 #define CERBERUS_WIFI_PROBE_LIMIT 16U
@@ -49,6 +53,12 @@ program = r'''
 #define ESP_ERR_INVALID_STATE 1
 #define ESP_ERR_NO_MEM 2
 typedef int esp_err_t;
+static cerberus_wardrive_rssi_filter_t *rssi_filter;
+static struct { bool rssi_filter_enabled; } wardrive_status;
+static unsigned wardrive_lock;
+#define portENTER_CRITICAL(p) ((void)(p))
+#define portEXIT_CRITICAL(p) ((void)(p))
+typedef struct { uint64_t session_id, sequence; } cerberus_wardrive_recent_ticket_t;
 typedef struct { uint8_t data[64]; } cerberus_wardrive_dedupe_t;
 typedef struct { uint8_t data[64]; } cerberus_wardrive_probe_dedupe_t;
 typedef struct { uint8_t data[64]; } cerberus_wardrive_relation_dedupe_t;
@@ -61,6 +71,9 @@ typedef int cerberus_wardrive_probe_state_t;
 typedef struct { uint8_t data[48]; } cerberus_c5_wifi_result_t;
 typedef struct { uint8_t data[52]; } cerberus_c5_ble_result_t;
 typedef struct { uint8_t data[28]; } cerberus_s3_ble_wardrive_evidence_t;
+/* Opaque boundary type: this test verifies allocation/capability/lifetime,
+ * not native structure sizing (the retained-ELF audit owns that evidence). */
+typedef struct { uint8_t data[64]; } cerberus_s3_ble_passive_state_t;
 typedef struct { uint8_t data[80]; } field_survey_snapshot_t;
 typedef struct { uint8_t data[96]; } expansion_record_t;
 static unsigned alloc_calls, free_calls, last_caps;
@@ -77,13 +90,13 @@ static void heap_caps_free(void *ptr)
     if (ptr) ++free_calls;
     free(ptr);
 }
-''' + budget_defines + "\n" + workspace + helpers + r'''
+''' + budget_defines + "\n" + attempt_type + workspace + helpers + r'''
 int main(void)
 {
     assert(post_ble_reserve_bytes(false) == 43008U);
-    assert(post_ble_reserve_bytes(true) == 45568U);
+    assert(post_ble_reserve_bytes(true) == 48640U);
     assert(45980U >= post_ble_reserve_bytes(false)); /* measured rev51 Stop */
-    assert(45980U >= post_ble_reserve_bytes(true));
+    assert(45980U < post_ble_reserve_bytes(true)); /* Larger UART invalidates the old GPS-on cold reserve. */
     fail_next = true;
     assert(allocate_workspace() == ESP_ERR_NO_MEM);
     assert(workspace == NULL && free_calls == 0U);
@@ -98,6 +111,17 @@ int main(void)
     assert(allocate_workspace() == ESP_OK);
     release_workspace();
     assert(workspace == NULL && free_calls == 2U);
+    fail_next=true;begin_rssi_filter();
+    assert(!rssi_filter&&!wardrive_status.rssi_filter_enabled);
+    begin_rssi_filter();
+    assert(rssi_filter&&wardrive_status.rssi_filter_enabled);
+    assert(last_caps==(MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT)&&last_bytes==sizeof(*rssi_filter));
+    assert(sizeof(*rssi_filter)<=5120U);
+    assert(rssi_filter->entries[0][0].type==0);
+    rssi_filter->entries[0][0].type=1;
+    release_workspace();assert(!rssi_filter&&free_calls==3U);
+    begin_rssi_filter();assert(rssi_filter->entries[0][0].type==0);
+    release_workspace();assert(!rssi_filter&&free_calls==4U);
     return 0;
 }
 '''
@@ -114,6 +138,7 @@ environment = os.environ.copy()
 if not use_zig:
     environment["PATH"] = str(mingw_bin) + os.pathsep + environment.get("PATH", "")
 subprocess.run(compiler + ["-std=c11", "-O1", "-Wall", "-Wextra", "-Werror",
+    "-I", str(root / "s3_main/main"),
     str(fixture), "-o", str(exe)], check=True, env=environment)
 subprocess.run([str(exe)], check=True, env=environment)
 print("wardrive PSRAM workspace allocation and Stop teardown: pass")

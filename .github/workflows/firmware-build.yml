@@ -1,6 +1,6 @@
 name: Build Unchained firmware candidate
 
-# Produces a private review artifact. It never flashes hardware, changes the
+# Produces a candidate artifact for review. It never flashes hardware, changes the
 # selected web release, or publishes a production release automatically.
 on:
   workflow_dispatch:
@@ -11,7 +11,7 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 50
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
         with:
@@ -29,6 +29,10 @@ jobs:
           python tools/build_unchained.py --target s3
           python tools/build_unchained.py --target c5
           python tools/build_unchained.py --target bridge
+          python -m platformio run -d expansion/c5_scanner -e c5-expansion-wroom
+          python -m platformio run -d expansion/c5_scanner -e c5-expansion-xiao
+      - name: Verify all five targets and native console boundaries
+        run: python tools/build_unified.py --target all
       - name: Build and package the unchanged matched set
         run: python tools/build_unchained.py --target all --package
       - name: Verify the package and produce its ZIP
@@ -59,11 +63,13 @@ jobs:
             dist/*.zip.sha256
           if-no-files-found: error
           retention-days: 30
-      - name: Save build diagnostics privately
+      - name: Save build diagnostics
         if: always()
         uses: actions/upload-artifact@v7
         with:
           name: cerberus-unchained-build-diagnostics-${{ github.run_number }}
-          path: artifacts/build/
+          path: |
+            artifacts/build/
+            artifacts/integration/
           if-no-files-found: ignore
           retention-days: 7

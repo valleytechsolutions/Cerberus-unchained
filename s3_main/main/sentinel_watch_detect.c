@@ -400,7 +400,7 @@ bool sentinel_watch_classify_wifi(const sentinel_watch_wifi_observation_t *obser
 const char *sentinel_watch_category_name(sentinel_watch_category_t category)
 {
     static const char *const names[] = {"Unknown", "Axon equipment", "Flock ecosystem", "Adult wellness",
-        "AirTag / Find My", "Tile / Chipolo / Find Hub", "GoPro camera", "Smart glasses demo",
+        "AirTag / Find My", "Tile / Chipolo / Find Hub", "GoPro camera", "Meta identifier hint",
         "Flipper", "Meshtastic", "Samsung tracker", "Bluetooth beacon", "Pwnagotchi",
         "Drone Remote ID", "Bluetooth activity"};
     return category >= SENTINEL_WATCH_NONE && category < SENTINEL_WATCH_CATEGORY_COUNT ? names[category] : "Unknown";

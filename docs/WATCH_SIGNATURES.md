@@ -3,6 +3,8 @@
 Catalog reviewed 2026-10-13; expanded protocol review 2026-10-14; plain-language label and explanation update 2026-10-15.
 
 Implementation: `s3_main/main/sentinel_watch_detect.c` / `.h` and `shared/sentinel_watch_protocol.c` / `.h`.
+Rev126 additionally projects already-decoded native S3 Meta evidence through
+`s3_main/main/sentinel_watch_meta.h`; it adds no identifier table or parser.
 Redistribution notices: [WATCH_THIRD_PARTY_NOTICES.md](WATCH_THIRD_PARTY_NOTICES.md).
 
 ## What a match means
@@ -17,7 +19,7 @@ Confidence describes the evidence in a packet, not a measured probability:
 | --- | --- |
 | High | A documented complete frame layout, or two specific observations that agree. Still unauthenticated. |
 | Medium | A documented vendor/service or constrained name pattern. Model and device role may remain unknown. |
-| Low | A distinctive name prefix with no protocol corroboration. |
+| Low | A weak name/identifier hint or explicitly experimental measurement; no product/model confirmation. |
 
 Axon results say **equipment hint**, not confirmed body camera. Flock results include accessory and battery hints; they do not establish that a camera is attached. Apple results are labeled **AirTag / Find My hint**: the format is shared by AirTags and other Find My accessories and does not confirm a model. Tile and Chipolo results name their tracker ecosystem, which can also include compatible accessories. Google Find Hub retains its separate label and explanation within the tracker category. Camera hints currently cover GoPro; recording status stays unknown.
 
@@ -75,8 +77,36 @@ WeVibe names such as `Nova`, `Wand`, and `Sync` are not classified on their own.
 - XUNTONG `09C8`, general Qualcomm/Espressif/Texas Instruments OUIs, and Nordic UART do not establish Flock or wellness products.
 - `Penguin`, `Flock`, `Raven`, `Pigvision`, a bare ten-digit number, `toy`, `vibe`, and the prefix `LOVE-` alone are excluded. Generic BLE services `180A`, `1809`, `1819`, `FFF0`, and `1900` do not classify a device alone.
 - The Axon services identify assignments to Axon/TASER, not a product model, police presence, or recording state. No transmission or triggering of Axon equipment is implemented.
-- `SMART_GLASSES` is a reserved category and demo scene with **no installed live classifier rule**. Meta/Luxottica company IDs or `FD5F` alone do not distinguish glasses from other products sufficiently for this release.
+- The raw Watch classifier does not identify smart-glasses models. Rev126 reuses
+  the existing `SMART_GLASSES` numeric category for the clearly labeled **Meta
+  identifier hint**, described below. An allowed company/service identifier
+  does not establish that the advertiser is glasses or a particular model.
 - Firmware changes, renamed devices, silent devices, short scan windows, packet loss, unsupported radio formats, and bounded result storage all limit coverage. Classification has been checked against documented formats and synthetic host fixtures; this is not a field-measured sensitivity/specificity study.
+
+## Recon Meta identifier projection (rev126)
+
+Recon can project the scanner's existing current-original Meta evidence into
+its inventory and normal category controls. This separate adapter runs only
+after the native passive lease and entire frozen bank pass validation, and
+only when the raw Watch classifier has produced no match. It preserves typed
+identity, generation, 64-bit capture epoch, current original sequence/time,
+completeness and suppression checks. It never substitutes response-only hints
+or stale retained raw bytes for the current original.
+
+The result is **Meta identifier hint / Low**, not confirmed glasses, ownership,
+model or recording status. The existing allowed and suppressing identifier
+tables and identifier/context semantics are documented in
+[Meta identifier discovery parity](BLE_META_ID_PARITY.md). No identifiers,
+radio operations or parsing rules are added. The enum keeps its historical
+`SMART_GLASSES` numeric value for compatibility, but its live label and WHY
+explanation now describe identifier evidence honestly.
+
+The source S3 parser may have decoded a complete original longer than the
+retained 31-byte preview. Recon's journal does not gain a complete Meta pair
+matrix or full callback payload through this projection. Generic BLE retention
+is still bounded; a missing hint does not establish device absence. Native
+build, installation and physical acceptance are tracked in
+[the rev126 checkpoint](DUAL_RADIO_REV126.md).
 
 ## Expanded Watch families (0.5)
 

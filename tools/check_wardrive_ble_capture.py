@@ -8,9 +8,19 @@ root = Path(__file__).resolve().parents[1]
 out = root / "artifacts/wardrive-ble-checks"
 out.mkdir(parents=True, exist_ok=True)
 source = (root / "s3_main/main/wardrive_service.c").read_text(encoding="utf-8")
+# Preserve the actual immutable-row attempt guard; this legacy fixture replaces
+# only preview publication and SD implementation. The recent-service suite
+# separately links the complete service and real retained model.
+type_start = source.index("typedef struct {", source.index("static esp_err_t recent_error;"))
+type_end = source.index("} wardrive_recent_attempt_t;", type_start) + len("} wardrive_recent_attempt_t;")
+(out / "wardrive_recent_attempt_type.h").write_text(source[type_start:type_end], encoding="utf-8")
+wrap_start = source.index("static esp_err_t append_recent_observation(")
+wrap_end = source.index("static void reset_wifi_capture(", wrap_start)
+(out / "wardrive_recent_attempt_impl.h").write_text(source[wrap_start:wrap_end], encoding="utf-8")
+
 parts = []
 for start, stop in (("static void publish_sighting(", "static void publish_invalid("),
-                    ("static esp_err_t capture_ble(", "static esp_err_t capture_expansions(")):
+                    ("static bool ble_completed_state(", "static esp_err_t capture_expansions(")):
     begin = source.index(start)
     parts.append(source[begin:source.index(stop, begin)])
 (out / "wardrive_ble_impl.h").write_text("\n".join(parts), encoding="utf-8")

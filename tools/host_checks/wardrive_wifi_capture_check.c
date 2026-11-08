@@ -9,10 +9,8 @@
 #include "esp_err.h"
 #include "wardrive_core.h"
 #include "wardrive_service.h"
+#include "wardrive_recent_attempt_type.h"
 
-#define CERBERUS_WIFI_SCAN_MAX_RESULTS 4U
-#define CERBERUS_WIFI_SCAN_COMPLETE 2U
-#define CERBERUS_WIFI_CHANNEL_SURVEY_RUNNING 1U
 #define WARDRIVE_C5_STATUS_GRACE_MS 12000U
 
 typedef struct {
@@ -23,11 +21,6 @@ typedef struct {
     char ssid[33];
 } cerberus_c5_wifi_result_t;
 
-typedef struct {
-    uint8_t state, generation, stored_count;
-    uint16_t total_count;
-} cerberus_wifi_scan_status_payload_t;
-typedef struct { uint8_t state; } cerberus_wifi_channel_survey_status_payload_t;
 typedef struct { cerberus_wifi_probe_status_t status; uint32_t peer; } cerberus_c5_wifi_probe_bank_t;
 typedef bool (*cerberus_c5_probe_continue_fn)(void *);
 typedef struct { cerberus_wifi_relation_status_t status; uint32_t peer; } cerberus_c5_wifi_relation_bank_t;
@@ -158,8 +151,9 @@ static esp_err_t c5_spi_link_wifi_channel_survey_status(
     out->state = 0U;
     return ESP_OK;
 }
-static esp_err_t append_observation(const cerberus_wardrive_observation_t *observation)
+static esp_err_t append_observation_impl(const cerberus_wardrive_observation_t *observation, cerberus_wardrive_recent_outcome_t *outcome)
 {
+    *outcome=CERBERUS_WARDRIVE_RECENT_NOT_LOGGED;
     bool probe=observation->type==CERBERUS_WARDRIVE_WIFI_PROBE;
     bool relation=observation->type==CERBERUS_WARDRIVE_WIFI_RELATION;
     cerberus_wardrive_decision_t decision = relation?
@@ -182,6 +176,16 @@ static esp_err_t append_observation(const cerberus_wardrive_observation_t *obser
     return ESP_OK;
 }
 
+
+/* Retained publication is independently exercised by the whole-service suite. */
+static void recent_preview(const cerberus_wardrive_observation_t *o, wardrive_recent_attempt_t *a)
+{ (void)o; a->previewed=true; }
+static void recent_outcome(cerberus_wardrive_recent_ticket_t t, cerberus_wardrive_recent_outcome_t o)
+{ (void)t; (void)o; }
+#include "wardrive_recent_attempt_impl.h"
+static wardrive_recent_attempt_t wifi_attempts[CERBERUS_WIFI_SCAN_MAX_RESULTS];
+static esp_err_t append_observation(const cerberus_wardrive_observation_t *o)
+{cerberus_wardrive_recent_outcome_t outcome;return append_observation_impl(o,&outcome);}
 #include "wardrive_wifi_capture_impl.h"
 
 static void reset(void)

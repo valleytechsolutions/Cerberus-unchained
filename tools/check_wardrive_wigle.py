@@ -26,4 +26,7 @@ subprocess.run(compiler + [
     str(root / "tools/host_checks/wardrive_wigle_check.c"),
     "-o", str(exe),
 ], check=True, env=environment)
-subprocess.run([str(exe)], check=True, env=environment)
+sample = out / "formatter-export.csv"
+subprocess.run([str(exe), str(sample)], check=True, env=environment)
+subprocess.run([sys.executable, str(root / "tools/host_checks/wardrive_csv_check.py"),
+    str(sample)], check=True, env=environment)

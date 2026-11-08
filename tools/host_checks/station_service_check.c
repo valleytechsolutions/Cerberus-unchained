@@ -1,3 +1,4 @@
+#include "ap_survey_foreign_boundary.h"
 #ifdef NDEBUG
 #undef NDEBUG
 #endif
@@ -6,6 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdatomic.h>
+static atomic_bool packet_count_radio_reserved;
 #include "esp_err.h"
 #include "cerberus_protocol.h"
 #define ESP_ERR_NOT_FOUND 0x105
@@ -24,6 +26,8 @@ typedef struct {wifi_pkt_rx_ctrl_t rx_ctrl;uint8_t payload[64];} wifi_promiscuou
 typedef struct {unsigned filter_mask;} wifi_promiscuous_filter_t;
 static unsigned scanner_mutex=1,scanner_task_handle=1,defense_capture_mux=1;
 static bool scanner_ready=true;
+/* Separate passive Probe owner; the actual admission body below checks it. */
+static atomic_bool probe_sniff_radio_reserved;
 static atomic_bool csi_radio_reserved, mac_radio_reserved;
 static cerberus_wifi_scan_status_payload_t scan_status;
 static cerberus_wifi_defense_status_payload_t defense_status;
@@ -103,6 +107,13 @@ int main(void)
     atomic_store(&mac_radio_reserved,true);
     assert(cerberus_wifi_station_start(&blocked)==ESP_ERR_INVALID_STATE&&!station_reserved&&!notified&&!enabled);
     atomic_store(&mac_radio_reserved,false);
+    atomic_store(&probe_sniff_radio_reserved,true);
+    assert(cerberus_wifi_station_start(&blocked)==ESP_ERR_INVALID_STATE&&!station_reserved&&!notified&&!enabled);
+    atomic_store(&probe_sniff_radio_reserved,false);
+    { atomic_store(&packet_count_radio_reserved,true);
+    assert(cerberus_wifi_station_start(&blocked)==ESP_ERR_INVALID_STATE&&!station_reserved&&!notified&&!enabled);
+    atomic_store(&packet_count_radio_reserved,false); }
+
     cerberus_wifi_station_request_t r=reset();assert(cerberus_wifi_station_start(&r)==ESP_OK&&notified==1&&cerberus_wifi_station_running());
     assert(cerberus_wifi_station_start(&r)==ESP_OK&&notified==1);r.seconds=15;assert(cerberus_wifi_station_start(&r)==ESP_ERR_INVALID_ARG);r.seconds=5;
     overlap=true;assert(station_run());assert(station_table.status.state==CERBERUS_STATION_COMPLETE&&!cerberus_wifi_station_running());

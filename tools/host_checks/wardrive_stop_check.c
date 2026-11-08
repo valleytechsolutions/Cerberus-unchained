@@ -6,27 +6,13 @@
 #include <stdint.h>
 #include <stdio.h>
 #include "esp_err.h"
+#include "s3_ble_scanner.h"
 
 #define WARDRIVE_STOP_GRACE_MS 9000U
 #define WARDRIVE_EXPANSION_STOP_GRACE_MS 3000U
-#define CERBERUS_WIFI_SCAN_RUNNING 1U
-#define CERBERUS_WIFI_SCAN_COMPLETE 2U
-#define CERBERUS_WIFI_SCAN_ERROR 3U
-#define CERBERUS_BLE_SCAN_RUNNING 1U
-#define CERBERUS_BLE_SCAN_COMPLETE 2U
-#define CERBERUS_BLE_SCAN_ERROR 3U
+#define WARDRIVE_POLL_MS 100U
 #define pdMS_TO_TICKS(ms) (ms)
 
-typedef struct {
-    uint8_t state, generation, stored_count;
-    uint16_t total_count;
-    int32_t error_code;
-} cerberus_wifi_scan_status_payload_t;
-typedef struct {
-    uint8_t state, generation, stored_count;
-    uint16_t dropped_reports;
-    int32_t error_code;
-} cerberus_ble_scan_status_payload_t;
 typedef struct {
     bool requested;
     uint8_t scanning_mask, uncertain_mask;
@@ -47,6 +33,7 @@ static bool wardrive_file_open, wigle_file_open;
 static uint32_t wigle_file_rows;
 static unsigned session_closes, wigle_closes;
 static unsigned capture_resets;
+static char ble_capture_error_radio = 'B';
 static void reset_wifi_capture(void) { ++capture_resets; }
 static uint32_t now_ms(void) { return clock_ms; }
 static bool before_deadline(uint32_t deadline)
@@ -64,9 +51,9 @@ static esp_err_t drain_completed_wifi(const cerberus_wifi_scan_status_payload_t 
     *captured = mode != 6U && (mode != 5U || wifi_drains > 1U);
     return ESP_OK;
 }
-static void drain_completed_ble(const cerberus_ble_scan_status_payload_t *status)
-{ assert(status->state == CERBERUS_BLE_SCAN_COMPLETE); ++ble_drains; }
-static esp_err_t c5_spi_link_get_wifi_scan_status(cerberus_wifi_scan_status_payload_t *status)
+static esp_err_t drain_completed_ble(uint64_t epoch,uint8_t count)
+{ assert(epoch==7U&&count==1U); ++ble_drains; return ESP_OK; }
+esp_err_t c5_spi_link_get_wifi_scan_status(cerberus_wifi_scan_status_payload_t *status)
 {
     ++wifi_queries;
     if ((mode == 2U && wifi_queries == 1U) || mode == 8U)
@@ -79,19 +66,24 @@ static esp_err_t c5_spi_link_get_wifi_scan_status(cerberus_wifi_scan_status_payl
     };
     return ESP_OK;
 }
-static esp_err_t c5_spi_link_stop_wifi_scan(cerberus_wifi_scan_status_payload_t *status)
+esp_err_t c5_spi_link_stop_wifi_scan(cerberus_wifi_scan_status_payload_t *status)
 { ++wifi_stops; status->state = CERBERUS_WIFI_SCAN_RUNNING; return ESP_OK; }
-static esp_err_t cerberus_s3_ble_scanner_get_status(cerberus_ble_scan_status_payload_t *status)
+esp_err_t cerberus_s3_ble_scanner_passive_get_state(uint64_t epoch,
+    cerberus_s3_ble_passive_state_t *out)
 {
+    assert(epoch==7U);
     ++ble_queries;
-    *status = (cerberus_ble_scan_status_payload_t){
-        .generation = 7U, .state = CERBERUS_BLE_SCAN_COMPLETE,
-        .stored_count = 1U,
+    *out = (cerberus_s3_ble_passive_state_t){
+        .epoch=7U,.scan_epoch=41,.host_epoch=2,.attached=true,
+        .scan={.generation=7U,.state=CERBERUS_BLE_SCAN_COMPLETE,.stored_count=1U},
     };
     return ESP_OK;
 }
-static esp_err_t cerberus_s3_ble_scanner_stop(cerberus_ble_scan_status_payload_t *status)
-{ ++ble_stops; status->state = CERBERUS_BLE_SCAN_RUNNING; return ESP_OK; }
+esp_err_t cerberus_s3_ble_scanner_passive_stop(uint64_t epoch,
+    cerberus_s3_ble_passive_state_t *out)
+{ ++ble_stops;return cerberus_s3_ble_scanner_passive_get_state(epoch,out); }
+esp_err_t cerberus_s3_ble_scanner_passive_release(uint64_t epoch)
+{ assert(epoch==7U);return ESP_OK; }
 static esp_err_t field_survey_set_running(bool run)
 {
     assert(!run);
@@ -131,6 +123,24 @@ static esp_err_t field_survey_set_idle_probe_enabled(bool enabled)
 { assert(enabled); ++gate_resumes; return ESP_OK; }
 
 #include "wardrive_stop_impl.h"
+
+/* Preserve the original C5/expansion scenario table while passing the real
+ * exact S3 token/pending pointers into the production cleanup functions. */
+static void stop_own_test(bool wifi,uint8_t generation,bool uncertain,uint8_t baseline,
+    bool ble,uint8_t token)
+{
+    uint64_t epoch=ble?token:0;bool pending=ble;
+    stop_own_scans(wifi,generation,uncertain,baseline,&epoch,&pending);
+    assert(!epoch&&!pending);
+}
+static void stop_close_test(bool wifi,uint8_t generation,bool uncertain,uint8_t baseline,
+    bool ble,uint8_t token)
+{
+    uint64_t epoch=ble?token:0;bool pending=ble;
+    stop_scans_and_close_file(wifi,generation,uncertain,baseline,epoch,pending);
+}
+#define stop_own_scans stop_own_test
+#define stop_scans_and_close_file stop_close_test
 
 static void reset(unsigned test_mode)
 {

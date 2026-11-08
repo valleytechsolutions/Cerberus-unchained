@@ -1,6 +1,12 @@
 # Loaded by s3-main only. No Bluetooth stack starts at boot.
 CONFIG_BT_ENABLED=y
 CONFIG_BT_NIMBLE_ENABLED=y
+# Host buffers use the production board's PSRAM; controller/DMA and normal
+# stacks remain internal. Common host admission rejects absent optional PSRAM.
+# Keep generic malloc caps-only and preserve all radio buffer counts below.
+CONFIG_BT_NIMBLE_MEM_ALLOC_MODE_INTERNAL=n
+CONFIG_BT_NIMBLE_MEM_ALLOC_MODE_DEFAULT=n
+CONFIG_BT_NIMBLE_MEM_ALLOC_MODE_EXTERNAL=y
 CONFIG_BT_NIMBLE_LOG_LEVEL_WARNING=y
 CONFIG_BT_NIMBLE_ROLE_CENTRAL=y
 CONFIG_BT_NIMBLE_MAX_CONNECTIONS=1

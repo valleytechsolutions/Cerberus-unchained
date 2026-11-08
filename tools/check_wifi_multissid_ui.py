@@ -27,7 +27,7 @@ back_region = ui[ui.index("if (capture_back())"):]
 back_start = back_region.index("            } else if (current_page == UI_PAGE_WIFI && wifi_mode == UI_WIFI_MODE_MULTISSID)")
 back = back_region[back_start:back_region.index("            } else if", back_start + 20)]
 back = back.replace("            } else if", "    if", 1) + "    }\n"
-tick = between(ui, "        bool multissid_visible =", "        bool packet_monitor_visible =")
+tick = between(ui, "        bool multissid_visible =", "        csi_live_tick(")
 (out / "multissid_routes.h").write_text(
     "static esp_err_t actual_draw(void) {\n" + draw + "\nreturn ESP_OK; }\n"
     "static void actual_tap(uint16_t x,uint16_t y) {\n" + tap + "\n}\n"

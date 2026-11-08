@@ -17,6 +17,7 @@ subprocess.run([sys.executable, '-m', 'ziglang', 'cc', '-std=c11', '-O1',
     '-I', str(root / 's3_main/main'), '-I', str(root / 'shared'),
     str(root / 's3_main/main/wardrive_core.c'),
     str(root / 's3_main/main/wardrive_wigle.c'),
+    str(root / 's3_main/main/wardrive_rssi_filter.c'),
     str(root / 'tools/host_checks/wardrive_log_routing_check.c'),
     '-o', str(exe)], check=True)
 subprocess.run([str(exe)], check=True)

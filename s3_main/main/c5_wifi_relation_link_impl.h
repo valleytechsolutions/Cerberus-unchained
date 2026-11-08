@@ -40,7 +40,8 @@ static esp_err_t relation_exchange(cerberus_c5_wifi_relation_reader_t *reader,
     if (take_link_mutex(pdMS_TO_TICKS(remaining)) != pdTRUE) return ESP_ERR_TIMEOUT;
     error = relation_guard(reader, NULL, NULL, NULL, NULL);
     if (error == ESP_OK) {
-        if (peer) error = get_status_v2_locked(++sequence, output);
+        if (peer) error = reader->legacy_exchange ? get_status_v2_locked(++sequence, output) :
+            get_status_v2_passive_locked(++sequence, reader->deadline_ms, output);
         else {
             cerberus_spi_frame_t request, response = {0};
             uint8_t discarded[CERBERUS_SPI_TRANSFER_SIZE] = {0};
@@ -48,13 +49,14 @@ static esp_err_t relation_exchange(cerberus_c5_wifi_relation_reader_t *reader,
             if (!cerberus_protocol_prepare_frame(&request, command, token, input, input_size))
                 error = ESP_ERR_INVALID_ARG;
             else {
-                spi_request_response(&request, discarded, &response, sizeof(request));
-                error = ESP_ERR_INVALID_RESPONSE;
-                if (cerberus_protocol_frame_is_valid(&response) && response.command == command &&
+                if (reader->legacy_exchange)
+                    spi_request_response(&request, discarded, &response, sizeof(request));
+                else error = spi_request_response_passive(&request, discarded, &response,
+                    sizeof(request), reader->deadline_ms);
+                if (error == ESP_OK && cerberus_protocol_frame_is_valid(&response) && response.command == command &&
                     response.sequence == token && response.payload_length == output_size) {
                     memcpy(output, response.payload, output_size);
-                    error = ESP_OK;
-                }
+                } else if (error == ESP_OK) error = ESP_ERR_INVALID_RESPONSE;
             }
         }
     }
@@ -128,6 +130,22 @@ static bool relation_peer_matches(const cerberus_c5_wifi_relation_bank_t *proof,
         proof->capabilities == peer->capabilities && proof->protocol_version == peer->protocol_version &&
         proof->reset_reason == peer->reset_reason && proof->boot_count == peer->boot_count &&
         peer->uptime_ms >= proof->peer_uptime_ms;
+}
+
+esp_err_t c5_spi_link_wifi_relation_begin_check(cerberus_c5_wifi_relation_reader_t *reader,
+    uint8_t generation, uint32_t deadline_ms)
+{
+    esp_err_t error = c5_spi_link_wifi_relation_begin(reader, generation, deadline_ms, NULL, 0U);
+    if (error == ESP_OK) reader->check_only = true;
+    return error;
+}
+
+esp_err_t c5_spi_link_wifi_relation_begin_check_expected(cerberus_c5_wifi_relation_reader_t *reader,
+    const cerberus_c5_wifi_relation_bank_t *expected, uint32_t deadline_ms)
+{
+    esp_err_t error = c5_spi_link_wifi_relation_begin_expected(reader, expected, deadline_ms, NULL, 0U);
+    if (error == ESP_OK) reader->check_only = true;
+    return error;
 }
 
 static bool relation_clock_valid(const cerberus_wifi_relation_clock_t *clock,
@@ -286,6 +304,7 @@ esp_err_t c5_spi_link_copy_wifi_relations(uint8_t generation, uint32_t deadline_
     if (proof) memset(proof, 0, sizeof(*proof));
     cerberus_c5_wifi_relation_reader_t reader = {0};
     esp_err_t error = c5_spi_link_wifi_relation_begin(&reader, generation, deadline_ms, rows, capacity);
+    reader.legacy_exchange = true;
     if (!proof) return relation_fail(&reader, ESP_ERR_INVALID_ARG);
     bool complete = false;
     while (error == ESP_OK && !complete)
@@ -301,6 +320,7 @@ esp_err_t c5_spi_link_get_wifi_relation_bank(uint8_t generation, uint32_t deadli
     cerberus_c5_wifi_relation_reader_t reader = {0};
     esp_err_t error = c5_spi_link_wifi_relation_begin(&reader, generation, deadline_ms, NULL, 0U);
     reader.check_only = true;
+    reader.legacy_exchange = true;
     bool complete = false;
     while (error == ESP_OK && !complete)
         error = c5_spi_link_wifi_relation_step(&reader, proof, &complete, NULL, NULL);

@@ -1,49 +1,103 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-  <meta name="theme-color" content="#0c1323">
-  <meta name="description" content="Install Cerberus Unchained on both onboard processors with one USB cable. A guided installer for the Cerberus wireless companion.">
-  <title>Cerberus Unchained · Experimental Installer</title>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#080e10">
+  <meta name="description" content="Unchain your Cerberus. Install matched S3 and C5 firmware from your browser with the Cerberus Unchained USB flasher.">
+  <title>Cerberus Unchained / Web Flasher</title>
+  <link rel="stylesheet" href="/fonts/fonts.css">
   <link rel="icon" href="./guardian.svg" type="image/svg+xml">
 </head>
 <body>
+  <a class="skip-link" href="#flash">Skip to installer</a>
   <div class="ambient" aria-hidden="true"></div>
-  <header class="topbar"><a href="./" class="brand"><img src="./guardian.svg" alt="" width="38" height="38"> CERBERUS <span>UNCHAINED</span></a><span class="topnote"><i></i> USB INSTALLER</span></header>
-  <main>
-    <section class="intro">
-      <div><p class="eyebrow">CERBERUS UNCHAINED / DEVELOPMENT</p><h1>Bring Cerberus<br><span>to life.</span></h1><p class="lede">Install Unchained on both onboard processors.<br>Experimental firmware. Hardware checks pending.</p></div>
-      <div class="guardian"><div class="orbit orbit-a"></div><div class="orbit orbit-b"></div><img src="./guardian.svg" alt="Three-headed Cerberus guardian"><span class="guardian-caption">WATCH / SCOUT / SENSE / LEARN</span></div>
+  <header class="topbar shell">
+    <a href="./" class="brand" aria-label="Cerberus Unchained home"><img src="./guardian.svg" alt="" width="42" height="32"><span>CERBERUS<small>UNCHAINED</small></span></a>
+    <nav aria-label="Main navigation"><a class="nav-active" href="#flash">Flasher</a><a href="#release-notes">Release notes</a><a href="https://github.com/463N7/Cerberus-unchained" target="_blank" rel="noopener noreferrer">Source ↗</a></nav>
+    <span class="topnote"><i></i> WEB USB FLASHER</span>
+  </header>
+  <main class="shell">
+    <section class="intro" aria-labelledby="hero-title">
+      <div class="hero-copy">
+        <p class="terminal-prompt"><span aria-hidden="true">&gt;_</span> cerberus --unchained<span class="cursor" aria-hidden="true"></span></p>
+        <h1 id="hero-title">BREAK THE<br><span>CHAIN.</span></h1>
+        <p class="lede">Your Cerberus. More possibilities.<br>Dual-radio wardriving, mesh observation and field tools.<br class="desktop-break"> Install directly from your browser.</p>
+        <div class="hero-tags"><span><i></i> S3 + C5</span><span>ONE USB CABLE</span><span>NO APP REQUIRED</span></div>
+      </div>
+      <div class="guardian" role="img" aria-label="The three-headed Cerberus emblem in a radio reticle">
+        <div class="reticle" aria-hidden="true"><div class="reticle-ring"></div><span class="reticle-axis axis-x"></span><span class="reticle-axis axis-y"></span></div>
+        <span class="coordinate coordinate-a" aria-hidden="true">S3 / CONTROL</span><span class="coordinate coordinate-b" aria-hidden="true">C5 / RADIO</span>
+        <img src="./guardian.svg" alt="" width="370" height="236">
+        <div class="guardian-label"><span class="bracket">[</span> CERBERUS UNCHAINED <span class="bracket">]</span><small>TWO PROCESSORS. ONE GUARDIAN.</small></div>
+      </div>
     </section>
-    <div class="release-bar"><span><span class="dot"></span> <strong id="version">Loading release…</strong></span><span id="release-status">Checking download integrity</span><a id="release-manifest" hidden>Release details ↗</a></div>
-    <div id="compatibility" class="notice" hidden></div>
-    <div class="workspace">
-      <aside class="steps" aria-label="Installation progress">
-        <p class="eyebrow">THE INSTALLATION</p>
-        <ol>
-          <li data-stage="bridge"><span class="step-number">01</span><div><strong>Prepare Cerberus</strong><small>Open the path to both chips</small></div><span class="step-state"></span></li>
-          <li data-stage="c5"><span class="step-number">02</span><div><strong>Install radio firmware</strong><small>Program the onboard C5</small></div><span class="step-state"></span></li>
-          <li data-stage="s3"><span class="step-number">03</span><div><strong>Install Unchained</strong><small>Program the S3 touchscreen</small></div><span class="step-state"></span></li>
-          <li data-stage="check"><span class="step-number">04</span><div><strong>Check your guardian</strong><small>Confirm both chips are ready</small></div><span class="step-state"></span></li>
-        </ol>
-        <div class="connection-note"><span>BEFORE YOU BEGIN</span><p>Use desktop Chrome or Edge and a USB data cable. Connect one Cerberus and close other serial monitors.</p><p>Keep this tab open and your computer awake during installation.</p></div>
-      </aside>
-      <section class="install-card" aria-labelledby="stage-title">
-        <div class="card-heading"><span id="stage-label" class="eyebrow">STEP 01 / 04</span><span class="chip-badge" id="chip-label">ESP32-S3</span></div>
-        <h2 id="stage-title">Prepare your Cerberus</h2>
-        <p id="stage-description">The installer downloads and checks the complete firmware set before changing your board.</p>
-        <div id="instructions" class="instructions"></div>
-        <label id="consent-line" class="consent"><input type="checkbox" id="consent"> <span>I’m installing on a production Cerberus with an S3 and onboard C5. This replaces its firmware; I have backed up important settings.</span></label>
-        <div class="progress-block"><div class="progress-label"><span id="progress-label">Checking release files</span><span id="percent">0%</span></div><progress id="progress" max="100" value="0">0%</progress></div>
-        <p id="status" class="status" role="status" aria-live="polite">Preparing the downloads…</p>
-        <div class="actions"><button id="primary" disabled>Connect & prepare <span>→</span></button><button id="download-log" class="secondary">Save report</button></div>
-        <div id="check-results" hidden></div>
-        <details id="recovery"><summary>Recover or resume an installation</summary><p>If the screen is blank after preparation, that is expected: the temporary bridge is running.</p><div class="recovery-actions"><button id="resume-c5" class="secondary">Bridge already installed</button><button id="restore-s3" class="secondary">Restore S3 firmware</button><button id="restart" class="secondary">Start a new board</button></div><p>To enter S3 download mode: hold <strong>S3 BOOT</strong>, tap <strong>S3 RESET</strong>, then release BOOT. Use the S3 controls, not the C5 controls. Select the USB JTAG/serial device when asked.</p><p>Restoring only the S3 does not update or verify the C5. A complete install and startup check are still required.</p></details>
-      </section>
-    </div>
-    <section class="bottom-grid"><div><h3>A direct connection.</h3><p>Your browser talks to Cerberus through USB. Board identifiers and progress stay in this browser unless you save a report. Reports include board MAC addresses; keep them private. No account, desktop installer, or expansion board is required.</p></div><div><h3>Built for your board.</h3><p>Production Cerberus · S3 with 16 MB flash / 2 MB PSRAM · onboard C5. Firmware images are checked against the detected chip before writing.</p></div><div><h3>Experimental development.</h3><p>Unchained starts from the rev81 contribution. No Unchained firmware release is selected yet. Installation stays unavailable until a matched image set is published.</p></div></section>
-    <details class="technical"><summary>Installation log</summary><pre id="log" aria-label="Installation log"></pre></details>
+    <section class="release-bar" aria-label="Selected firmware">
+      <div class="release-identity"><span class="release-mark" aria-hidden="true">↓</span><div><span class="micro">SELECTED FIRMWARE</span><strong id="version">Loading release…</strong></div></div>
+      <span class="channel-tag">EXPERIMENTAL</span>
+      <div class="integrity"><span class="dot" aria-hidden="true"></span><span id="release-status">Checking download integrity</span></div>
+      <a id="release-manifest" hidden>Manifest ↗</a>
+    </section>
+    <section id="flash" class="flash-section" aria-labelledby="flash-title">
+      <div class="section-heading"><div><p class="eyebrow">01 / INSTALL</p><h2 id="flash-title">One cable. Both chips.</h2></div><p>Plug in. Follow the steps. Unchain your board.</p></div>
+      <div id="compatibility" class="notice" hidden></div>
+      <div class="workspace">
+        <aside class="steps" aria-label="Installation progress">
+          <ol>
+            <li data-stage="bridge"><span class="step-number">01</span><div><strong>Prepare the bridge</strong><small>Open the path to the onboard radio</small></div><span class="step-state"></span></li>
+            <li data-stage="c5"><span class="step-number">02</span><div><strong>Install radio firmware</strong><small>Program the ESP32-C5</small></div><span class="step-state"></span></li>
+            <li data-stage="s3"><span class="step-number">03</span><div><strong>Install Unchained</strong><small>Program the S3 touchscreen</small></div><span class="step-state"></span></li>
+            <li data-stage="check"><span class="step-number">04</span><div><strong>Verify startup</strong><small>Check the installed firmware pair</small></div><span class="step-state"></span></li>
+          </ol>
+          <div class="connection-note"><span class="micro">YOUR SETUP</span><p>Desktop Chrome or Edge<br>USB data cable · One Cerberus</p><p>Close other serial monitors. Keep this tab open and your computer awake.</p></div>
+          <a class="text-link" href="#help">Need a hand? Read the field guide ↘</a>
+        </aside>
+        <section class="install-card" aria-labelledby="stage-title">
+          <div class="card-heading"><span class="eyebrow" id="stage-label">STEP 01 / 04</span><span class="chip-badge" id="chip-label">ESP32-S3</span></div>
+          <h3 id="stage-title">Prepare your Cerberus</h3>
+          <p id="stage-description">The installer downloads and checks the complete firmware set before changing your board.</p>
+          <div id="instructions" class="instructions">Checking the selected firmware package…</div>
+          <label id="consent-line" class="consent"><input type="checkbox" id="consent"><span>I’m using a production Cerberus with an S3 and onboard C5. I understand this replaces its firmware, and I have backed up important settings.</span></label>
+          <div class="progress-block"><div class="progress-label"><span id="progress-label">Checking release files</span><span id="percent">0%</span></div><progress id="progress" max="100" value="0" aria-label="Installation progress">0%</progress></div>
+          <p id="status" class="status" role="status" aria-live="polite">Preparing the downloads…</p>
+          <div class="actions"><button id="primary" disabled>Connect &amp; prepare →</button><button id="download-log" class="secondary">Save report ↓</button></div>
+          <div id="check-results" hidden></div>
+          <details id="recovery"><summary>Recover or resume an installation</summary><p>A blank screen after preparation is expected: the temporary bridge is running.</p><div class="recovery-actions"><button id="resume-c5" class="secondary">Bridge already installed</button><button id="restore-s3" class="secondary">Restore S3 firmware</button><button id="restart" class="secondary">Start a new board</button></div><p>To enter S3 download mode: hold <strong>S3 BOOT</strong>, tap <strong>S3 RESET</strong>, then release BOOT. Use the S3 controls. Select the USB JTAG/serial device when asked.</p><p>Restoring only the S3 does not update or verify the C5. Complete the full installation and startup check.</p></details>
+        </section>
+      </div>
+      <details class="technical"><summary><span aria-hidden="true">&gt;_</span> Installation log <span class="log-caption">LOCAL SESSION OUTPUT</span></summary><pre id="log" aria-label="Installation log">Waiting for firmware verification…</pre></details>
+    </section>
+    <section id="sd-assets" class="sd-assets" aria-labelledby="sd-title">
+      <div class="sd-heading"><div><p class="eyebrow">02 / SD CARD</p><h2 id="sd-title">Set up your SD card.</h2><p class="sd-intro">Add vendor names, the optional portal page, help and sample scripts. Firmware flashing updates the chips; these files are copied to your card separately.</p></div><div class="sd-download"><a class="download-button" href="./downloads/cerberus-unchained-sd-assets-rev144.zip" download>Download SD assets <span aria-hidden="true">↓</span></a><span class="micro">REV144 ASSET PACK · 1.1 MB ZIP</span><a class="text-link" href="./downloads/cerberus-unchained-sd-assets-rev144.zip.sha256" download>SHA-256 checksum ↓</a></div></div>
+      <ol class="sd-steps">
+        <li><span class="guide-mark" aria-hidden="true">01—</span><h3>Download and extract.</h3><p>Save the ZIP to your computer and extract it. Inside is a folder named <code>CERBERUS</code>.</p></li>
+        <li><span class="guide-mark" aria-hidden="true">02—</span><h3>Copy to the card.</h3><p>Power Cerberus off and use a card reader with a <strong>FAT32 microSD card</strong>. Back up an existing card, then copy the <code>CERBERUS</code> folder to its top level. Merge with an existing folder, keeping your logs, recordings and custom files.</p></li>
+        <li><span class="guide-mark" aria-hidden="true">03—</span><h3>Eject, insert and start.</h3><p>Safely eject the card from your computer. Insert it while Cerberus is powered off, then turn the device on.</p></li>
+      </ol>
+      <div class="sd-location"><span class="micro">CHECK THE FOLDER LOCATION</span><p><code>SD card / CERBERUS / RECON.DB</code></p><span>Copy the extracted folder itself, so you don’t end up with <code>CERBERUS/CERBERUS</code>.</span></div>
+      <p class="sd-footnote">Boot and basic scanning work without this pack. The assets are unchanged from rev136 and compatible with rev144. Recordings and saved maps are created by the firmware on the card.</p>
+      <details class="sd-usb"><summary>Already using Cerberus USB SD mode?</summary><p>After installing the firmware, you can copy the extracted files through its USB SD drive instead of using a card reader. Eject that drive in your computer, then select <strong>RETURN SD TO FIRMWARE</strong> on Cerberus before using SD features.</p></details>
+      <details class="sd-usb"><summary>Set up manual Wardriving uploads</summary><p><a class="text-link" href="./downloads/wardrive-upload.example.rev144.json" download>Download the empty upload profile ↓</a>. Fill in your home Wi-Fi and the service keys you want to use, then save it as <code>CERBERUS/CONFIG/UPLOAD.JSON</code> on the SD card. On Cerberus, open <strong>LOGS / UPLOAD → HOME WI-FI / API SETUP → IMPORT JSON FROM SD</strong>. Keep your completed profile private. Importing settings does not start an upload. <a class="text-link" href="https://github.com/463N7/Cerberus-unchained/blob/main/docs/WARDRIVE_UPLOADS.md" target="_blank" rel="noopener noreferrer">Setup guide and service limits ↗</a></p></details>
+    </section>
+    <section id="release-notes" class="release-section" aria-labelledby="release-title">
+      <div class="release-overview"><p class="eyebrow">03 / FIRMWARE</p><h2 id="release-title">More signal.<br> More to explore.</h2><p class="section-copy">rev144 brings split-radio wardriving, GPS save feedback and manual log uploads to the production Cerberus.</p><a class="text-link" id="github-release" href="https://github.com/463N7/Cerberus-unchained/releases/tag/v0.1.0-dev.rev144" target="_blank" rel="noopener noreferrer">Download package &amp; full release notes ↗</a><p class="release-caution">Experimental release. Paired installation and startup checks pass. WDGWars uploads currently fail to connect; live Wardrift uploads remain unverified.</p></div>
+      <div class="feature-list">
+        <article><span class="feature-index">[01]</span><div><h3>Wardrive with both radios.</h3><p>S3 covers 2.4 GHz while C5 covers 5 GHz. Combined mode alternates S3 between 2.4 GHz and BLE; BLE-only runs use both receivers.</p></div><span class="feature-symbol" aria-hidden="true">⌁</span></article>
+        <article><span class="feature-index">[02]</span><div><h3>Know when your log is saved.</h3><p>See the GPS fix before Start. Save geotagged observations to a WiGLE 1.6 CSV with valid GPS position and time; the Stop screen explains when no CSV could be saved.</p></div><span class="feature-symbol" aria-hidden="true">⌘</span></article>
+        <article><span class="feature-index">[03]</span><div><h3>Upload when you choose.</h3><p>Pick one log or a batch from Logs / Upload. Saved receipts track confirmed parts, and uploads require your action and service setup.</p></div><span class="feature-symbol" aria-hidden="true">↥</span></article>
+        <article><span class="feature-index">[04]</span><div><h3>Keep your field toolkit.</h3><p>Mesh Detection and Locate, Recon Dashboard and Radar, Packet Count with optional PCAPNG recording, and passive Probe Sniff remain included.</p></div><span class="feature-symbol" aria-hidden="true">≋</span></article>
+      </div>
+    </section>
+    <section id="help" class="field-guide" aria-labelledby="help-title">
+      <div class="section-heading"><div><p class="eyebrow">04 / FIELD GUIDE</p><h2 id="help-title">Before you connect.</h2></div><span class="micro">A LITTLE PREP GOES A LONG WAY</span></div>
+      <div class="bottom-grid">
+        <div><span class="guide-mark" aria-hidden="true">01—</span><h3>Bring the right board.</h3><p>Production Cerberus with an ESP32-S3, 16 MB flash, 2 MB PSRAM and onboard C5. No expansion board is required. Images are checked against the selected processor before writing.</p></div>
+        <div><span class="guide-mark" aria-hidden="true">02—</span><h3>Give it a few minutes.</h3><p>The guided flow installs a temporary bridge, the C5 radio, then the S3 application. Select the same board when USB reconnects. The radio step takes several minutes.</p></div>
+        <div><span class="guide-mark" aria-hidden="true">03—</span><h3>Keep your session yours.</h3><p>USB diagnostics, board identifiers and progress stay in your browser unless you save a report. Reports include board MAC addresses. The installer does not upload board reports or radio captures.</p></div>
+      </div>
+    </section>
   </main>
-  <footer><span>CERBERUS UNCHAINED <span class="muted">/ Defensive discovery. Built to learn.</span></span><a href="./notices.txt">Third-party notices</a></footer>
+  <footer class="shell"><a href="./" class="footer-brand">CERBERUS <span>UNCHAINED</span></a><span>BUILT TO EXPLORE. USE RESPONSIBLY.</span><div><a href="https://github.com/463N7/Cerberus-unchained">GitHub ↗</a><a href="./notices.txt">Notices</a></div></footer>
   <script type="module" src="/src/app.js"></script>
-</body></html>
+</body>
+</html>

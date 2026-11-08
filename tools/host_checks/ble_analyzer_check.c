@@ -19,6 +19,251 @@ static cerberus_ble_analyzer_report_t report(const uint8_t *ad, size_t length)
     return result;
 }
 
+static unsigned family_checks;
+#define FAMILY_CHECK(value) do { ++family_checks; assert(value); } while (0)
+
+static void check_findmy_flipper_events(void)
+{
+    cerberus_ble_analyzer_t analyzer;
+    cerberus_ble_analyzer_view_t view;
+    const uint8_t fmna[] = {3,3,0x44,0xfd};
+    const uint8_t flipper[] = {3,3,0x81,0x30};
+    const uint8_t dult[] = {17,7,0x85,0x2a,0x9f,0x57,0xc5,0x2a,0xed,0x88,
+        0x26,0xc2,0xf4,0x12,1,0,0x19,0x15};
+    const uint8_t named_base[] = {3,3,0x80,0x30,8,9,'F','l','i','p','p','e','r'};
+    const uint8_t base[] = {3,3,0x80,0x30};
+    const uint8_t name[] = {8,9,'F','l','i','p','p','e','r'};
+    uint8_t apple[31] = {30,0xff,0x4c,0,0x12,0x19};
+    uint32_t now = 1000U;
+    cerberus_ble_analyzer_begin(&analyzer, now);
+
+    /* The currently enabled native path receives legacy reports. All of these
+     * individual list encodings fit in one legacy report. A response callback
+     * stands alone: there is intentionally no prior-ADV binding in Analyzer. */
+    for (unsigned family = 0U; family < 2U; ++family) {
+        for (unsigned width_index = 0U; width_index < 3U; ++width_index) {
+            const unsigned widths[] = {2U, 4U, 16U};
+            unsigned width = widths[width_index];
+            for (unsigned complete_list = 0U; complete_list < 2U; ++complete_list) {
+                for (unsigned response = 0U; response < 2U; ++response) {
+                    unsigned variants = family ? 3U : 1U;
+                    for (unsigned variant = 0U; variant < variants; ++variant) {
+                        uint8_t ad[18] = {0};
+                        ad[0] = (uint8_t)(width + 1U);
+                        ad[1] = (uint8_t)(2U + width_index * 2U + complete_list);
+                        unsigned offset = 2U;
+                        if (width == 16U) {
+                            const uint8_t uuid_base[] = {0xfb,0x34,0x9b,0x5f,0x80,0,0,0x80,0,0x10,0,0,0,0,0,0};
+                            memcpy(ad + 2U, uuid_base, sizeof(uuid_base));
+                            offset = 14U;
+                        }
+                        ad[offset] = family ? (uint8_t)(0x81U + variant) : 0x44U;
+                        ad[offset + 1U] = family ? 0x30U : 0xfdU;
+                        cerberus_ble_analyzer_report_t r = report(ad, width + 2U);
+                        r.scan_response = response != 0U;
+                        uint32_t old_findmy = analyzer.findmy_hint_events;
+                        uint32_t old_flipper = analyzer.flipper_hint_events;
+                        FAMILY_CHECK(cerberus_ble_analyzer_observe(&analyzer, &r, ++now));
+                        cerberus_ble_analyzer_snapshot(&analyzer, now + 3U, &view);
+                        FAMILY_CHECK(view.last_report_valid && view.last_scan_response == (response != 0U) &&
+                            view.last_seen_age_ms == 3U && view.last_fresh);
+                        FAMILY_CHECK(view.findmy_hint_events == old_findmy + (family == 0U) &&
+                            view.flipper_hint_events == old_flipper + (family != 0U));
+                        FAMILY_CHECK(view.last_findmy.bits == (family ? 0U : CERBERUS_BLE_FINDMY_HINT_FMNA) &&
+                            view.last_findmy.fmna_uuid_widths == (family ? 0U : (1U << width_index)));
+                        FAMILY_CHECK(view.last_flipper.bits == (family ? (1U << (variant + 1U)) : 0U) &&
+                            view.last_flipper.flags == (family ? (1U << width_index) : 0U));
+                        FAMILY_CHECK(view.evidence_kind == (family ? CERBERUS_BLE_ANALYZER_EVIDENCE_FLIPPER_HINT :
+                            CERBERUS_BLE_ANALYZER_EVIDENCE_FINDMY_HINT));
+                    }
+                }
+            }
+        }
+    }
+
+    uint8_t mixed[sizeof(fmna) + sizeof(dult) + sizeof(flipper)];
+    memcpy(mixed, fmna, sizeof(fmna));
+    memcpy(mixed + sizeof(fmna), dult, sizeof(dult));
+    memcpy(mixed + sizeof(fmna) + sizeof(dult), flipper, sizeof(flipper));
+    uint8_t mixed_before[sizeof(mixed)]; memcpy(mixed_before, mixed, sizeof(mixed));
+    cerberus_ble_analyzer_report_t r = report(mixed, sizeof(mixed));
+    r.scan_response = true;
+    cerberus_ble_analyzer_begin(&analyzer, ++now);
+    FAMILY_CHECK(cerberus_ble_analyzer_observe(&analyzer, &r, ++now));
+    cerberus_ble_analyzer_snapshot(&analyzer, now, &view);
+    FAMILY_CHECK(view.last_findmy.bits == (CERBERUS_BLE_FINDMY_HINT_FMNA | CERBERUS_BLE_FINDMY_HINT_DULT) &&
+        view.last_flipper.bits == CERBERUS_BLE_FLIPPER_HINT_BLACK);
+    FAMILY_CHECK(view.findmy_hint_events == 1U && view.flipper_hint_events == 1U &&
+        view.total_events == 1U && view.current_events == 1U && view.last_scan_response);
+    FAMILY_CHECK(view.evidence_kind == CERBERUS_BLE_ANALYZER_EVIDENCE_FINDMY_HINT);
+    FAMILY_CHECK(memcmp(mixed, mixed_before, sizeof(mixed)) == 0);
+    cerberus_ble_analyzer_view_t frozen = view;
+
+    /* No hints/complete names join across events, including a same-address RSP. */
+    r = report(base, sizeof(base));
+    FAMILY_CHECK(cerberus_ble_analyzer_observe(&analyzer, &r, ++now));
+    r = report(name, sizeof(name)); r.scan_response = true;
+    FAMILY_CHECK(cerberus_ble_analyzer_observe(&analyzer, &r, ++now));
+    cerberus_ble_analyzer_snapshot(&analyzer, now, &view);
+    FAMILY_CHECK(!view.last_findmy.bits && !view.last_flipper.bits &&
+        view.findmy_hint_events == 1U && view.flipper_hint_events == 1U);
+    r = report(named_base, sizeof(named_base));
+    FAMILY_CHECK(cerberus_ble_analyzer_observe(&analyzer, &r, ++now));
+    cerberus_ble_analyzer_snapshot(&analyzer, now, &view);
+    FAMILY_CHECK(view.last_flipper.bits == CERBERUS_BLE_FLIPPER_HINT_BASE &&
+        view.last_flipper.flags == (CERBERUS_BLE_FLIPPER_UUID16 | CERBERUS_BLE_FLIPPER_NAME) &&
+        view.evidence_kind == CERBERUS_BLE_ANALYZER_EVIDENCE_WATCH);
+    const uint8_t named_data[] = {3,0x16,0x82,0x30,8,9,'F','l','i','p','p','e','r'};
+    r = report(named_data, sizeof(named_data)); r.scan_response = true;
+    FAMILY_CHECK(cerberus_ble_analyzer_observe(&analyzer, &r, ++now));
+    cerberus_ble_analyzer_snapshot(&analyzer, now, &view);
+    FAMILY_CHECK(view.last_flipper.bits == CERBERUS_BLE_FLIPPER_HINT_WHITE &&
+        view.last_flipper.flags == (CERBERUS_BLE_FLIPPER_UUID16 | CERBERUS_BLE_FLIPPER_NAME |
+            CERBERUS_BLE_FLIPPER_SERVICE_DATA) && view.last_scan_response);
+
+    /* UUID-like bytes in other fields, non-base UUIDs and unnamed service data
+     * must not become independent hints after wiring in the strict parsers. */
+    const uint8_t no_hints[][6] = {
+        {3,0x16,0x44,0xfd,0,0}, {3,0x16,0x81,0x30,0,0},
+        {5,0x30,0x44,0xfd,0x81,0x30}, {5,5,0x44,0xfd,1,0},
+        {5,5,0x81,0x30,1,0},
+    };
+    for (unsigned i = 0U; i < sizeof(no_hints) / sizeof(no_hints[0]); ++i) {
+        r = report(no_hints[i], sizeof(no_hints[i]));
+        FAMILY_CHECK(cerberus_ble_analyzer_observe(&analyzer, &r, ++now));
+        cerberus_ble_analyzer_snapshot(&analyzer, now, &view);
+        FAMILY_CHECK(view.last_report_valid && !view.last_findmy.bits && !view.last_flipper.bits &&
+            view.evidence_kind == CERBERUS_BLE_ANALYZER_EVIDENCE_NONE);
+    }
+    r = report(apple, sizeof(apple));
+    FAMILY_CHECK(cerberus_ble_analyzer_observe(&analyzer, &r, ++now));
+    cerberus_ble_analyzer_snapshot(&analyzer, now, &view);
+    FAMILY_CHECK(view.last_findmy.bits == CERBERUS_BLE_FINDMY_HINT_APPLE &&
+        !view.last_findmy.fmna_uuid_widths && !view.last_flipper.bits &&
+        view.evidence_kind == CERBERUS_BLE_ANALYZER_EVIDENCE_WATCH);
+
+    /* Repeated qualifying fields count once per family, not once per field. */
+    uint8_t duplicate[16];
+    memcpy(duplicate, fmna, 4U); memcpy(duplicate + 4U, fmna, 4U);
+    memcpy(duplicate + 8U, flipper, 4U); memcpy(duplicate + 12U, flipper, 4U);
+    r = report(duplicate, sizeof(duplicate));
+    uint32_t findmy_before = analyzer.findmy_hint_events, flipper_before = analyzer.flipper_hint_events;
+    FAMILY_CHECK(cerberus_ble_analyzer_observe(&analyzer, &r, ++now));
+    FAMILY_CHECK(analyzer.findmy_hint_events == findmy_before + 1U &&
+        analyzer.flipper_hint_events == flipper_before + 1U);
+
+    /* Host-only complete long inputs establish parser coverage, never native
+     * extended reception. Exercise the first field and a field at byte 254. */
+    uint8_t longest[255] = {246U, 0x30U};
+    memcpy(longest + 247U, fmna, sizeof(fmna));
+    memcpy(longest + 251U, flipper, sizeof(flipper));
+    uint8_t long_apple[35]; memcpy(long_apple, apple, 31U); memcpy(long_apple + 31U, flipper, 4U);
+    for (unsigned kind = 0U; kind < 2U; ++kind) {
+        r = report(kind ? long_apple : longest, kind ? sizeof(long_apple) : sizeof(longest));
+        r.scan_response = kind != 0U;
+        FAMILY_CHECK(cerberus_ble_analyzer_observe(&analyzer, &r, ++now));
+        cerberus_ble_analyzer_snapshot(&analyzer, now, &view);
+        FAMILY_CHECK(view.last_report_valid && view.last_findmy.bits ==
+            (kind ? CERBERUS_BLE_FINDMY_HINT_APPLE : CERBERUS_BLE_FINDMY_HINT_FMNA) &&
+            view.last_flipper.bits == CERBERUS_BLE_FLIPPER_HINT_BLACK && view.last_scan_response == (kind != 0U));
+    }
+
+    uint8_t invalid_suffix[sizeof(mixed) + 3U];
+    memcpy(invalid_suffix, mixed, sizeof(mixed));
+    memcpy(invalid_suffix + sizeof(mixed), (uint8_t[]){2,3,0x44}, 3U);
+    const uint8_t ordinary[] = {2,1,6};
+    uint8_t oversized[256] = {0};
+    for (unsigned kind = 0U; kind < 6U; ++kind) {
+        r = report(mixed, sizeof(mixed));
+        FAMILY_CHECK(cerberus_ble_analyzer_observe(&analyzer, &r, ++now));
+        findmy_before = analyzer.findmy_hint_events; flipper_before = analyzer.flipper_hint_events;
+        if (kind == 0U) { r.advertisement = ordinary; r.advertisement_length = sizeof(ordinary); }
+        else if (kind == 1U) { r.advertisement = invalid_suffix; r.advertisement_length = sizeof(invalid_suffix); }
+        else if (kind == 2U) r.complete = false;
+        else if (kind == 3U) r.advertisement_flags = 1U;
+        else if (kind == 4U) { r.advertisement = oversized; r.advertisement_length = sizeof(oversized); }
+        else { r.advertisement = NULL; r.advertisement_length = 0U; }
+        r.scan_response = true;
+        FAMILY_CHECK(cerberus_ble_analyzer_observe(&analyzer, &r, ++now));
+        cerberus_ble_analyzer_snapshot(&analyzer, now + 4U, &view);
+        FAMILY_CHECK(!view.last_findmy.bits && !view.last_findmy.fmna_uuid_widths &&
+            !view.last_flipper.bits && !view.last_flipper.flags && view.last_scan_response && view.last_seen_age_ms == 4U);
+        FAMILY_CHECK(view.findmy_hint_events == findmy_before && view.flipper_hint_events == flipper_before &&
+            view.evidence_kind == CERBERUS_BLE_ANALYZER_EVIDENCE_NONE);
+    }
+    FAMILY_CHECK(frozen.last_findmy.bits == (CERBERUS_BLE_FINDMY_HINT_FMNA | CERBERUS_BLE_FINDMY_HINT_DULT) &&
+        frozen.last_flipper.bits == CERBERUS_BLE_FLIPPER_HINT_BLACK && frozen.total_events == 1U);
+
+    r = report(mixed, sizeof(mixed));
+    analyzer.findmy_hint_events = UINT32_MAX - 1U;
+    analyzer.flipper_hint_events = UINT32_MAX - 1U;
+    for (unsigned i = 0U; i < 3U; ++i) {
+        FAMILY_CHECK(cerberus_ble_analyzer_observe(&analyzer, &r, ++now));
+        cerberus_ble_analyzer_snapshot(&analyzer, now, &view);
+        FAMILY_CHECK(view.findmy_hint_events == UINT32_MAX && view.flipper_hint_events == UINT32_MAX);
+    }
+    cerberus_ble_analyzer_t saved = analyzer;
+    r.advertisement = NULL;
+    FAMILY_CHECK(!cerberus_ble_analyzer_observe(&analyzer, &r, ++now));
+    FAMILY_CHECK(memcmp(&analyzer, &saved, sizeof(saved)) == 0);
+    r = report(mixed, sizeof(mixed)); r.address_type = 4U;
+    FAMILY_CHECK(!cerberus_ble_analyzer_observe(&analyzer, &r, ++now));
+    FAMILY_CHECK(memcmp(&analyzer, &saved, sizeof(saved)) == 0);
+    cerberus_ble_analyzer_stop(&analyzer);
+    r.address_type = 1U;
+    FAMILY_CHECK(!cerberus_ble_analyzer_observe(&analyzer, &r, ++now));
+    cerberus_ble_analyzer_snapshot(&analyzer, now, &view);
+    FAMILY_CHECK(!view.active && view.findmy_hint_events == UINT32_MAX && view.flipper_hint_events == UINT32_MAX);
+    cerberus_ble_analyzer_begin(&analyzer, ++now);
+    cerberus_ble_analyzer_snapshot(&analyzer, now, &view);
+    FAMILY_CHECK(view.active && !view.has_last && !view.findmy_hint_events && !view.flipper_hint_events &&
+        !view.last_findmy.bits && !view.last_flipper.bits);
+}
+
+static void check_family_priority(void)
+{
+    const uint8_t watch[] = {3,3,0x81,0xfc};
+    const uint8_t meta[] = {3,0xff,0x5f,0xfd};
+    const uint8_t hc[] = {6,9,'H','C','-','0','5'};
+    const uint8_t flock[] = {3,0xff,0xc8,9};
+    const uint8_t ibeacon[27] = {26,0xff,0x4c,0,2,0x15};
+    const struct { const uint8_t *bytes; size_t size; cerberus_ble_analyzer_evidence_kind_t kind; } cases[] = {
+        {watch,sizeof(watch),CERBERUS_BLE_ANALYZER_EVIDENCE_WATCH},
+        {meta,sizeof(meta),CERBERUS_BLE_ANALYZER_EVIDENCE_META_ID_HINT},
+        {hc,sizeof(hc),CERBERUS_BLE_ANALYZER_EVIDENCE_HC_NAME_HINT},
+        {flock,sizeof(flock),CERBERUS_BLE_ANALYZER_EVIDENCE_FLOCK_HINT},
+        {ibeacon,sizeof(ibeacon),CERBERUS_BLE_ANALYZER_EVIDENCE_IBEACON_FORMAT},
+    };
+    const uint8_t both[] = {3,3,0x44,0xfd,3,3,0x81,0x30};
+    for (unsigned i = 0U; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+        uint8_t mixed[40] = {0};
+        memcpy(mixed, cases[i].bytes, cases[i].size);
+        memcpy(mixed + cases[i].size, both, sizeof(both));
+        cerberus_ble_analyzer_t original, enriched;
+        cerberus_ble_analyzer_view_t before, after;
+        cerberus_ble_analyzer_begin(&original, 1000U);
+        cerberus_ble_analyzer_begin(&enriched, 1000U);
+        cerberus_ble_analyzer_report_t r = report(cases[i].bytes, cases[i].size);
+        FAMILY_CHECK(cerberus_ble_analyzer_observe(&original, &r, 1001U));
+        r.advertisement = mixed; r.advertisement_length = cases[i].size + sizeof(both);
+        FAMILY_CHECK(cerberus_ble_analyzer_observe(&enriched, &r, 1001U));
+        cerberus_ble_analyzer_snapshot(&original, 1200U, &before);
+        cerberus_ble_analyzer_snapshot(&enriched, 1200U, &after);
+        FAMILY_CHECK(before.evidence_kind == cases[i].kind && after.evidence_kind == before.evidence_kind &&
+            after.evidence_confidence == before.evidence_confidence && after.evidence_label == before.evidence_label);
+        FAMILY_CHECK(after.watch_match_events == before.watch_match_events &&
+            after.ibeacon_format_events == before.ibeacon_format_events &&
+            after.meta_hint_events == before.meta_hint_events && after.hc_name_hint_events == before.hc_name_hint_events &&
+            after.flock_hint_events == before.flock_hint_events);
+        FAMILY_CHECK(after.findmy_hint_events == 1U && after.flipper_hint_events == 1U &&
+            after.last_findmy.bits == CERBERUS_BLE_FINDMY_HINT_FMNA &&
+            after.last_flipper.bits == CERBERUS_BLE_FLIPPER_HINT_BLACK);
+        FAMILY_CHECK(after.total_events == before.total_events && after.current_events == before.current_events &&
+            after.history_count == before.history_count && memcmp(after.history,before.history,sizeof(after.history)) == 0);
+    }
+    printf("BLE Analyzer independent Find My/Flipper events: %u checks passed.\n", family_checks);
+}
+
 static void check_latest_hc(void)
 {
     cerberus_ble_analyzer_t analyzer;
@@ -408,6 +653,8 @@ static void check_completed_window(void)
 
 int main(void)
 {
+    check_findmy_flipper_events();
+    check_family_priority();
     check_completed_window();
     check_latest_hc();
     cerberus_ble_analyzer_t analyzer;

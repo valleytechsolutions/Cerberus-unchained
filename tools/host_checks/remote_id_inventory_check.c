@@ -520,11 +520,76 @@ static void detailed_motion(void)
     CHECK(bank->motions[0].flags==SENTINEL_WATCH_MOTION_LOCATION_PRESENT);
 }
 
+static void profiled_message_publication(void)
+{
+    cerberus_remote_id_inventory_init(&inventory);prepare(CERBERUS_WATCH_RADIO_WIFI,2,4);
+    cerberus_watch_profile_evidence_t profiles[2]={0};
+    sentinel_watch_motion_t motions[2]={{0},{0}};
+    cerberus_watch_receive_timing_t times[2]={{0},{0}};
+    for(unsigned i=0;i<2U;++i){
+        rows[i].flags=SENTINEL_WATCH_PROTOCOL_HAS_ID;
+        rows[i].latitude_e7=rows[i].longitude_e7=rows[i].altitude_dm=0;rows[i].altitude_kind=0;
+        profiles[i].available=true;profiles[i].capture_epoch=77;
+        profiles[i].values.present=(1U<<SENTINEL_WATCH_PROFILE_BASIC)|(1U<<SENTINEL_WATCH_PROFILE_SELF);
+        profiles[i].values.basic[0]=0x12;memcpy(profiles[i].values.basic+1,"SAME-CLAIMED-ID",sizeof("SAME-CLAIMED-ID")-1U);
+        memcpy(profiles[i].values.self+1,"TEST FLIGHT",11);
+        profiles[i].timing[SENTINEL_WATCH_PROFILE_BASIC]=(cerberus_watch_receive_timing_t){1000000,0,true};
+        profiles[i].timing[SENTINEL_WATCH_PROFILE_SELF]=(cerberus_watch_receive_timing_t){1000000,9000,true};
+    }
+#define PROFILE_PUBLISH(token,stamp) cerberus_remote_id_inventory_publish_profiled(&inventory,token,&before,&after,rows,times,motions,times,profiles,2,stamp)
+    CHECK(PROFILE_PUBLISH(1,1000)==CERBERUS_REMOTE_ID_PUBLISHED);
+    cerberus_remote_id_record_t frozen=first_record();
+    CHECK(frozen.profile.available&&frozen.profile.capture_epoch==77);
+    CHECK(cerberus_remote_id_inventory_select(&inventory,&frozen));
+    cerberus_remote_id_inventory_t saved=inventory;
+    profiles[0].timing[SENTINEL_WATCH_PROFILE_BASIC].request_started_us=2000000;
+    CHECK(PROFILE_PUBLISH(1,2000)==CERBERUS_REMOTE_ID_DUPLICATE);
+    CHECK(!memcmp(&saved,&inventory,sizeof(saved))); /* No duplicate age refresh. */
+    profiles[0].values.self[1]='X';CHECK(PROFILE_PUBLISH(1,2000)==CERBERUS_REMOTE_ID_INVALID);
+    CHECK(!memcmp(&saved,&inventory,sizeof(saved)));profiles[0].values.self[1]='T';
+    profiles[1].capture_epoch=78;CHECK(PROFILE_PUBLISH(2,2000)==CERBERUS_REMOTE_ID_INVALID);
+    CHECK(!memcmp(&saved,&inventory,sizeof(saved)));profiles[1].capture_epoch=77;
+    profiles[0].values.basic[1]='X';CHECK(PROFILE_PUBLISH(2,2000)==CERBERUS_REMOTE_ID_INVALID);
+    profiles[0].values.basic[1]='S';
+    profiles[0].timing[SENTINEL_WATCH_PROFILE_AUTH]=(cerberus_watch_receive_timing_t){1000000,0,true};
+    CHECK(PROFILE_PUBLISH(2,2000)==CERBERUS_REMOTE_ID_INVALID);
+    memset(&profiles[0].timing[SENTINEL_WATCH_PROFILE_AUTH],0,sizeof(times[0]));
+    profiles[0].available=false;CHECK(PROFILE_PUBLISH(2,2000)==CERBERUS_REMOTE_ID_INVALID);profiles[0].available=true;
+    profiles[0].timing[SENTINEL_WATCH_PROFILE_SELF].request_started_us=2000000;
+    profiles[0].timing[SENTINEL_WATCH_PROFILE_SELF].source_age_ms=10000;
+    CHECK(PROFILE_PUBLISH(2,2000)==CERBERUS_REMOTE_ID_PUBLISHED);
+    CHECK(!memcmp(&frozen,&inventory.selected.frozen,sizeof(frozen)));
+    uint64_t age=0;CHECK(cerberus_watch_receive_age_ms(&inventory.selected.latest.profile.timing[SENTINEL_WATCH_PROFILE_SELF],3000000,&age)&&age==11000);
+    cerberus_remote_id_record_t forged=first_record();forged.profile.values.self[1]='X';
+    CHECK(!cerberus_remote_id_inventory_select(&inventory,&forged));
+    forged=first_record();forged.profile.timing[SENTINEL_WATCH_PROFILE_SELF].source_age_ms=0;
+    CHECK(!cerberus_remote_id_inventory_select(&inventory,&forged));
+    /* Binary Basic ID remains exact bytes; it must not donate a text ID. */
+    profiles[0].values.basic[0]=0x32;memset(profiles[0].values.basic+1,0,20);profiles[0].values.basic[20]=0xFF;
+    rows[0].flags=0;memset(rows[0].id,0,sizeof(rows[0].id));
+    CHECK(PROFILE_PUBLISH(3,3000)==CERBERUS_REMOTE_ID_PUBLISHED);
+    CHECK(inventory.selected.latest.profile.values.basic[20]==0xFF&&!inventory.selected.latest.observation.id[0]);
+    /* Same source and legacy tuple can never carry disagreeing Location data. */
+    profiles[0].values.present|=1U<<SENTINEL_WATCH_PROFILE_LOCATION;
+    profiles[0].values.location[1]=181;profiles[0].values.location[2]=255;
+    profiles[0].values.location[3]=127;profiles[0].values.location[20]=profiles[0].values.location[21]=255;
+    motions[0].flags=SENTINEL_WATCH_MOTION_LOCATION_PRESENT|SENTINEL_WATCH_MOTION_SPEED|SENTINEL_WATCH_MOTION_DIRECTION;
+    motions[0].speed_qms=255;motions[0].direction_deg=181;
+    CHECK(PROFILE_PUBLISH(4,4000)==CERBERUS_REMOTE_ID_PUBLISHED);
+    profiles[0].values.location[4]=1;CHECK(PROFILE_PUBLISH(5,5000)==CERBERUS_REMOTE_ID_INVALID);
+    profiles[0].values.location[4]=0;motions[0].direction_deg=180;CHECK(PROFILE_PUBLISH(5,5000)==CERBERUS_REMOTE_ID_INVALID);
+    /* Legacy publication clears only latest extras; frozen source survives. */
+    CHECK(publish(5,5000)==CERBERUS_REMOTE_ID_PUBLISHED);
+    CHECK(!inventory.selected.latest.profile.available&&zero(&inventory.selected.latest.profile,sizeof(profiles[0])));
+    CHECK(!memcmp(&frozen,&inventory.selected.frozen,sizeof(frozen)));
+#undef PROFILE_PUBLISH
+}
+
 int main(void)
 {
     _Static_assert(CERBERUS_REMOTE_ID_CAPACITY==24U,"Two existing twelve-row radio banks");
     init_and_bounds();separate_banks_and_pages();tokens_and_atomicity();selection_lifecycle();
-    reject_bad_status();reject_bad_rows();source_keys();observed_timing();follow_hints();detailed_motion();
+    reject_bad_status();reject_bad_rows();source_keys();observed_timing();follow_hints();detailed_motion();profiled_message_publication();
     printf("Remote ID inventory: %u checks passed; atomic typed radio banks, immutable painted selection, absent/unavailable/returned source, exact new payload, wide sweep tokens and rejected malformed snapshots. Host sizes inventory=%zu bank=%zu record=%zu selection=%zu page=%zu bytes; target measurement pending.\n",
         checks,sizeof(inventory),sizeof(cerberus_remote_id_bank_t),sizeof(cerberus_remote_id_record_t),
         sizeof(cerberus_remote_id_selection_t),sizeof(cerberus_remote_id_page_t));

@@ -11,6 +11,7 @@ header = r'''
 #include <stdbool.h>
 #include <stdint.h>
 #include <stddef.h>
+#include <assert.h>
 #include "esp_err.h"
 #define ESP_ERR_TIMEOUT 0x107
 #define IRAM_ATTR
@@ -28,6 +29,20 @@ typedef struct {uint8_t channel; int8_t rssi; uint8_t lqi;} esp_ieee802154_frame
 #define portYIELD_FROM_ISR(x) ((void)(x))
 #define ESP_LOGI(tag,...) ((void)(tag))
 #define ESP_LOGW(tag,...) ((void)(tag))
+typedef struct {unsigned depth;} portMUX_TYPE;
+#define portMUX_INITIALIZER_UNLOCKED {0U}
+static inline void fake_critical_enter(portMUX_TYPE *m){assert(m->depth==0U);++m->depth;}
+static inline void fake_critical_exit(portMUX_TYPE *m){assert(m->depth==1U);--m->depth;}
+#define portENTER_CRITICAL(m) fake_critical_enter(m)
+#define portEXIT_CRITICAL(m) fake_critical_exit(m)
+#define portENTER_CRITICAL_ISR(m) fake_critical_enter(m)
+#define portEXIT_CRITICAL_ISR(m) fake_critical_exit(m)
+#define MALLOC_CAP_INTERNAL 1U
+#define MALLOC_CAP_8BIT 2U
+void *heap_caps_calloc(size_t,size_t,unsigned);
+void heap_caps_free(void*);
+uint32_t esp_random(void);
+int64_t esp_timer_get_time(void);
 SemaphoreHandle_t xSemaphoreCreateMutex(void);
 void vSemaphoreDelete(SemaphoreHandle_t);
 int xSemaphoreTake(SemaphoreHandle_t,unsigned);
@@ -48,19 +63,29 @@ esp_err_t esp_ieee802154_sleep(void);
 esp_err_t esp_ieee802154_set_channel(uint8_t);
 esp_err_t esp_ieee802154_set_coordinator(bool);
 esp_err_t esp_ieee802154_set_promiscuous(bool);
+esp_err_t esp_ieee802154_set_rx_when_idle(bool);
 esp_err_t esp_ieee802154_receive(void);
 esp_err_t esp_ieee802154_receive_handle_done(uint8_t*);
 esp_err_t esp_ieee802154_energy_detect(uint32_t);
 '''
 (out / "fake_worker_platform.h").write_text(header)
-for name in ["esp_attr.h", "esp_ieee802154.h", "esp_log.h", "freertos/FreeRTOS.h",
+for name in ["esp_attr.h", "esp_ieee802154.h", "esp_log.h", "esp_heap_caps.h", "esp_random.h", "esp_timer.h", "freertos/FreeRTOS.h",
              "freertos/queue.h", "freertos/semphr.h", "freertos/task.h"]:
     path = out / name
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text('#include "fake_worker_platform.h"\n')
-exe = out / "radio-worker-check.exe"
-subprocess.run([sys.executable, "-m", "ziglang", "cc", "-std=c11", "-O1", "-Wall", "-Wextra", "-Werror",
-    "-I", str(out), "-I", str(root / "tools/host_checks/stubs"), "-I", str(root / "shared"),
-    "-I", str(root / "c5_firmware/main"), str(root / "tools/host_checks/radio_worker_check.c"),
-    "-o", str(exe)], check=True)
-subprocess.run([str(exe)], check=True)
+dispatcher = (root / "c5_firmware/main/main.c").read_text()
+state = dispatcher[dispatcher.index("static uint8_t current_radio_state(void)"):
+                   dispatcher.index("static void build_diagnostic_snapshot(")]
+cases = dispatcher[dispatcher.index("    case CERBERUS_MESH_LOCATE_COMMAND_INFO:"):
+                   dispatcher.index("    case CERBERUS_SPI_COMMAND_IEEE802154_ENERGY_SCAN_START:")]
+(out / "mesh_dispatch.inc").write_text(state +
+    "\nstatic void mesh_dispatch(const cerberus_spi_frame_t *request){switch(request->command){\n" +
+    cases + "\ndefault:break;}}\n")
+for name in ("radio_worker_check", "radio_receive_continuity_check", "mesh_observation_worker_check", "mesh_locate_worker_check"):
+    exe = out / (name + ".exe")
+    subprocess.run([sys.executable, "-m", "ziglang", "cc", "-std=c11", "-O1", "-Wall", "-Wextra", "-Werror",
+        "-I", str(out), "-I", str(root / "tools/host_checks/stubs"), "-I", str(root / "shared"),
+        "-I", str(root / "c5_firmware/main"), str(root / "tools/host_checks" / (name + ".c")),
+        str(root / "shared/mesh_mac.c"), "-o", str(exe)], check=True)
+    subprocess.run([str(exe)], check=True)

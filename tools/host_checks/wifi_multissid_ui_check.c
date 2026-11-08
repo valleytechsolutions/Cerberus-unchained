@@ -44,6 +44,15 @@ static uint16_t source_count;
 static esp_err_t status_error,page_error,start_error,follow_error,release_error;
 static bool bad_generation,bad_variant_count,bad_variant_length;
 static bool last_save;
+static bool fox_hold,fox_supported=true;
+static unsigned fox_opens;
+static uint8_t fox_target[6],fox_channel,fox_label[32],fox_length,fox_origin;
+static bool wifi_fox_hunt_supported(void){return fox_supported;}
+static bool wifi_fox_hunt_holds_source(uint8_t origin){assert(origin==UI_WIFI_MODE_MULTISSID);return fox_hold;}
+static esp_err_t wifi_fox_hunt_open(const uint8_t target[6],uint8_t channel,const uint8_t *label,size_t length,uint8_t origin)
+{assert(length<=32&&origin==UI_WIFI_MODE_MULTISSID);memcpy(fox_target,target,6);memcpy(fox_label,label,length);
+ fox_channel=channel;fox_length=(uint8_t)length;fox_origin=origin;++fox_opens;return ESP_OK;}
+
 static void *heap_caps_calloc(size_t count,size_t size,unsigned caps)
 {
     assert(caps==(MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT));
@@ -149,17 +158,17 @@ static void check_escape(void)
 int main(int argc,char **argv)
 {
     assert(argc==2);check_escape();
-    assert(sentinel_hub_hit_test(SENTINEL_HUB_WIFI,164,364)==8);
-    assert(sentinel_hub_hit_test(SENTINEL_HUB_WIFI,231,405)==8);
-    assert(sentinel_hub_hit_test(SENTINEL_HUB_WIFI,160,380)==-1);
-    assert(sentinel_hub_hit_test(SENTINEL_HUB_WIFI,236,380)==-1);
-    assert(sentinel_hub_hit_test(SENTINEL_HUB_WIFI,240,380)==7);
-    assert(sentinel_hub_hit_test(SENTINEL_HUB_WIFI,79,380)==6);
-    assert(sentinel_hub_hit_test(SENTINEL_HUB_WIFI,88,364)==9);
-    assert(sentinel_hub_hit_test(SENTINEL_HUB_WIFI,155,405)==9);
-    assert(sentinel_hub_hit_test(SENTINEL_HUB_WIFI,84,380)==-1);
+    assert(sentinel_hub_hit_test(SENTINEL_HUB_WIFI,132,364)==8);
+    assert(sentinel_hub_hit_test(SENTINEL_HUB_WIFI,187,405)==8);
+    assert(sentinel_hub_hit_test(SENTINEL_HUB_WIFI,128,380)==-1);
+    assert(sentinel_hub_hit_test(SENTINEL_HUB_WIFI,188,380)==-1);
+    assert(sentinel_hub_hit_test(SENTINEL_HUB_WIFI,192,380)==7);
+    assert(sentinel_hub_hit_test(SENTINEL_HUB_WIFI,67,380)==6);
+    assert(sentinel_hub_hit_test(SENTINEL_HUB_WIFI,72,364)==9);
+    assert(sentinel_hub_hit_test(SENTINEL_HUB_WIFI,127,405)==9);
+    assert(sentinel_hub_hit_test(SENTINEL_HUB_WIFI,68,380)==-1);
     assert(sentinel_hub_draw(SENTINEL_HUB_WIFI,&theme)==ESP_OK);save(argv[1],"menu");
-    actual_menu(196,380);assert(wifi_mode==UI_WIFI_MODE_MULTISSID&&multissid_ui_open&&!multissid_ui_save);
+    actual_menu(160,380);assert(wifi_mode==UI_WIFI_MODE_MULTISSID&&multissid_ui_open&&!multissid_ui_save);
     assert(!starts&&!follows&&!stops&&!allocations);render();save(argv[1],"ready-no-sd");
     assert(strstr(drawn,"NO AP SELECTION REQUIRED")&&strstr(drawn,"NO SD CARD REQUIRED"));
     actual_tap(250,380);assert(!multissid_ui_save); /* No card: cannot enable saving. */
@@ -188,6 +197,17 @@ int main(int argc,char **argv)
     actual_tap(30,380);render();assert(strstr(drawn,"HIDDEN-LIKE: EMPTY / ALL ZERO GROUP"));
     actual_tap(30,380);render();assert(strstr(drawn,"LATEST RAW SSID / 32 BYTES"));save(argv[1],"latest-32-binary");
     masked=true;render();assert(!strstr(drawn,"02:00:00:00:00:01")&&!strstr(drawn,"04:00:00:00:00:02")&&strstr(drawn,"TX CLAIM WIFI-"));save(argv[1],"masked");masked=false;
+
+    /* Fox Hunt receives the frozen transmitter and latest RX channel/SSID,
+     * independently of the selected historical variant. Adjacent gaps are inert. */
+    fox_supported=false;actual_tap(160,380);assert(!fox_opens);fox_supported=true;
+    actual_tap(159,380);actual_tap(228,380);actual_tap(235,380);assert(!fox_opens);
+    actual_tap(160,366);assert(fox_opens==1&&fox_origin==UI_WIFI_MODE_MULTISSID&&fox_channel==36&&fox_length==32);
+    assert(!memcmp(fox_target,painted.evidence.latest.transmitter,6)&&!memcmp(fox_label,painted.evidence.latest.ssid,32));
+    unsigned retained_frees=frees,retained_releases=releases;
+    fox_hold=true;now+=500;actual_tick(now,true);
+    assert(multissid_ui_store&&multissid_ui_detail&&!multissid_ui_exit_pending&&frees==retained_frees&&releases==retained_releases);
+    fox_hold=false;
     unsigned before=stops;actual_tap(150,380);assert(stops==before+1&&multissid_ui_follow_pending&&!follows);
     poll();assert(!follows); /* Stop is asynchronous, retain selected evidence. */
     assert(!memcmp(&painted,&multissid_ui_store->selected,sizeof(painted)));
@@ -210,20 +230,20 @@ int main(int argc,char **argv)
     remote.capture.busy=false;release_error=ESP_ERR_INVALID_STATE;poll();assert(wifi_mode==UI_WIFI_MODE_MULTISSID&&!frees);
     release_error=ESP_OK;poll();assert(wifi_mode==UI_WIFI_MODE_MENU&&!multissid_ui_open&&frees==1);
     /* Allocation failure keeps the empty page usable, then recovers in PSRAM. */
-    actual_menu(196,380);assert(multissid_ui_save);seed();allocation_fail=true;poll();assert(!multissid_ui_store&&!multissid_ui_page.copied&&strstr(multissid_ui_message,"NO_MEM"));
+    actual_menu(160,380);assert(multissid_ui_save);seed();allocation_fail=true;poll();assert(!multissid_ui_store&&!multissid_ui_page.copied&&strstr(multissid_ui_message,"NO_MEM"));
     allocation_fail=false;poll();assert(multissid_ui_store&&allocations==2&&!multissid_ui_message[0]);
     /* Sleeping/leaving requests cleanup and cannot queue Follow afterward. */
     now+=500;actual_tick(now,true);assert(multissid_ui_exit_pending&&remote.capture.state==CERBERUS_S3_CAPTURE_STOPPING);
     assert(frees==1);remote.capture.busy=false;now+=500;actual_tick(now,true);assert(frees==2&&!multissid_ui_open&&wifi_mode==UI_WIFI_MODE_MENU);
     /* Status failure must not pretend ownership has ended. */
-    actual_menu(196,380);status_error=ESP_ERR_TIMEOUT;assert(multissid_busy());actual_back();assert(multissid_ui_open);
+    actual_menu(160,380);status_error=ESP_ERR_TIMEOUT;assert(multissid_busy());actual_back();assert(multissid_ui_open);
     status_error=ESP_OK;poll();assert(!multissid_ui_open);
     /* A tap on STOP cancels a queued Follow before it can start. */
-    actual_menu(196,380);seed();poll();actual_tap(20,150);actual_tap(150,380);assert(multissid_ui_follow_pending);
+    actual_menu(160,380);seed();poll();actual_tap(20,150);actual_tap(150,380);assert(multissid_ui_follow_pending);
     actual_tap(250,380);assert(!multissid_ui_follow_pending);remote.capture.busy=false;poll();assert(follows==1);
     current_page=UI_PAGE_MAIN;poll();assert(!multissid_ui_open&&allocations==frees);
     /* Failed Start/Follow remain explicit errors and never alter selection. */
-    current_page=UI_PAGE_WIFI;remote.capture.busy=false;actual_menu(196,380);
+    current_page=UI_PAGE_WIFI;remote.capture.busy=false;actual_menu(160,380);
     start_error=ESP_ERR_INVALID_STATE;actual_tap(100,380);assert(!remote.capture.busy&&strstr(multissid_ui_message,"START:"));start_error=ESP_OK;
     poll();assert(strstr(multissid_ui_message,"START:")); /* Explicit action failure remains. */
     seed();remote.capture.busy=false;poll();actual_tap(20,150);painted=multissid_ui_store->selected;

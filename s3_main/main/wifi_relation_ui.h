@@ -333,7 +333,12 @@ static esp_err_t wifi_relation_draw(void)
         snprintf(line, sizeof(line), "BANK FULL / %lu FRAMES NOT RETAINED", (unsigned long)s->selected.bank.meta.status.dropped_frames);
     else snprintf(line, sizeof(line), "OBSERVED / ASSOCIATION NOT VERIFIED");
     ESP_RETURN_ON_ERROR(draw_centered(356, line, UI_MUTED, 1), TAG, "relation note");
-    if (s->detail) return ESP_OK; /* Parent footer owns Back on every state. */
+    if (s->detail) {
+        ESP_RETURN_ON_ERROR(cerberus_ui_widget_draw_button((cerberus_ui_rect_t){8,378,148,36},
+            "COUNT THIS STATION",1,s->selected.valid && s->detail_index<s->selected.count,UI_WIDGET_THEME),TAG,"relation count");
+        return cerberus_ui_widget_draw_button((cerberus_ui_rect_t){164,378,148,36},
+            "FOX HUNT",1,s->selected.valid && s->detail_index<s->selected.count && wifi_fox_hunt_supported(),UI_WIDGET_THEME);
+    }
     ESP_RETURN_ON_ERROR(cerberus_ui_widget_draw_button((cerberus_ui_rect_t){8, 378, 72, 36}, "PREV", 1, s->page > 0U, UI_WIDGET_THEME), TAG, "relation prev");
     ESP_RETURN_ON_ERROR(cerberus_ui_widget_draw_button((cerberus_ui_rect_t){88, 378, 72, 36}, "NEXT", 1,
         (s->page + 1U) * 4U < s->selected.count, UI_WIDGET_THEME), TAG, "relation next");
@@ -347,7 +352,22 @@ static void wifi_relation_tap(uint16_t x, uint16_t y)
 {
     wifi_relation_ui_store_t *s = wifi_relation_ui;
     if (!s) { if (x >= 8U && x < 312U && y >= 378U && y < 414U) wifi_relation_retry(); return; }
-    if (!s->detail && x >= 8U && x < 312U && y >= 148U && y < 316U && (y - 148U) % 42U < 36U) {
+    if (s->detail && s->selected.valid && s->detail_index<s->selected.count &&
+        x>=8U && x<156U && y>=378U && y<414U) {
+        const cerberus_wifi_relation_row_t *row=&s->selected.bank.rows[s->detail_index];
+        wifi_packet_count_selection_t selection={.target={.role=CERBERUS_WIFI_PACKET_COUNT_STA,
+            .channel_hint=row->channel},.discovery_source=2U,.discovery_publication=s->selected_publication};
+        memcpy(selection.target.mac,row->station,6U); memcpy(selection.bssid,row->bssid,6U);
+        snprintf(selection.label,sizeof(selection.label),"OBSERVED STATION");
+        esp_err_t error=wifi_packet_count_open_selection(&selection,UI_WIFI_MODE_OBSERVED_CLIENTS);
+        if (error!=ESP_OK) snprintf(s->message,sizeof(s->message),"COUNT: %.38s",esp_err_to_name(error));
+    } else if (s->detail && s->selected.valid && s->detail_index<s->selected.count &&
+        x>=164U && x<312U && y>=378U && y<414U && wifi_fox_hunt_supported()) {
+        const cerberus_wifi_relation_row_t *row=&s->selected.bank.rows[s->detail_index];
+        static const uint8_t label[]="OBSERVED STATION";
+        esp_err_t error=wifi_fox_hunt_open(row->station,row->channel,label,sizeof(label)-1U,UI_WIFI_MODE_OBSERVED_CLIENTS);
+        if(error!=ESP_OK)snprintf(s->message,sizeof(s->message),"FOX HUNT: %.37s",esp_err_to_name(error));
+    } else if (!s->detail && x >= 8U && x < 312U && y >= 148U && y < 316U && (y - 148U) % 42U < 36U) {
         unsigned i = s->page * 4U + (y - 148U) / 42U;
         if (i < s->selected.count) { s->detail_index = (uint8_t)i; s->detail = true; }
     } else if (x >= 8U && x < 312U && y >= 322U && y < 350U &&

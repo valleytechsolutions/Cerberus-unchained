@@ -10,6 +10,7 @@ sdkconfig.old
 !sdkconfig.*.defaults
 !c5_firmware/sdkconfig.defaults
 !c5_firmware/sdkconfig.*.defaults
+!tools/host_checks/tls_stubs/sdkconfig.h
 dist/
 artifacts/
 __pycache__/
@@ -36,3 +37,6 @@ docs/TOOLS_AUDIT.md
 /docs/BASE_BACKLOG.md
 /docs/BASE_README.md
 /docs/SENTINEL_ACCEPTANCE.md
+**/UPLOAD.JSON
+**/wardrive_upload.json
+**/*.private.json

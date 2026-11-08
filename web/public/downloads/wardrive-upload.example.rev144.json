@@ -1,0 +1,20 @@
+{
+  "schema": "cerberus-wardrive-upload-v1",
+  "home_wifi": {
+    "ssid": "",
+    "password": ""
+  },
+  "wigle": {
+    "enabled": false,
+    "api_name": "",
+    "api_token": ""
+  },
+  "wdgwars": {
+    "enabled": false,
+    "token": ""
+  },
+  "wardrift": {
+    "enabled": false,
+    "token": ""
+  }
+}

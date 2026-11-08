@@ -12,6 +12,10 @@ static unsigned checks;
 
 static cerberus_s3_ble_owner_t owner;
 static unsigned epoch;
+static uint64_t host_next_token;
+static cerberus_s3_ble_host_lease_t host_lease;
+static bool release_scanner_on_delay;
+static void (*unlock_hook)(void);
 static cerberus_s3_wifi_owner_t wifi_owner;
 static struct ble_npl_eventq queue_object;
 static struct ble_npl_event *queue[16];
@@ -51,8 +55,14 @@ SemaphoreHandle_t xSemaphoreCreateMutex(void) { ++mutex_creates; return (void *)
 int xSemaphoreTake(SemaphoreHandle_t sem, unsigned delay)
 { CHECK(sem && delay == portMAX_DELAY && mutex_depth == 0U); ++mutex_takes; ++mutex_depth; return 1; }
 int xSemaphoreGive(SemaphoreHandle_t sem)
-{ CHECK(sem && mutex_depth == 1U); ++mutex_gives; --mutex_depth; return 1; }
-void vTaskDelay(unsigned ticks) { (void)ticks; }
+{ CHECK(sem && mutex_depth == 1U); ++mutex_gives; --mutex_depth;
+  if(unlock_hook){void(*hook)(void)=unlock_hook;unlock_hook=NULL;hook();}return 1; }
+void vTaskDelay(unsigned ticks) {
+    fake_now_ms+=ticks;
+    if(release_scanner_on_delay && owner==CERBERUS_S3_BLE_OWNER_SCANNER){
+        release_scanner_on_delay=false;owner=CERBERUS_S3_BLE_OWNER_NONE;
+    }
+}
 int64_t esp_timer_get_time(void) { return (int64_t)fake_now_ms * 1000LL; }
 size_t heap_caps_get_free_size(unsigned caps) { (void)caps; return 120000U; }
 const char *esp_err_to_name(esp_err_t err) { (void)err; return "fake"; }
@@ -192,10 +202,14 @@ int ble_gattc_write_flat(uint16_t handle, uint16_t attribute,
     ++write_count;
     return 0;
 }
-esp_err_t cerberus_s3_ble_host_claim(cerberus_s3_ble_owner_t value)
-{ ++claim_calls; if (owner != CERBERUS_S3_BLE_OWNER_NONE) return ESP_ERR_INVALID_STATE; owner = value; return ESP_OK; }
-esp_err_t cerberus_s3_ble_host_release(cerberus_s3_ble_owner_t value)
-{ ++release_calls; if (owner != value) return ESP_ERR_INVALID_STATE; owner = CERBERUS_S3_BLE_OWNER_NONE; return ESP_OK; }
+esp_err_t cerberus_s3_ble_host_claim(cerberus_s3_ble_owner_t value,cerberus_s3_ble_host_lease_t *out)
+{ ++claim_calls;memset(out,0,sizeof(*out));if(owner!=CERBERUS_S3_BLE_OWNER_NONE)return ESP_ERR_INVALID_STATE;
+  owner=value;host_lease=(cerberus_s3_ble_host_lease_t){.token=++host_next_token,.epoch=epoch,.owner=value};*out=host_lease;return ESP_OK; }
+bool cerberus_s3_ble_host_lease_valid(const cerberus_s3_ble_host_lease_t *lease)
+{ return lease&&lease->token&&lease->token==host_lease.token&&lease->epoch==epoch&&lease->owner==owner; }
+esp_err_t cerberus_s3_ble_host_release(const cerberus_s3_ble_host_lease_t *lease)
+{ ++release_calls;if(!cerberus_s3_ble_host_lease_valid(lease))return ESP_ERR_INVALID_STATE;
+  owner=CERBERUS_S3_BLE_OWNER_NONE;host_lease=(cerberus_s3_ble_host_lease_t){0};return ESP_OK; }
 cerberus_s3_ble_owner_t cerberus_s3_ble_host_owner(void) { return owner; }
 bool cerberus_s3_ble_host_initialized(void) { return true; }
 bool cerberus_s3_ble_host_synced(void) { return true; }
@@ -698,6 +712,101 @@ static void check_sound_jobs(void)
     puts("S3 Find My Sound exact GATT sequence, response evidence and Stop cleanup passed.");
 }
 
+static const cerberus_c5_ble_result_t lease_peer={.address={2,3,4,5,6,7},
+    .address_type=1,.flags=CERBERUS_BLE_RESULT_CONNECTABLE};
+static void reconnect_after_unlock(void)
+{
+    /* Reset retires the old lease, then a new caller claims the same owner
+     * before the old callback reaches its deferred release. */
+    owner=CERBERUS_S3_BLE_OWNER_NONE;host_lease=(cerberus_s3_ble_host_lease_t){0};++epoch;
+    cerberus_ble_connection_status_payload_t next;
+    CHECK(cerberus_s3_ble_central_connect(&lease_peer,&next)==ESP_OK);
+}
+static void check_exact_lease_callbacks(void)
+{
+    unsigned before=checks;
+    cerberus_ble_connection_status_payload_t status;
+    CHECK(owner==CERBERUS_S3_BLE_OWNER_NONE);
+    CHECK(cerberus_s3_ble_central_connect(&lease_peer,&status)==ESP_OK);
+    unsigned connects=connect_calls,cancels=cancel_calls,terminates=terminate_calls,releases=release_calls;
+    /* Same label and same reset epoch are insufficient: a distinct token
+     * replaces the queued claim before its SDK operation is dispatched. */
+    ++host_lease.token;host_next_token=host_lease.token;
+    drain();
+    CHECK(connect_calls==connects && cancel_calls==cancels && terminate_calls==terminates && release_calls==releases);
+    CHECK(cerberus_s3_ble_central_get_status(&status)==ESP_OK&&status.state==CERBERUS_BLE_CONNECTION_ERROR);
+    cerberus_s3_ble_host_lease_t foreign=host_lease;
+    CHECK(cerberus_s3_ble_host_release(&foreign)==ESP_OK);
+
+    CHECK(cerberus_s3_ble_central_connect(&lease_peer,&status)==ESP_OK);drain();connected();
+    uint64_t old_token=host_lease.token;
+    struct ble_gap_event event={.type=BLE_GAP_EVENT_DISCONNECT};
+    event.disconnect.conn.conn_handle=connection_handle;
+    unlock_hook=reconnect_after_unlock;
+    CHECK(gap_callback(&event,gap_arg)==0);
+    CHECK(host_lease.token!=old_token && owner==CERBERUS_S3_BLE_OWNER_CENTRAL);
+    CHECK(cerberus_s3_ble_central_get_status(&status)==ESP_OK&&status.state==CERBERUS_BLE_CONNECTION_CONNECTING);
+    drain();connected();
+    CHECK(cerberus_s3_ble_central_disconnect(&status)==ESP_OK);drain();
+
+    /* A completed write may unlock just as reset permits a new connection.
+     * Its deferred cleanup must retain the old lease, not disconnect the
+     * replacement that now occupies the same central owner slot. */
+    (void)sound_begin(CERBERUS_FINDMY_PROFILE_AIRTAG);
+    sound_present_service(1U);
+    sound_present_characteristic(2U, BLE_GATT_CHR_PROP_WRITE, false);
+    old_token=host_lease.token;
+    cancels=cancel_calls;terminates=terminate_calls;releases=release_calls;
+    unsigned puts_before=event_puts;
+    struct ble_gatt_error write_ok={0};
+    unlock_hook=reconnect_after_unlock;
+    CHECK(write_callback(connection_handle,&write_ok,NULL,write_arg)==0);
+    CHECK(host_lease.token!=old_token && owner==CERBERUS_S3_BLE_OWNER_CENTRAL);
+    CHECK(cerberus_s3_ble_central_get_status(&status)==ESP_OK &&
+        status.state==CERBERUS_BLE_CONNECTION_CONNECTING);
+    CHECK(event_puts==puts_before+1U && queue_count==1U);
+    drain();
+    CHECK(initiating && cancel_calls==cancels && terminate_calls==terminates &&
+        release_calls==releases);
+    connected();
+    CHECK(cerberus_s3_ble_central_disconnect(&status)==ESP_OK);drain();
+
+    /* Public generation8 intentionally wraps, but callback tickets do not. */
+    CHECK(cerberus_s3_ble_central_connect(&lease_peer,&status)==ESP_OK);drain();connected();
+    uint8_t original_generation=status.generation;
+    void *old_gap_arg=gap_arg;ble_gap_event_fn old_gap=gap_callback;
+    CHECK(cerberus_s3_ble_central_disconnect(&status)==ESP_OK);drain();
+    for(unsigned i=0;i<256;++i){
+        CHECK(cerberus_s3_ble_central_connect(&lease_peer,&status)==ESP_OK);drain();connected();
+        if(i!=255){CHECK(cerberus_s3_ble_central_disconnect(&status)==ESP_OK);drain();}
+    }
+    CHECK(status.generation==original_generation && gap_arg!=old_gap_arg);
+    releases=release_calls;terminates=terminate_calls;
+    CHECK(old_gap(&event,old_gap_arg)==0);
+    CHECK(release_calls==releases&&terminate_calls==terminates);
+    CHECK(cerberus_s3_ble_central_get_status(&status)==ESP_OK&&status.state==CERBERUS_BLE_CONNECTION_CONNECTED);
+
+    cerberus_ble_gatt_service_status_payload_t services;
+    CHECK(cerberus_s3_ble_central_start_service_discovery(&services)==ESP_OK);drain();
+    uint8_t original_service_generation=services.generation;
+    void *old_service_arg=service_arg;ble_gatt_svc_fn old_service=service_callback;
+    struct ble_gatt_error done={.status=BLE_HS_EDONE};
+    CHECK(service_callback(connection_handle,&done,NULL,service_arg)==0);
+    for(unsigned i=0;i<256;++i){
+        CHECK(cerberus_s3_ble_central_start_service_discovery(&services)==ESP_OK);drain();
+        if(i!=255)CHECK(service_callback(connection_handle,&done,NULL,service_arg)==0);
+    }
+    CHECK(services.generation==original_service_generation && service_arg!=old_service_arg);
+    struct ble_gatt_error ok={0};struct ble_gatt_svc stale={.start_handle=1,.end_handle=3};
+    stale.uuid.u.type=BLE_UUID_TYPE_16;stale.uuid.u.v16=0x1800;
+    CHECK(old_service(connection_handle,&ok,&stale,old_service_arg)==0);
+    CHECK(cerberus_s3_ble_central_get_service_status(&services)==ESP_OK&&services.total_count==0&&services.stored_count==0);
+    CHECK(service_callback(connection_handle,&done,NULL,service_arg)==0);
+    CHECK(cerberus_s3_ble_central_disconnect(&status)==ESP_OK);drain();
+    CHECK(owner==CERBERUS_S3_BLE_OWNER_NONE && !queue_count);
+    printf("Exact central lease and stale callback regressions: %u checks passed.\n",checks-before);
+}
+
 int main(void)
 {
     check_diagnostics_before_init();
@@ -705,8 +814,11 @@ int main(void)
         .address_type = 0, .flags = CERBERUS_BLE_RESULT_CONNECTABLE};
     cerberus_ble_connection_status_payload_t connection;
     owner = CERBERUS_S3_BLE_OWNER_SCANNER;
+    CHECK(cerberus_s3_ble_central_connect(&peer, &connection) == ESP_ERR_TIMEOUT);
+    CHECK(scanner_stops == 0U && owner == CERBERUS_S3_BLE_OWNER_SCANNER);
+    release_scanner_on_delay=true;
     CHECK(cerberus_s3_ble_central_connect(&peer, &connection) == ESP_OK);
-    CHECK(scanner_stops == 1U && owner == CERBERUS_S3_BLE_OWNER_CENTRAL);
+    CHECK(scanner_stops == 0U && owner == CERBERUS_S3_BLE_OWNER_CENTRAL);
     CHECK(connection.state == CERBERUS_BLE_CONNECTION_CONNECTING);
     CHECK(cerberus_s3_ble_central_connect(&peer, &connection) == ESP_ERR_INVALID_STATE);
     drain();
@@ -821,6 +933,7 @@ int main(void)
     drain();
     check_generic_recovery();
     check_sound_jobs();
+    check_exact_lease_callbacks();
     puts("S3 BLE central lifecycle, bounded GATT results, cancellation, reset, and receiver gate passed.");
     printf("%u production central fixture checks; diagnostic value %zu bytes.\n",
         checks, sizeof(cerberus_s3_ble_central_diagnostics_t));

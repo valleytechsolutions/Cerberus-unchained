@@ -19,15 +19,25 @@ portal = (SD / "CERBERUS/PORTAL/INDEX.HTM").read_bytes()
 if not 0 < len(portal) <= 2048 or b'action="/submit"' not in portal or b'name="name"' not in portal:
     raise ValueError("Cerberus portal asset is missing, oversized or incompatible")
 files["CERBERUS/PORTAL/INDEX.HTM"] = portal
-files["CERBERUS/HELP/START.TXT"] = b"""CERBERUS FIELD KIT - DEVELOPMENT BUILD
+files["CERBERUS/HELP/START.TXT"] = f"""CERBERUS UNCHAINED SD ASSETS - EXPERIMENTAL
 
-S3: display, touch, SD files, reports, BLE passive observation and advertising.
-Onboard C5: 2.4/5 GHz Wi-Fi, packet survey and connected-network probes.
-Selected-AP 2.4 GHz tests temporarily use S3 Wi-Fi reception and pause S3 BLE.
-C5 still handles selected-device BLE GATT reads until its S3 migration is ready.
-Expansion C5s: Field survey. GPS is not installed on this unit.
+Extract the ZIP on your computer. With Cerberus powered off, use a card reader
+to copy the CERBERUS folder to the top level of a FAT32 microSD card.
+The database must be at CERBERUS/RECON.DB, not CERBERUS/CERBERUS/RECON.DB.
+Back up an existing card first. Merge the supplied files while keeping your
+logs, recordings and custom files. Eject the card safely, insert it with
+Cerberus powered off, then start the device.
 
-RECON.DB contains 40,210 /24 vendor entries and source references from
+Firmware flashing programs the processors separately; it does not copy SD files.
+Boot and basic scanning work without this asset pack. Vendor names and the
+optional portal page use these files. Recordings and saved maps are generated
+by the firmware when an SD card is available.
+
+S3: display, touch, SD files, reports and radio coordination.
+S3 and onboard C5 receiver roles depend on the selected Wi-Fi or BLE tool.
+Expansion radios and GPS are optional hardware, not included in this pack.
+
+RECON.DB contains {header[2]:,} /24 vendor entries and source references from
 Dragon Detector, CYM, SquachWatch and ChimeraBLE's registry source.
 Wi-Fi AP details, Field survey, public-address BLE details and Watch findings
 use its vendor labels. Vendor identity
@@ -47,7 +57,7 @@ The database embeds source/license metadata; NOTICES.TXT lists attribution.
 
 The complete Marauder Wi-Fi/BLE feature inventory remains an integration
 target. This package does not install unimplemented attack services.
-"""
+""".encode("ascii")
 files["CERBERUS/HELP/RADIO.TXT"] = b"""RADIO LAB - DEVELOPMENT TEST ENGINES
 
 Home > Attack > RADIO LAB / S3 + C5.

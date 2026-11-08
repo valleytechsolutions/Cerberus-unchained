@@ -31,7 +31,11 @@ static struct ble_npl_event connect_event, disconnect_event, service_event, char
 static struct ble_npl_event sound_service_event, sound_characteristic_event,
     sound_descriptor_event, sound_subscribe_event, sound_write_event;
 static bool events_ready;
-static unsigned lease_epoch;
+static cerberus_s3_ble_host_lease_t central_lease;
+/* Event arguments are pointer-width on ESP32. Never truncate the 64-bit host
+ * token: monotonically issued tickets bind callbacks to this retained lease. */
+static uint32_t callback_sequence, connection_ticket, service_ticket,
+    characteristic_ticket, read_ticket, sound_ticket;
 static cerberus_ble_connection_status_payload_t connection = {.connection_handle = NO_CONNECTION};
 static cerberus_ble_gatt_service_status_payload_t service_status;
 static cerberus_c5_ble_service_t services[CERBERUS_BLE_GATT_SERVICE_MAX_RESULTS];
@@ -50,6 +54,8 @@ static bool sound_command_submitted;
 static uint32_t sound_stage_started_ms;
 
 static bool active_state(uint8_t state);
+static esp_err_t disconnect_lease(cerberus_ble_connection_status_payload_t *status,
+    const cerberus_s3_ble_host_lease_t *expected);
 static void start_sound_service(struct ble_npl_event *event);
 static void start_sound_characteristic(struct ble_npl_event *event);
 static void start_sound_descriptor(struct ble_npl_event *event);
@@ -59,6 +65,12 @@ static void start_sound_write(struct ble_npl_event *event);
 static uint32_t sound_now_ms(void)
 {
     return (uint32_t)(esp_timer_get_time() / 1000LL);
+}
+
+static bool callback_current_locked(uint32_t ticket, uint32_t expected)
+{
+    return ticket != 0U && ticket == expected &&
+        cerberus_s3_ble_host_lease_valid(&central_lease);
 }
 
 static bool sound_active(cerberus_s3_ble_sound_state_t state)
@@ -80,7 +92,7 @@ static bool sound_current_locked(uint8_t generation,
         sound_connection_generation == connection.generation &&
         connection.state == CERBERUS_BLE_CONNECTION_CONNECTED &&
         connection.connection_handle == handle &&
-        lease_epoch == cerberus_s3_ble_host_epoch();
+        cerberus_s3_ble_host_lease_valid(&central_lease);
 }
 
 /* A finished sound job keeps its result until the next start. The connection
@@ -88,16 +100,16 @@ static bool sound_current_locked(uint8_t generation,
 static void sound_reconcile_locked(void)
 {
     if (sound_status.state == CERBERUS_S3_BLE_SOUND_STOPPING &&
-        cerberus_s3_ble_host_owner() != CERBERUS_S3_BLE_OWNER_CENTRAL &&
+        !cerberus_s3_ble_host_lease_valid(&central_lease) &&
         !active_state(connection.state) && connection.connection_handle == NO_CONNECTION) {
         sound_status.state = sound_final_state;
         if (sound_final_state != CERBERUS_S3_BLE_SOUND_ERROR)
             sound_status.error_code = 0;
     } else if (sound_active(sound_status.state) &&
         sound_status.state != CERBERUS_S3_BLE_SOUND_STOPPING &&
-        cerberus_s3_ble_host_owner() != CERBERUS_S3_BLE_OWNER_CENTRAL) {
+        !cerberus_s3_ble_host_lease_valid(&central_lease)) {
         sound_status.failed_stage = sound_status.state;
-        if (lease_epoch == cerberus_s3_ble_host_epoch() &&
+        if (central_lease.epoch == cerberus_s3_ble_host_epoch() &&
             connection.error_code != 0) {
             sound_status.last_host_rc = connection.error_code;
             sound_status.error_code = ESP_FAIL;
@@ -122,6 +134,7 @@ static bool active_state(uint8_t state)
 
 static void clear_gatt_locked(void)
 {
+    service_ticket = characteristic_ticket = read_ticket = 0U;
     uint8_t service_generation = service_status.generation;
     uint8_t characteristic_generation = characteristic_status.generation;
     uint8_t read_generation = read_status.generation;
@@ -148,7 +161,7 @@ static void clear_gatt_locked(void)
 static void reconcile_host_locked(void)
 {
     if ((active_state(connection.state) || connection.connection_handle != NO_CONNECTION) &&
-        lease_epoch != cerberus_s3_ble_host_epoch()) {
+        !cerberus_s3_ble_host_lease_valid(&central_lease)) {
         connection.state = CERBERUS_BLE_CONNECTION_ERROR;
         connection.connection_handle = NO_CONNECTION;
         connection.error_code = ESP_ERR_INVALID_STATE;
@@ -162,18 +175,23 @@ static esp_err_t ensure_mutex(void)
     return mutex ? ESP_OK : ESP_ERR_NO_MEM;
 }
 
-static void release_central(void)
+static void release_central(cerberus_s3_ble_host_lease_t lease)
 {
-    esp_err_t err = cerberus_s3_ble_host_release(CERBERUS_S3_BLE_OWNER_CENTRAL);
-    if (err != ESP_OK && cerberus_s3_ble_host_owner() == CERBERUS_S3_BLE_OWNER_CENTRAL)
+    esp_err_t err = cerberus_s3_ble_host_release(&lease);
+    if (err != ESP_OK && cerberus_s3_ble_host_lease_valid(&lease))
         ESP_LOGE(TAG, "central host release failed: %s", esp_err_to_name(err));
 }
 
-static void connection_failed(uint8_t generation, int reason)
+static void connection_failed(uint32_t ticket, int reason)
 {
     bool release = false;
+    cerberus_s3_ble_host_lease_t release_lease = {0};
     xSemaphoreTake(mutex, portMAX_DELAY);
     reconcile_host_locked();
+    if (!callback_current_locked(ticket, connection_ticket)) {
+        xSemaphoreGive(mutex); return;
+    }
+    uint8_t generation = connection.generation;
     if (connection.generation == generation &&
         connection.state == CERBERUS_BLE_CONNECTION_CONNECTING) {
         connection.state = CERBERUS_BLE_CONNECTION_ERROR;
@@ -181,22 +199,29 @@ static void connection_failed(uint8_t generation, int reason)
         connection.error_code = reason;
         clear_gatt_locked();
         release = true;
+        release_lease = central_lease;
     }
     xSemaphoreGive(mutex);
-    if (release) release_central();
+    if (release) release_central(release_lease);
 }
 
 static int gap_event(struct ble_gap_event *event, void *arg)
 {
-    uint8_t generation = (uint8_t)(uintptr_t)arg;
+    uint32_t ticket = (uint32_t)(uintptr_t)arg;
     bool release = false;
+    cerberus_s3_ble_host_lease_t release_lease = {0};
     bool terminate = false;
     bool start_sound = false;
-    uint8_t sound_generation = 0U;
+    uint32_t sound_event_ticket = 0U;
     uint16_t handle = NO_CONNECTION;
     xSemaphoreTake(mutex, portMAX_DELAY);
     reconcile_host_locked();
-    if (connection.generation != generation || lease_epoch != cerberus_s3_ble_host_epoch()) {
+    if (!callback_current_locked(ticket, connection_ticket)) {
+        xSemaphoreGive(mutex); return 0;
+    }
+    uint8_t generation = connection.generation;
+    cerberus_s3_ble_host_lease_t lease = central_lease;
+    if (connection.generation != generation || central_lease.epoch != cerberus_s3_ble_host_epoch()) {
         xSemaphoreGive(mutex);
         return 0;
     }
@@ -215,9 +240,9 @@ static int gap_event(struct ble_gap_event *event, void *arg)
                     if (sound_status.state == CERBERUS_S3_BLE_SOUND_CONNECTING &&
                         sound_connection_generation == connection.generation) {
                         sound_state_locked(CERBERUS_S3_BLE_SOUND_DISCOVERING_SERVICE);
-                        sound_generation = sound_status.generation;
+                        sound_event_ticket = sound_ticket;
                         ble_npl_event_set_arg(&sound_service_event,
-                            (void *)(uintptr_t)sound_generation);
+                            (void *)(uintptr_t)sound_event_ticket);
                         start_sound = true;
                     }
                 }
@@ -229,6 +254,7 @@ static int gap_event(struct ble_gap_event *event, void *arg)
                     ? 0 : event->connect.status;
                 clear_gatt_locked();
                 release = true;
+                release_lease = central_lease;
             }
         }
         break;
@@ -242,6 +268,7 @@ static int gap_event(struct ble_gap_event *event, void *arg)
             connection.error_code = requested ? 0 : event->disconnect.reason;
             clear_gatt_locked();
             release = true;
+            release_lease = central_lease;
         }
         break;
     case BLE_GAP_EVENT_TERM_FAILURE:
@@ -270,12 +297,13 @@ static int gap_event(struct ble_gap_event *event, void *arg)
         break;
     }
     xSemaphoreGive(mutex);
-    if (terminate) {
+    if (terminate && cerberus_s3_ble_host_lease_valid(&lease)) {
         int rc = ble_gap_terminate(handle, BLE_ERR_REM_USER_CONN_TERM);
         if (rc != 0) {
             xSemaphoreTake(mutex, portMAX_DELAY);
-            if (connection.generation == generation &&
-                lease_epoch == cerberus_s3_ble_host_epoch() &&
+            if (callback_current_locked(ticket, connection_ticket) &&
+                connection.generation == generation &&
+                cerberus_s3_ble_host_lease_valid(&lease) &&
                 connection.state == CERBERUS_BLE_CONNECTION_DISCONNECTING &&
                 connection.connection_handle == handle)
                 connection.error_code = rc;
@@ -283,7 +311,7 @@ static int gap_event(struct ble_gap_event *event, void *arg)
             ESP_LOGW(TAG, "termination after connect: %d", rc);
         }
     }
-    if (release) release_central();
+    if (release) release_central(release_lease);
     if (start_sound) ble_npl_eventq_put(nimble_port_get_dflt_eventq(),
         &sound_service_event);
     return 0;
@@ -291,10 +319,15 @@ static int gap_event(struct ble_gap_event *event, void *arg)
 
 static void start_connect(struct ble_npl_event *event)
 {
-    uint8_t generation = (uint8_t)(uintptr_t)ble_npl_event_get_arg(event);
+    uint32_t ticket = (uint32_t)(uintptr_t)ble_npl_event_get_arg(event);
     ble_addr_t peer = {0};
     xSemaphoreTake(mutex, portMAX_DELAY);
     reconcile_host_locked();
+    if (!callback_current_locked(ticket, connection_ticket)) {
+        xSemaphoreGive(mutex); return;
+    }
+    uint8_t generation = connection.generation;
+    cerberus_s3_ble_host_lease_t lease = central_lease;
     bool current = connection.state == CERBERUS_BLE_CONNECTION_CONNECTING &&
         connection.generation == generation;
     if (current) {
@@ -302,40 +335,51 @@ static void start_connect(struct ble_npl_event *event)
         memcpy(peer.val, connection.address, sizeof(peer.val));
     }
     xSemaphoreGive(mutex);
+    if (!cerberus_s3_ble_host_lease_valid(&lease)) return;
     if (!current) return;
     uint8_t own_type = 0;
     int rc = ble_hs_id_infer_auto(0, &own_type);
+    if (rc == 0 && !cerberus_s3_ble_host_lease_valid(&lease)) rc = ESP_ERR_INVALID_STATE;
     if (rc == 0) rc = ble_gap_connect(own_type, &peer, CONNECT_TIMEOUT_MS, NULL,
-        gap_event, (void *)(uintptr_t)generation);
-    if (rc != 0) connection_failed(generation, rc);
+        gap_event, (void *)(uintptr_t)ticket);
+    if (rc != 0) connection_failed(ticket, rc);
 }
 
 static void start_disconnect(struct ble_npl_event *event)
 {
-    uint8_t generation = (uint8_t)(uintptr_t)ble_npl_event_get_arg(event);
+    uint32_t ticket = (uint32_t)(uintptr_t)ble_npl_event_get_arg(event);
     xSemaphoreTake(mutex, portMAX_DELAY);
     reconcile_host_locked();
+    if (!callback_current_locked(ticket, connection_ticket)) {
+        xSemaphoreGive(mutex); return;
+    }
+    uint8_t generation = connection.generation;
+    cerberus_s3_ble_host_lease_t lease = central_lease;
     bool current = connection.state == CERBERUS_BLE_CONNECTION_DISCONNECTING &&
         connection.generation == generation;
     uint16_t handle = connection.connection_handle;
     xSemaphoreGive(mutex);
+    if (!cerberus_s3_ble_host_lease_valid(&lease)) return;
     if (!current) return;
     int rc = handle == NO_CONNECTION ? ble_gap_conn_cancel() :
         ble_gap_terminate(handle, BLE_ERR_REM_USER_CONN_TERM);
     if (rc != 0 && handle == NO_CONNECTION && !ble_gap_conn_active()) {
         xSemaphoreTake(mutex, portMAX_DELAY);
-        bool release = connection.generation == generation &&
+        bool release = callback_current_locked(ticket, connection_ticket) &&
+            connection.generation == generation &&
             connection.state == CERBERUS_BLE_CONNECTION_DISCONNECTING;
+        cerberus_s3_ble_host_lease_t release_lease = central_lease;
         if (release) {
             connection.state = CERBERUS_BLE_CONNECTION_IDLE;
             connection.connection_handle = NO_CONNECTION;
             connection.error_code = 0;
         }
         xSemaphoreGive(mutex);
-        if (release) release_central();
+        if (release) release_central(release_lease);
     } else if (rc != 0) {
         xSemaphoreTake(mutex, portMAX_DELAY);
-        if (connection.generation == generation &&
+        if (callback_current_locked(ticket, connection_ticket) &&
+            connection.generation == generation &&
             connection.state == CERBERUS_BLE_CONNECTION_DISCONNECTING)
             connection.error_code = rc;
         xSemaphoreGive(mutex);
@@ -360,9 +404,13 @@ static void copy_uuid(uint8_t *length, uint8_t bytes[16], const ble_uuid_t *uuid
 static int discovered_service(uint16_t handle, const struct ble_gatt_error *error,
     const struct ble_gatt_svc *service, void *arg)
 {
-    uint8_t generation = (uint8_t)(uintptr_t)arg;
+    uint32_t ticket = (uint32_t)(uintptr_t)arg;
     xSemaphoreTake(mutex, portMAX_DELAY);
     reconcile_host_locked();
+    if (!callback_current_locked(ticket, service_ticket)) {
+        xSemaphoreGive(mutex); return 0;
+    }
+    uint8_t generation = service_status.generation;
     bool current = connection.state == CERBERUS_BLE_CONNECTION_CONNECTED &&
         connection.connection_handle == handle &&
         service_status.state == CERBERUS_BLE_GATT_SERVICE_RUNNING &&
@@ -388,9 +436,13 @@ static int discovered_service(uint16_t handle, const struct ble_gatt_error *erro
 static int discovered_characteristic(uint16_t handle, const struct ble_gatt_error *error,
     const struct ble_gatt_chr *characteristic, void *arg)
 {
-    uint8_t generation = (uint8_t)(uintptr_t)arg;
+    uint32_t ticket = (uint32_t)(uintptr_t)arg;
     xSemaphoreTake(mutex, portMAX_DELAY);
     reconcile_host_locked();
+    if (!callback_current_locked(ticket, characteristic_ticket)) {
+        xSemaphoreGive(mutex); return 0;
+    }
+    uint8_t generation = characteristic_status.generation;
     bool current = connection.state == CERBERUS_BLE_CONNECTION_CONNECTED &&
         connection.connection_handle == handle &&
         characteristic_status.state == CERBERUS_BLE_GATT_CHARACTERISTIC_RUNNING &&
@@ -419,9 +471,13 @@ static int discovered_characteristic(uint16_t handle, const struct ble_gatt_erro
 static int read_characteristic(uint16_t handle, const struct ble_gatt_error *error,
     struct ble_gatt_attr *attribute, void *arg)
 {
-    uint8_t generation = (uint8_t)(uintptr_t)arg;
+    uint32_t ticket = (uint32_t)(uintptr_t)arg;
     xSemaphoreTake(mutex, portMAX_DELAY);
     reconcile_host_locked();
+    if (!callback_current_locked(ticket, read_ticket)) {
+        xSemaphoreGive(mutex); return 0;
+    }
+    uint8_t generation = read_status.generation;
     bool current = connection.state == CERBERUS_BLE_CONNECTION_CONNECTED &&
         connection.connection_handle == handle &&
         read_status.state == CERBERUS_BLE_GATT_READ_RUNNING &&
@@ -448,19 +504,26 @@ static int read_characteristic(uint16_t handle, const struct ble_gatt_error *err
 
 static void start_service(struct ble_npl_event *event)
 {
-    uint8_t generation = (uint8_t)(uintptr_t)ble_npl_event_get_arg(event);
+    uint32_t ticket = (uint32_t)(uintptr_t)ble_npl_event_get_arg(event);
     xSemaphoreTake(mutex, portMAX_DELAY);
     reconcile_host_locked();
+    if (!callback_current_locked(ticket, service_ticket)) {
+        xSemaphoreGive(mutex); return;
+    }
+    uint8_t generation = service_status.generation;
+    cerberus_s3_ble_host_lease_t lease = central_lease;
     bool current = connection.state == CERBERUS_BLE_CONNECTION_CONNECTED &&
         service_status.state == CERBERUS_BLE_GATT_SERVICE_RUNNING &&
         service_status.generation == generation;
     uint16_t handle = connection.connection_handle;
     xSemaphoreGive(mutex);
+    if (!cerberus_s3_ble_host_lease_valid(&lease)) return;
     if (!current) return;
-    int rc = ble_gattc_disc_all_svcs(handle, discovered_service, (void *)(uintptr_t)generation);
+    int rc = ble_gattc_disc_all_svcs(handle, discovered_service, (void *)(uintptr_t)ticket);
     if (rc != 0) {
         xSemaphoreTake(mutex, portMAX_DELAY);
-        if (service_status.state == CERBERUS_BLE_GATT_SERVICE_RUNNING &&
+        if (callback_current_locked(ticket, service_ticket) &&
+            service_status.state == CERBERUS_BLE_GATT_SERVICE_RUNNING &&
             service_status.generation == generation) {
             service_status.state = CERBERUS_BLE_GATT_SERVICE_ERROR;
             service_status.error_code = rc;
@@ -471,21 +534,28 @@ static void start_service(struct ble_npl_event *event)
 
 static void start_characteristic(struct ble_npl_event *event)
 {
-    uint8_t generation = (uint8_t)(uintptr_t)ble_npl_event_get_arg(event);
+    uint32_t ticket = (uint32_t)(uintptr_t)ble_npl_event_get_arg(event);
     xSemaphoreTake(mutex, portMAX_DELAY);
     reconcile_host_locked();
+    if (!callback_current_locked(ticket, characteristic_ticket)) {
+        xSemaphoreGive(mutex); return;
+    }
+    uint8_t generation = characteristic_status.generation;
+    cerberus_s3_ble_host_lease_t lease = central_lease;
     bool current = connection.state == CERBERUS_BLE_CONNECTION_CONNECTED &&
         characteristic_status.state == CERBERUS_BLE_GATT_CHARACTERISTIC_RUNNING &&
         characteristic_status.generation == generation;
     uint16_t handle = connection.connection_handle;
     uint16_t first = characteristic_status.start_handle, last = characteristic_status.end_handle;
     xSemaphoreGive(mutex);
+    if (!cerberus_s3_ble_host_lease_valid(&lease)) return;
     if (!current) return;
     int rc = ble_gattc_disc_all_chrs(handle, first, last,
-        discovered_characteristic, (void *)(uintptr_t)generation);
+        discovered_characteristic, (void *)(uintptr_t)ticket);
     if (rc != 0) {
         xSemaphoreTake(mutex, portMAX_DELAY);
-        if (characteristic_status.state == CERBERUS_BLE_GATT_CHARACTERISTIC_RUNNING &&
+        if (callback_current_locked(ticket, characteristic_ticket) &&
+            characteristic_status.state == CERBERUS_BLE_GATT_CHARACTERISTIC_RUNNING &&
             characteristic_status.generation == generation) {
             characteristic_status.state = CERBERUS_BLE_GATT_CHARACTERISTIC_ERROR;
             characteristic_status.error_code = rc;
@@ -496,20 +566,27 @@ static void start_characteristic(struct ble_npl_event *event)
 
 static void start_read(struct ble_npl_event *event)
 {
-    uint8_t generation = (uint8_t)(uintptr_t)ble_npl_event_get_arg(event);
+    uint32_t ticket = (uint32_t)(uintptr_t)ble_npl_event_get_arg(event);
     xSemaphoreTake(mutex, portMAX_DELAY);
     reconcile_host_locked();
+    if (!callback_current_locked(ticket, read_ticket)) {
+        xSemaphoreGive(mutex); return;
+    }
+    uint8_t generation = read_status.generation;
+    cerberus_s3_ble_host_lease_t lease = central_lease;
     bool current = connection.state == CERBERUS_BLE_CONNECTION_CONNECTED &&
         read_status.state == CERBERUS_BLE_GATT_READ_RUNNING &&
         read_status.generation == generation;
     uint16_t handle = connection.connection_handle, value_handle = read_status.value_handle;
     xSemaphoreGive(mutex);
+    if (!cerberus_s3_ble_host_lease_valid(&lease)) return;
     if (!current) return;
     int rc = ble_gattc_read(handle, value_handle, read_characteristic,
-        (void *)(uintptr_t)generation);
+        (void *)(uintptr_t)ticket);
     if (rc != 0) {
         xSemaphoreTake(mutex, portMAX_DELAY);
-        if (read_status.state == CERBERUS_BLE_GATT_READ_RUNNING &&
+        if (callback_current_locked(ticket, read_ticket) &&
+            read_status.state == CERBERUS_BLE_GATT_READ_RUNNING &&
             read_status.generation == generation) {
             read_status.state = CERBERUS_BLE_GATT_READ_ERROR;
             read_status.error_code = rc;
@@ -518,11 +595,15 @@ static void start_read(struct ble_npl_event *event)
     }
 }
 
-static void sound_fail(uint8_t generation, int error_code, int host_rc)
+static void sound_fail(uint32_t ticket, int error_code, int host_rc)
 {
     bool disconnect = false;
     xSemaphoreTake(mutex, portMAX_DELAY);
     reconcile_host_locked();
+    if (!callback_current_locked(ticket, sound_ticket)) {
+        xSemaphoreGive(mutex); return;
+    }
+    uint8_t generation = sound_status.generation;
     if (sound_status.generation == generation && sound_active(sound_status.state) &&
         sound_status.state != CERBERUS_S3_BLE_SOUND_STOPPING) {
         sound_status.failed_stage = sound_status.state;
@@ -531,22 +612,27 @@ static void sound_fail(uint8_t generation, int error_code, int host_rc)
             host_rc ? ESP_FAIL : error_code);
         disconnect = true;
     }
+    cerberus_s3_ble_host_lease_t lease = central_lease;
     xSemaphoreGive(mutex);
     if (disconnect) {
         cerberus_ble_connection_status_payload_t ignored;
-        (void)cerberus_s3_ble_central_disconnect(&ignored);
+        (void)disconnect_lease(&ignored, &lease);
     }
 }
 
 static int sound_service_found(uint16_t handle, const struct ble_gatt_error *error,
     const struct ble_gatt_svc *service, void *arg)
 {
-    uint8_t generation = (uint8_t)(uintptr_t)arg;
+    uint32_t ticket = (uint32_t)(uintptr_t)arg;
     bool next = false;
     int failure = 0;
     int host_rc = 0;
     xSemaphoreTake(mutex, portMAX_DELAY);
     reconcile_host_locked();
+    if (!callback_current_locked(ticket, sound_ticket)) {
+        xSemaphoreGive(mutex); return 0;
+    }
+    uint8_t generation = sound_status.generation;
     if (sound_current_locked(generation,
             CERBERUS_S3_BLE_SOUND_DISCOVERING_SERVICE, handle)) {
         if (!error) failure = ESP_ERR_INVALID_RESPONSE;
@@ -561,7 +647,7 @@ static int sound_service_found(uint16_t handle, const struct ble_gatt_error *err
             if (sound_service_start != 0U) {
                 sound_state_locked(CERBERUS_S3_BLE_SOUND_DISCOVERING_CHARACTERISTIC);
                 ble_npl_event_set_arg(&sound_characteristic_event,
-                    (void *)(uintptr_t)generation);
+                    (void *)(uintptr_t)ticket);
                 next = true;
             } else failure = ESP_ERR_NOT_FOUND;
         } else {
@@ -572,37 +658,47 @@ static int sound_service_found(uint16_t handle, const struct ble_gatt_error *err
     xSemaphoreGive(mutex);
     if (next) ble_npl_eventq_put(nimble_port_get_dflt_eventq(),
         &sound_characteristic_event);
-    if (failure) sound_fail(generation, failure, host_rc);
+    if (failure) sound_fail(ticket, failure, host_rc);
     return 0;
 }
 
 static void start_sound_service(struct ble_npl_event *event)
 {
-    uint8_t generation = (uint8_t)(uintptr_t)ble_npl_event_get_arg(event);
+    uint32_t ticket = (uint32_t)(uintptr_t)ble_npl_event_get_arg(event);
     uint16_t handle = NO_CONNECTION;
     xSemaphoreTake(mutex, portMAX_DELAY);
     reconcile_host_locked();
+    if (!callback_current_locked(ticket, sound_ticket)) {
+        xSemaphoreGive(mutex); return;
+    }
+    uint8_t generation = sound_status.generation;
+    cerberus_s3_ble_host_lease_t lease = central_lease;
     if (sound_current_locked(generation,
             CERBERUS_S3_BLE_SOUND_DISCOVERING_SERVICE,
             connection.connection_handle)) handle = connection.connection_handle;
     xSemaphoreGive(mutex);
+    if (!cerberus_s3_ble_host_lease_valid(&lease)) return;
     if (handle == NO_CONNECTION) return;
     int rc = ble_gattc_disc_svc_by_uuid(handle, &sound_service_uuid.u,
-        sound_service_found, (void *)(uintptr_t)generation);
-    if (rc != 0) sound_fail(generation, ESP_FAIL, rc);
+        sound_service_found, (void *)(uintptr_t)ticket);
+    if (rc != 0) sound_fail(ticket, ESP_FAIL, rc);
 }
 
 static int sound_characteristic_found(uint16_t handle,
     const struct ble_gatt_error *error, const struct ble_gatt_chr *characteristic,
     void *arg)
 {
-    uint8_t generation = (uint8_t)(uintptr_t)arg;
+    uint32_t ticket = (uint32_t)(uintptr_t)arg;
     bool next = false;
     struct ble_npl_event *next_event = NULL;
     int failure = 0;
     int host_rc = 0;
     xSemaphoreTake(mutex, portMAX_DELAY);
     reconcile_host_locked();
+    if (!callback_current_locked(ticket, sound_ticket)) {
+        xSemaphoreGive(mutex); return 0;
+    }
+    uint8_t generation = sound_status.generation;
     if (sound_current_locked(generation,
             CERBERUS_S3_BLE_SOUND_DISCOVERING_CHARACTERISTIC, handle)) {
         if (!error) failure = ESP_ERR_INVALID_RESPONSE;
@@ -639,7 +735,7 @@ static int sound_characteristic_found(uint16_t handle,
                 next = true;
             }
             if (next) ble_npl_event_set_arg(next_event,
-                (void *)(uintptr_t)generation);
+                (void *)(uintptr_t)ticket);
         } else {
             host_rc = error->status;
             failure = host_rc ? ESP_FAIL : ESP_ERR_INVALID_RESPONSE;
@@ -647,16 +743,21 @@ static int sound_characteristic_found(uint16_t handle,
     }
     xSemaphoreGive(mutex);
     if (next) ble_npl_eventq_put(nimble_port_get_dflt_eventq(), next_event);
-    if (failure) sound_fail(generation, failure, host_rc);
+    if (failure) sound_fail(ticket, failure, host_rc);
     return 0;
 }
 
 static void start_sound_characteristic(struct ble_npl_event *event)
 {
-    uint8_t generation = (uint8_t)(uintptr_t)ble_npl_event_get_arg(event);
+    uint32_t ticket = (uint32_t)(uintptr_t)ble_npl_event_get_arg(event);
     uint16_t handle = NO_CONNECTION, first = 0U, last = 0U;
     xSemaphoreTake(mutex, portMAX_DELAY);
     reconcile_host_locked();
+    if (!callback_current_locked(ticket, sound_ticket)) {
+        xSemaphoreGive(mutex); return;
+    }
+    uint8_t generation = sound_status.generation;
+    cerberus_s3_ble_host_lease_t lease = central_lease;
     if (sound_current_locked(generation,
             CERBERUS_S3_BLE_SOUND_DISCOVERING_CHARACTERISTIC,
             connection.connection_handle)) {
@@ -665,22 +766,27 @@ static void start_sound_characteristic(struct ble_npl_event *event)
         last = sound_service_end;
     }
     xSemaphoreGive(mutex);
+    if (!cerberus_s3_ble_host_lease_valid(&lease)) return;
     if (handle == NO_CONNECTION) return;
     int rc = ble_gattc_disc_all_chrs(handle, first, last,
-        sound_characteristic_found, (void *)(uintptr_t)generation);
-    if (rc != 0) sound_fail(generation, ESP_FAIL, rc);
+        sound_characteristic_found, (void *)(uintptr_t)ticket);
+    if (rc != 0) sound_fail(ticket, ESP_FAIL, rc);
 }
 
 static int sound_descriptor_found(uint16_t handle,
     const struct ble_gatt_error *error, uint16_t chr_val_handle,
     const struct ble_gatt_dsc *descriptor, void *arg)
 {
-    uint8_t generation = (uint8_t)(uintptr_t)arg;
+    uint32_t ticket = (uint32_t)(uintptr_t)arg;
     bool next = false;
     int failure = 0;
     int host_rc = 0;
     xSemaphoreTake(mutex, portMAX_DELAY);
     reconcile_host_locked();
+    if (!callback_current_locked(ticket, sound_ticket)) {
+        xSemaphoreGive(mutex); return 0;
+    }
+    uint8_t generation = sound_status.generation;
     if (sound_current_locked(generation,
             CERBERUS_S3_BLE_SOUND_DISCOVERING_CCCD, handle)) {
         if (!error) failure = ESP_ERR_INVALID_RESPONSE;
@@ -694,7 +800,7 @@ static int sound_descriptor_found(uint16_t handle,
             if (sound_cccd_handle != 0U) {
                 sound_state_locked(CERBERUS_S3_BLE_SOUND_SUBSCRIBING);
                 ble_npl_event_set_arg(&sound_subscribe_event,
-                    (void *)(uintptr_t)generation);
+                    (void *)(uintptr_t)ticket);
                 next = true;
             } else failure = ESP_ERR_NOT_FOUND;
         } else {
@@ -705,16 +811,21 @@ static int sound_descriptor_found(uint16_t handle,
     xSemaphoreGive(mutex);
     if (next) ble_npl_eventq_put(nimble_port_get_dflt_eventq(),
         &sound_subscribe_event);
-    if (failure) sound_fail(generation, failure, host_rc);
+    if (failure) sound_fail(ticket, failure, host_rc);
     return 0;
 }
 
 static void start_sound_descriptor(struct ble_npl_event *event)
 {
-    uint8_t generation = (uint8_t)(uintptr_t)ble_npl_event_get_arg(event);
+    uint32_t ticket = (uint32_t)(uintptr_t)ble_npl_event_get_arg(event);
     uint16_t handle = NO_CONNECTION, first = 0U, last = 0U;
     xSemaphoreTake(mutex, portMAX_DELAY);
     reconcile_host_locked();
+    if (!callback_current_locked(ticket, sound_ticket)) {
+        xSemaphoreGive(mutex); return;
+    }
+    uint8_t generation = sound_status.generation;
+    cerberus_s3_ble_host_lease_t lease = central_lease;
     if (sound_current_locked(generation,
             CERBERUS_S3_BLE_SOUND_DISCOVERING_CCCD,
             connection.connection_handle)) {
@@ -724,11 +835,12 @@ static void start_sound_descriptor(struct ble_npl_event *event)
             sound_next_definition - 1U : sound_service_end;
     }
     xSemaphoreGive(mutex);
+    if (!cerberus_s3_ble_host_lease_valid(&lease)) return;
     if (handle == NO_CONNECTION) return;
-    if (last <= first) { sound_fail(generation, ESP_ERR_NOT_FOUND, 0); return; }
+    if (last <= first) { sound_fail(ticket, ESP_ERR_NOT_FOUND, 0); return; }
     int rc = ble_gattc_disc_all_dscs(handle, first, last,
-        sound_descriptor_found, (void *)(uintptr_t)generation);
-    if (rc != 0) sound_fail(generation, ESP_FAIL, rc);
+        sound_descriptor_found, (void *)(uintptr_t)ticket);
+    if (rc != 0) sound_fail(ticket, ESP_FAIL, rc);
 }
 
 static int sound_subscribed(uint16_t handle,
@@ -736,18 +848,22 @@ static int sound_subscribed(uint16_t handle,
     void *arg)
 {
     (void)attribute;
-    uint8_t generation = (uint8_t)(uintptr_t)arg;
+    uint32_t ticket = (uint32_t)(uintptr_t)arg;
     bool next = false;
     int failure = 0;
     int host_rc = 0;
     xSemaphoreTake(mutex, portMAX_DELAY);
     reconcile_host_locked();
+    if (!callback_current_locked(ticket, sound_ticket)) {
+        xSemaphoreGive(mutex); return 0;
+    }
+    uint8_t generation = sound_status.generation;
     if (sound_current_locked(generation,
             CERBERUS_S3_BLE_SOUND_SUBSCRIBING, handle)) {
         if (error && error->status == 0) {
             sound_state_locked(CERBERUS_S3_BLE_SOUND_WRITING);
             ble_npl_event_set_arg(&sound_write_event,
-                (void *)(uintptr_t)generation);
+                (void *)(uintptr_t)ticket);
             next = true;
         } else {
             host_rc = error ? error->status : 0;
@@ -756,39 +872,50 @@ static int sound_subscribed(uint16_t handle,
     }
     xSemaphoreGive(mutex);
     if (next) ble_npl_eventq_put(nimble_port_get_dflt_eventq(), &sound_write_event);
-    if (failure) sound_fail(generation, failure, host_rc);
+    if (failure) sound_fail(ticket, failure, host_rc);
     return 0;
 }
 
 static void start_sound_subscribe(struct ble_npl_event *event)
 {
-    uint8_t generation = (uint8_t)(uintptr_t)ble_npl_event_get_arg(event);
+    uint32_t ticket = (uint32_t)(uintptr_t)ble_npl_event_get_arg(event);
     int rc = 0;
     uint8_t subscription[2] = {0U, 0U};
     xSemaphoreTake(mutex, portMAX_DELAY);
     reconcile_host_locked();
+    if (!callback_current_locked(ticket, sound_ticket)) {
+        xSemaphoreGive(mutex); return;
+    }
+    uint8_t generation = sound_status.generation;
+    cerberus_s3_ble_host_lease_t lease = central_lease;
     if (sound_current_locked(generation,
             CERBERUS_S3_BLE_SOUND_SUBSCRIBING,
             connection.connection_handle)) {
         subscription[0] = sound_subscribe_value;
         rc = ble_gattc_write_flat(connection.connection_handle, sound_cccd_handle,
             subscription, sizeof(subscription), sound_subscribed,
-            (void *)(uintptr_t)generation);
+            (void *)(uintptr_t)ticket);
     }
     xSemaphoreGive(mutex);
-    if (rc != 0) sound_fail(generation, ESP_FAIL, rc);
+    if (!cerberus_s3_ble_host_lease_valid(&lease)) return;
+    if (rc != 0) sound_fail(ticket, ESP_FAIL, rc);
 }
 
 static int sound_written(uint16_t handle, const struct ble_gatt_error *error,
     struct ble_gatt_attr *attribute, void *arg)
 {
     (void)attribute;
-    uint8_t generation = (uint8_t)(uintptr_t)arg;
+    uint32_t ticket = (uint32_t)(uintptr_t)arg;
     bool disconnect = false;
     int failure = 0;
     int host_rc = 0;
     xSemaphoreTake(mutex, portMAX_DELAY);
     reconcile_host_locked();
+    if (!callback_current_locked(ticket, sound_ticket)) {
+        xSemaphoreGive(mutex); return 0;
+    }
+    uint8_t generation = sound_status.generation;
+    cerberus_s3_ble_host_lease_t lease = central_lease;
     if (sound_current_locked(generation, CERBERUS_S3_BLE_SOUND_WRITING, handle)) {
         if (error && error->status == 0) {
             sound_status.write_accepted = true;
@@ -802,22 +929,26 @@ static int sound_written(uint16_t handle, const struct ble_gatt_error *error,
         }
     }
     xSemaphoreGive(mutex);
-    if (failure) sound_fail(generation, failure, host_rc);
+    if (failure) sound_fail(ticket, failure, host_rc);
     if (disconnect) {
         cerberus_ble_connection_status_payload_t ignored;
-        (void)cerberus_s3_ble_central_disconnect(&ignored);
+        (void)disconnect_lease(&ignored, &lease);
     }
     return 0;
 }
 
 static void start_sound_write(struct ble_npl_event *event)
 {
-    uint8_t generation = (uint8_t)(uintptr_t)ble_npl_event_get_arg(event);
+    uint32_t ticket = (uint32_t)(uintptr_t)ble_npl_event_get_arg(event);
     int rc = 0;
     uint8_t command[3] = {0U, 0U, 0U};
     uint16_t command_length = 0U;
     xSemaphoreTake(mutex, portMAX_DELAY);
     reconcile_host_locked();
+    if (!callback_current_locked(ticket, sound_ticket)) {
+        xSemaphoreGive(mutex); return;
+    }
+    uint8_t generation = sound_status.generation;
     if (sound_current_locked(generation, CERBERUS_S3_BLE_SOUND_WRITING,
             connection.connection_handle)) {
         switch (sound_status.profile) {
@@ -834,13 +965,13 @@ static void start_sound_write(struct ble_npl_event *event)
         if (command_length != 0U) {
             rc = ble_gattc_write_flat(connection.connection_handle,
                 sound_value_handle, command, command_length, sound_written,
-                (void *)(uintptr_t)generation);
+                (void *)(uintptr_t)ticket);
             sound_command_submitted = rc == 0;
         }
     }
     xSemaphoreGive(mutex);
-    if (command_length == 0U) { sound_fail(generation, ESP_ERR_INVALID_ARG, 0); return; }
-    if (rc != 0) sound_fail(generation, ESP_FAIL, rc);
+    if (command_length == 0U) { sound_fail(ticket, ESP_ERR_INVALID_ARG, 0); return; }
+    if (rc != 0) sound_fail(ticket, ESP_FAIL, rc);
 }
 
 static void init_events(void)
@@ -862,16 +993,9 @@ static void init_events(void)
 static esp_err_t wait_for_scanner(void)
 {
     uint32_t began = (uint32_t)(esp_timer_get_time() / 1000LL);
-    bool stop_sent = false;
     while (cerberus_s3_ble_host_owner() == CERBERUS_S3_BLE_OWNER_SCANNER) {
-        cerberus_ble_scan_status_payload_t scan = {0};
-        esp_err_t err = cerberus_s3_ble_scanner_get_status(&scan);
-        if (err != ESP_OK) return err;
-        if (!stop_sent && scan.state == CERBERUS_BLE_SCAN_RUNNING) {
-            err = cerberus_s3_ble_scanner_stop(&scan);
-            if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) return err;
-            stop_sent = true;
-        }
+        /* The calling UI drains its own scan before navigation. A foreign
+         * scanner label grants no authority to send its Stop command. */
         if ((uint32_t)(esp_timer_get_time() / 1000LL) - began >= 1000U)
             return ESP_ERR_TIMEOUT;
         vTaskDelay(pdMS_TO_TICKS(10));
@@ -922,20 +1046,24 @@ static esp_err_t connect_internal(const cerberus_c5_ble_result_t *peer,
     if (err != ESP_OK) return err;
     if (heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) <
         (cerberus_s3_ble_host_initialized() ? 32768U : 98304U)) return ESP_ERR_NO_MEM;
-    err = cerberus_s3_ble_host_claim(CERBERUS_S3_BLE_OWNER_CENTRAL);
+    cerberus_s3_ble_host_lease_t lease = {0};
+    err = cerberus_s3_ble_host_claim(CERBERUS_S3_BLE_OWNER_CENTRAL, &lease);
     if (err != ESP_OK) return err;
     if (cerberus_s3_wifi_owner() == CERBERUS_S3_WIFI_RECEIVER) {
-        release_central();
+        release_central(lease);
         return ESP_ERR_INVALID_STATE;
     }
     init_events();
     xSemaphoreTake(mutex, portMAX_DELAY);
-    if (active_state(connection.state) || connection.connection_handle != NO_CONNECTION) {
+    if (active_state(connection.state) || connection.connection_handle != NO_CONNECTION ||
+        callback_sequence == UINT32_MAX || !cerberus_s3_ble_host_lease_valid(&lease)) {
         xSemaphoreGive(mutex);
-        release_central();
+        release_central(lease);
         return ESP_ERR_INVALID_STATE;
     }
-    lease_epoch = cerberus_s3_ble_host_epoch();
+    central_lease = lease;
+    connection_ticket = ++callback_sequence;
+    sound_ticket = 0U;
     ++connection.generation;
     connection.state = CERBERUS_BLE_CONNECTION_CONNECTING;
     connection.address_type = peer->address_type;
@@ -944,6 +1072,7 @@ static esp_err_t connect_internal(const cerberus_c5_ble_result_t *peer,
     connection.error_code = 0;
     clear_gatt_locked();
     if (sound_profile != CERBERUS_FINDMY_PROFILE_NONE) {
+        sound_ticket = connection_ticket;
         uint8_t generation = sound_status.generation + 1U;
         sound_status = (cerberus_s3_ble_sound_status_t){
             .state = CERBERUS_S3_BLE_SOUND_CONNECTING,
@@ -964,7 +1093,7 @@ static esp_err_t connect_internal(const cerberus_c5_ble_result_t *peer,
         if (sound_result) *sound_result = sound_status;
     }
     *status = connection;
-    ble_npl_event_set_arg(&connect_event, (void *)(uintptr_t)connection.generation);
+    ble_npl_event_set_arg(&connect_event, (void *)(uintptr_t)connection_ticket);
     xSemaphoreGive(mutex);
     ble_npl_eventq_put(nimble_port_get_dflt_eventq(), &connect_event);
     return ESP_OK;
@@ -976,25 +1105,33 @@ esp_err_t cerberus_s3_ble_central_connect(const cerberus_c5_ble_result_t *peer,
     return connect_internal(peer, status, CERBERUS_FINDMY_PROFILE_NONE, NULL);
 }
 
-esp_err_t cerberus_s3_ble_central_disconnect(cerberus_ble_connection_status_payload_t *status)
+static esp_err_t disconnect_lease(cerberus_ble_connection_status_payload_t *status,
+    const cerberus_s3_ble_host_lease_t *expected)
 {
     if (!status) return ESP_ERR_INVALID_ARG;
     if (!mutex) return ESP_ERR_INVALID_STATE;
     xSemaphoreTake(mutex, portMAX_DELAY);
     reconcile_host_locked();
-    bool valid = active_state(connection.state) ||
+    bool bound = !expected || (expected->token == central_lease.token &&
+        cerberus_s3_ble_host_lease_valid(expected));
+    bool valid = bound && (active_state(connection.state) ||
         (connection.state == CERBERUS_BLE_CONNECTION_ERROR &&
-         connection.connection_handle != NO_CONNECTION);
+         connection.connection_handle != NO_CONNECTION));
     if (valid) {
         connection.state = CERBERUS_BLE_CONNECTION_DISCONNECTING;
         connection.error_code = 0;
         clear_gatt_locked();
-        ble_npl_event_set_arg(&disconnect_event, (void *)(uintptr_t)connection.generation);
+        ble_npl_event_set_arg(&disconnect_event, (void *)(uintptr_t)connection_ticket);
     }
     *status = connection;
     xSemaphoreGive(mutex);
     if (valid) ble_npl_eventq_put(nimble_port_get_dflt_eventq(), &disconnect_event);
     return valid ? ESP_OK : ESP_ERR_INVALID_STATE;
+}
+
+esp_err_t cerberus_s3_ble_central_disconnect(cerberus_ble_connection_status_payload_t *status)
+{
+    return disconnect_lease(status, NULL);
 }
 
 esp_err_t cerberus_s3_ble_central_get_status(cerberus_ble_connection_status_payload_t *status)
@@ -1033,7 +1170,8 @@ esp_err_t cerberus_s3_ble_central_get_diagnostics(
             snapshot.characteristic_state = characteristic_status.state;
             snapshot.read_state = read_status.state;
             if ((active_state(snapshot.state) || snapshot.handle_present) &&
-                lease_epoch != observed_epoch) {
+                (central_lease.epoch != observed_epoch ||
+                 !cerberus_s3_ble_host_lease_valid(&central_lease))) {
                 snapshot.state = CERBERUS_BLE_CONNECTION_ERROR;
                 snapshot.handle_present = false;
                 snapshot.error_code = ESP_ERR_INVALID_STATE;
@@ -1058,7 +1196,8 @@ esp_err_t cerberus_s3_ble_central_start_service_discovery(
     if (!status || !mutex) return ESP_ERR_INVALID_ARG;
     xSemaphoreTake(mutex, portMAX_DELAY);
     reconcile_host_locked();
-    bool valid = connection.state == CERBERUS_BLE_CONNECTION_CONNECTED &&
+    bool valid = callback_sequence != UINT32_MAX &&
+        connection.state == CERBERUS_BLE_CONNECTION_CONNECTED &&
         !sound_active(sound_status.state) &&
         service_status.state != CERBERUS_BLE_GATT_SERVICE_RUNNING &&
         characteristic_status.state != CERBERUS_BLE_GATT_CHARACTERISTIC_RUNNING &&
@@ -1066,9 +1205,10 @@ esp_err_t cerberus_s3_ble_central_start_service_discovery(
     if (valid) {
         uint8_t generation = service_status.generation + 1U;
         clear_gatt_locked();
+        service_ticket = ++callback_sequence;
         service_status.generation = generation;
         service_status.state = CERBERUS_BLE_GATT_SERVICE_RUNNING;
-        ble_npl_event_set_arg(&service_event, (void *)(uintptr_t)generation);
+        ble_npl_event_set_arg(&service_event, (void *)(uintptr_t)service_ticket);
     }
     *status = service_status;
     xSemaphoreGive(mutex);
@@ -1115,10 +1255,11 @@ esp_err_t cerberus_s3_ble_central_start_characteristic_discovery(
             if (services[i].start_handle == service->start_handle &&
                 services[i].end_handle == service->end_handle) { known = true; break; }
     }
-    bool valid = known && !sound_active(sound_status.state) &&
+    bool valid = callback_sequence != UINT32_MAX && known && !sound_active(sound_status.state) &&
         characteristic_status.state != CERBERUS_BLE_GATT_CHARACTERISTIC_RUNNING &&
         read_status.state != CERBERUS_BLE_GATT_READ_RUNNING;
     if (valid) {
+        characteristic_ticket = ++callback_sequence;
         uint8_t generation = characteristic_status.generation + 1U;
         memset(characteristics, 0, sizeof(characteristics));
         memset(read_value, 0, sizeof(read_value));
@@ -1131,7 +1272,7 @@ esp_err_t cerberus_s3_ble_central_start_characteristic_discovery(
         read_status = (cerberus_ble_gatt_read_status_payload_t){
             .state = CERBERUS_BLE_GATT_READ_IDLE,
             .connection_generation = connection.generation};
-        ble_npl_event_set_arg(&characteristic_event, (void *)(uintptr_t)generation);
+        ble_npl_event_set_arg(&characteristic_event, (void *)(uintptr_t)characteristic_ticket);
     }
     *status = characteristic_status;
     xSemaphoreGive(mutex);
@@ -1179,9 +1320,10 @@ esp_err_t cerberus_s3_ble_central_start_read(
             if (characteristics[i].value_handle == characteristic->value_handle &&
                 (characteristics[i].properties & BLE_GATT_CHR_PROP_READ)) { known = true; break; }
     }
-    bool valid = known && !sound_active(sound_status.state) &&
+    bool valid = callback_sequence != UINT32_MAX && known && !sound_active(sound_status.state) &&
         read_status.state != CERBERUS_BLE_GATT_READ_RUNNING;
     if (valid) {
+        read_ticket = ++callback_sequence;
         uint8_t generation = read_status.generation + 1U;
         memset(read_value, 0, sizeof(read_value));
         read_status = (cerberus_ble_gatt_read_status_payload_t){
@@ -1189,7 +1331,7 @@ esp_err_t cerberus_s3_ble_central_start_read(
             .generation = generation,
             .connection_generation = connection.generation,
             .value_handle = characteristic->value_handle};
-        ble_npl_event_set_arg(&read_event, (void *)(uintptr_t)generation);
+        ble_npl_event_set_arg(&read_event, (void *)(uintptr_t)read_ticket);
     }
     *status = read_status;
     xSemaphoreGive(mutex);
@@ -1248,10 +1390,11 @@ esp_err_t cerberus_s3_ble_central_sound_stop(cerberus_s3_ble_sound_status_t *sta
     }
     had_job = sound_status.state != CERBERUS_S3_BLE_SOUND_IDLE;
     *status = sound_status;
+    cerberus_s3_ble_host_lease_t lease = central_lease;
     xSemaphoreGive(mutex);
     if (disconnect) {
         cerberus_ble_connection_status_payload_t ignored;
-        (void)cerberus_s3_ble_central_disconnect(&ignored);
+        (void)disconnect_lease(&ignored, &lease);
     }
     return had_job ? ESP_OK : ESP_ERR_INVALID_STATE;
 }
@@ -1284,16 +1427,17 @@ esp_err_t cerberus_s3_ble_central_sound_get_status(cerberus_s3_ble_sound_status_
         disconnect = true;
     } else if (sound_status.state == CERBERUS_S3_BLE_SOUND_STOPPING &&
                elapsed >= SOUND_DISCONNECT_TIMEOUT_MS &&
-               cerberus_s3_ble_host_owner() == CERBERUS_S3_BLE_OWNER_CENTRAL) {
+               cerberus_s3_ble_host_lease_valid(&central_lease)) {
         sound_status.error_code = ESP_ERR_TIMEOUT;
         sound_stage_started_ms = sound_now_ms();
         disconnect = true; /* Retry a termination request; never claim release. */
     }
     *status = sound_status;
+    cerberus_s3_ble_host_lease_t lease = central_lease;
     xSemaphoreGive(mutex);
     if (disconnect) {
         cerberus_ble_connection_status_payload_t ignored;
-        (void)cerberus_s3_ble_central_disconnect(&ignored);
+        (void)disconnect_lease(&ignored, &lease);
     }
     return ESP_OK;
 }

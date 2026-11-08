@@ -144,6 +144,12 @@ static bool has_age_control(const sentinel_scan_view_t *view)
         view->age_label != NULL && view->age_label[0] != '\0';
 }
 
+static bool has_sort_control(const sentinel_scan_view_t *view)
+{
+    return (view->kind == SENTINEL_VIEW_WIFI || view->kind == SENTINEL_VIEW_BLE) &&
+        !view->selection_mode && view->sort_label && view->sort_label[0];
+}
+
 static esp_err_t summary(const sentinel_scan_view_t *view)
 {
     uint16_t color = accent(view);
@@ -160,7 +166,7 @@ static esp_err_t summary(const sentinel_scan_view_t *view)
         TRY(cerberus_display_fill_rect(224, 50, 88, 22, PANEL));
         TRY(cerberus_display_fill_rect(224, 50, 2, 22, state_color));
         TRY(centered(228, 58, 80,
-            view->kind == SENTINEL_VIEW_BLE && view->sort_label && view->sort_label[0] ?
+            has_sort_control(view) ?
                 view->sort_label : state_label(view->state),
             state_color, PANEL, 1));
         uint16_t age_color = view->state == SENTINEL_VIEW_OFFLINE ? MUTED : color;
@@ -172,7 +178,7 @@ static esp_err_t summary(const sentinel_scan_view_t *view)
         TRY(cerberus_display_fill_rect(224, 57, 88, 23, PANEL));
         TRY(cerberus_display_fill_rect(224, 57, 2, 23, state_color));
         TRY(centered(228, 65, 80, view->selection_mode?"CLEAR":
-            view->kind == SENTINEL_VIEW_BLE && view->sort_label && view->sort_label[0] ?
+            has_sort_control(view) ?
                 view->sort_label : state_label(view->state),
             view->selection_mode&&!view->selection_count?MUTED:state_color, PANEL, 1));
     }
@@ -215,7 +221,7 @@ static const char *subtitle(const sentinel_scan_view_t *view)
 
 static const char *scan_label(const sentinel_scan_view_t *view)
 {
-    return view->state == SENTINEL_VIEW_LIVE ? "STOP" :
+    return view->stop_action || view->state == SENTINEL_VIEW_LIVE ? "STOP" :
         view->state == SENTINEL_VIEW_COMPLETE ? "AGAIN" : "SCAN";
 }
 
@@ -287,7 +293,9 @@ static const char *empty_message(const sentinel_scan_view_t *view)
 static const char *empty_explanation(const sentinel_scan_view_t *view)
 {
     /* Capture age belongs exclusively to the small line below the results. */
-    return view->state == SENTINEL_VIEW_LIVE ? "RESULTS APPEAR WHEN THE SWEEP FINISHES" :
+    return view->state == SENTINEL_VIEW_LIVE ?
+        (view->kind == SENTINEL_VIEW_BLE ? "LIVE RESULTS UPDATE AS AVAILABLE" :
+         "RESULTS APPEAR WHEN THE SWEEP FINISHES") :
         view->state == SENTINEL_VIEW_OFFLINE ? "CHECK THE ONBOARD C5 CONNECTION" :
         view->state == SENTINEL_VIEW_ERROR ? "OPEN TOOLS OR TRY ANOTHER SCAN" :
         "TAP SCAN TO OBSERVE YOUR SURROUNDINGS";
@@ -425,7 +433,9 @@ static bool same_summary(const sentinel_scan_view_t *left, const sentinel_scan_v
 {
     if (left->selection_mode!=right->selection_mode||summary_count(left) != summary_count(right) || left->state != right->state ||
         !same_text(count_label(left), count_label(right), 18) ||
-        (left->kind == SENTINEL_VIEW_BLE && !same_text(left->sort_label, right->sort_label, 12)) ||
+        has_sort_control(left) != has_sort_control(right) ||
+        (has_sort_control(left) && !same_text(left->sort_label, right->sort_label, 12)) ||
+        left->band_control != right->band_control ||
         has_age_control(left) != has_age_control(right) ||
         (has_age_control(left) && !same_text(left->age_label, right->age_label, 12))) return false;
     if (left->kind == SENTINEL_VIEW_ENERGY) return true;
@@ -535,11 +545,13 @@ sentinel_view_action_t sentinel_scan_view_hit_test(const sentinel_scan_view_t *v
 {
     if (!valid(view)) return SENTINEL_VIEW_NONE;
     if(view->selection_mode&&view->selection_count&&x>=224&&x<312&&y>=57&&y<80)return SENTINEL_VIEW_CLEAR;
+    if (view->kind == SENTINEL_VIEW_WIFI && !view->selection_mode && view->band_control &&
+        x >= 8 && x < 216 && y >= 48 && y < 98) return SENTINEL_VIEW_BAND;
     if (!view->selection_mode &&
         x >= 224 && x < 312 && y >= 48 && y < 98) {
         if (has_age_control(view) && y >= 74)
             return view->state != SENTINEL_VIEW_OFFLINE ? SENTINEL_VIEW_AGE : SENTINEL_VIEW_NONE;
-        if (view->kind == SENTINEL_VIEW_BLE && view->sort_label && view->sort_label[0])
+        if (has_sort_control(view))
             return SENTINEL_VIEW_SORT;
     }
     if (y >= 364 && y < 406) {

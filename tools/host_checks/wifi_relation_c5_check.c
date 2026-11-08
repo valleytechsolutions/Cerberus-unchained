@@ -1,3 +1,4 @@
+#include "wardrive_foreign_boundary.h"
 /* Actual C5 callback/worker/Start/Stop/getters + SPI cases, platform fakes only. */
 #define main observation_fixture_main
 #include "wifi_scan_observation_lifecycle_check.c"

@@ -1,0 +1,220 @@
+{
+  "schemaVersion": 1,
+  "product": "Cerberus Unchained",
+  "releaseId": "cerberus-unchained-0.1.0-dev.rev144",
+  "version": "0.1.0-dev.rev144",
+  "status": "development candidate",
+  "hardwareValidation": "not performed by packaging",
+  "builtUtc": "2026-11-07T05:28:34.407234+00:00",
+  "sourceSha256": "7adae670c8ca6ba0cb749cfdc94862e2319b0851e286dc9aa72d6ee67f4be09e",
+  "packageManifestSha256": "488cd7d646d6b9ad2113f90eacd048c4c036bdb2b611ec73fce804771a34353c",
+  "hardware": {
+    "s3FlashBytes": 16777216,
+    "s3PsramBytes": 2097152,
+    "c5MinimumFlashBytes": 2097152
+  },
+  "expectations": {
+    "protocol": 2,
+    "c5Firmware": 75
+  },
+  "notices": [
+    "WATCH_SIGNATURES.md",
+    "WATCH_THIRD_PARTY_NOTICES.md"
+  ],
+  "targets": {
+    "bridge": {
+      "chip": "esp32s3",
+      "flashSizeBytes": 16777216,
+      "flashSize": "16MB",
+      "flashMode": "dio",
+      "flashFrequency": "80m",
+      "baud": 460800,
+      "eraseRegions": [],
+      "parts": [
+        {
+          "role": "bootloader",
+          "path": "bridge/bootloader.bin",
+          "offset": 0,
+          "size": 21056,
+          "sha256": "b519c2784db4b046a8fdb641283e4c8eef6a28bf56185d5390bafe8616c3dee7",
+          "md5": "12b3b141c20867fcdeeb2e754361ba32"
+        },
+        {
+          "role": "partition-table",
+          "path": "bridge/partition-table.bin",
+          "offset": 32768,
+          "size": 3072,
+          "sha256": "9d1eb78d85bfd8cf40269ee4d50d15ae94cebd7d36de112c01944bc91d4726a7",
+          "md5": "d48fb3b6f109e72257839a122ea8c587"
+        },
+        {
+          "role": "app",
+          "path": "bridge/app.bin",
+          "offset": 65536,
+          "size": 255248,
+          "sha256": "10ddeb62ea15c554c425060492d542d5a970216eab26874c56e41617cbf1acd0",
+          "md5": "fb4332640af3eaf6e955b9fbf6965b17"
+        }
+      ],
+      "partitions": [
+        {
+          "name": "nvs",
+          "type": 1,
+          "subtype": 2,
+          "offset": 36864,
+          "size": 24576
+        },
+        {
+          "name": "phy_init",
+          "type": 1,
+          "subtype": 1,
+          "offset": 61440,
+          "size": 4096
+        },
+        {
+          "name": "factory",
+          "type": 0,
+          "subtype": 0,
+          "offset": 65536,
+          "size": 7340032
+        },
+        {
+          "name": "coredump",
+          "type": 1,
+          "subtype": 3,
+          "offset": 7405568,
+          "size": 262144
+        }
+      ]
+    },
+    "c5": {
+      "chip": "esp32c5",
+      "flashSizeBytes": 2097152,
+      "flashSize": "2MB",
+      "flashMode": "dio",
+      "flashFrequency": "80m",
+      "baud": 115200,
+      "eraseRegions": [
+        {
+          "offset": 0,
+          "size": 4096,
+          "reason": "legacy-boot-header"
+        }
+      ],
+      "parts": [
+        {
+          "role": "bootloader",
+          "path": "c5/bootloader.bin",
+          "offset": 8192,
+          "size": 22176,
+          "sha256": "dd5cda7614710b9278f505d67e39b06fa0e283a880fa8974eeb204025bd58a63",
+          "md5": "210d2bd4b82c141e40728028eb33b2e9"
+        },
+        {
+          "role": "partition-table",
+          "path": "c5/partition-table.bin",
+          "offset": 32768,
+          "size": 3072,
+          "sha256": "520c18ca0bda73aed288d427d260ab051d71219f605707350e6c42401f4836fc",
+          "md5": "b87dcdfd58f072a1e7b50b94abe79496"
+        },
+        {
+          "role": "app",
+          "path": "c5/app.bin",
+          "offset": 65536,
+          "size": 1728736,
+          "sha256": "8a455dc2cca07de94f09b37e40fd3c79f04c8d2b553a9e0b9e562c553f1710e9",
+          "md5": "5b944d86043fa7a01666e7ee8af345a7"
+        }
+      ],
+      "partitions": [
+        {
+          "name": "nvs",
+          "type": 1,
+          "subtype": 2,
+          "offset": 36864,
+          "size": 24576
+        },
+        {
+          "name": "phy_init",
+          "type": 1,
+          "subtype": 1,
+          "offset": 61440,
+          "size": 4096
+        },
+        {
+          "name": "factory",
+          "type": 0,
+          "subtype": 0,
+          "offset": 65536,
+          "size": 2031616
+        }
+      ]
+    },
+    "s3": {
+      "chip": "esp32s3",
+      "flashSizeBytes": 16777216,
+      "flashSize": "16MB",
+      "flashMode": "dio",
+      "flashFrequency": "80m",
+      "baud": 460800,
+      "eraseRegions": [],
+      "parts": [
+        {
+          "role": "bootloader",
+          "path": "s3/bootloader.bin",
+          "offset": 0,
+          "size": 21056,
+          "sha256": "9b2a6396d227dd3eb58ab426551766fdb914b7166121b666186f611202c30790",
+          "md5": "6bed28d1f2eb643c87da874fbe7129e7"
+        },
+        {
+          "role": "partition-table",
+          "path": "s3/partition-table.bin",
+          "offset": 32768,
+          "size": 3072,
+          "sha256": "9d1eb78d85bfd8cf40269ee4d50d15ae94cebd7d36de112c01944bc91d4726a7",
+          "md5": "d48fb3b6f109e72257839a122ea8c587"
+        },
+        {
+          "role": "app",
+          "path": "s3/app.bin",
+          "offset": 65536,
+          "size": 2334032,
+          "sha256": "2ec3243a76560828e28699e469c90e33137c23d3a193c46b5d18c27a391b2bac",
+          "md5": "0a3d43f3daf8cd96dea4f10cf1aba97d"
+        }
+      ],
+      "partitions": [
+        {
+          "name": "nvs",
+          "type": 1,
+          "subtype": 2,
+          "offset": 36864,
+          "size": 24576
+        },
+        {
+          "name": "phy_init",
+          "type": 1,
+          "subtype": 1,
+          "offset": 61440,
+          "size": 4096
+        },
+        {
+          "name": "factory",
+          "type": 0,
+          "subtype": 0,
+          "offset": 65536,
+          "size": 7340032
+        },
+        {
+          "name": "coredump",
+          "type": 1,
+          "subtype": 3,
+          "offset": 7405568,
+          "size": 262144
+        }
+      ]
+    }
+  }
+}

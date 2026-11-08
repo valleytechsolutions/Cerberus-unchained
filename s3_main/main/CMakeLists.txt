@@ -1,6 +1,10 @@
 idf_component_register(
     SRCS
         "main.c"
+        "device_info.c"
+        "../../shared/device_identity.c"
+        "../../shared/device_identity_esp.c"
+        "../../shared/wardrive_radio.c"
         "battery.c"
         "bmp_viewer.c"
         "boot_logo.c"
@@ -20,10 +24,25 @@ idf_component_register(
         "field_survey.c"
         "field_survey_view.c"
         "wardrive_core.c"
+        "wardrive_recent.c"
         "wardrive_gps_core.c"
+        "gps_gpx.c"
+        "wardrive_geofence.c"
+        "gps_recorder.c"
         "wardrive_gps_uart.c"
         "wardrive_service.c"
         "wardrive_wigle.c"
+        "wardrive_log.c"
+        "wardrive_compact.c"
+        "wardrive_rssi_filter.c"
+        "wardrive_upload_config.c"
+        "wardrive_upload_json.c"
+        "wardrive_upload_settings.c"
+        "wardrive_upload_reply.c"
+        "wardrive_upload_file.c"
+        "wardrive_upload_receipt.c"
+        "wardrive_upload_net.c"
+        "wardrive_log_manager.c"
         "field_menu.c"
         "wifi_target_view.c"
         "ble_test.c"
@@ -35,12 +54,60 @@ idf_component_register(
         "s3_ble_discovery_inventory.c"
         "s3_ble_discovery_session.c"
         "ble_analyzer.c"
+        "ble_archive.c"
+        "airtag_json.c"
+        "wifi_archive.c"
+        "wifi_archive_capture.c"
+        "wifi_marauder.c"
+        "ssid_list.c"
+        "ssid_list_session.c"
+        "probe_sniff_model.c"
+        "probe_sniff_scan.c"
+        "mesh_observation.c"
+        "mesh_scan.c"
+        "mesh_report.c"
+        "mesh_archive.c"
+        "mesh_locate.c"
+        "mesh_locate_report.c"
+        "../../shared/mesh_mac.c"
+        "../../shared/probe_sniff_core.c"
+        "ble_archive_io.c"
         "../../shared/cerberus_watch_capture.c"
         "../../shared/sentinel_watch_protocol.c"
         "s3_wifi_owner.c"
+        "s3_wifi_scanner.c"
+        "dual_wifi_scan.c"
+        "dual_wifi_diagnostics.c"
+        "dual_ble_scan.c"
+        "dual_ble_diagnostics.c"
         "s3_wifi_relation.c"
+        "s3_wifi_ssid_analysis.c"
+        "s3_wifi_list.c"
+        "wifi_readout_diagnostics.c"
         "s3_wifi_receiver.c"
         "wifi_capture_session.c"
+        "wifi_frame_session.c"
+        "../../shared/wifi_frame_analysis.c"
+        "../../shared/wifi_capture_filter.c"
+        "wifi_sae_session.c"
+        "../../shared/wifi_sae_analysis.c"
+        "wifi_eapol_session.c"
+        "../../shared/wifi_eapol_analysis.c"
+        "s3_wifi_packet_count.c"
+        "s3_wifi_ap_survey.c"
+        "wifi_ap_survey_model.c"
+        "wifi_ap_survey_session.c"
+        "../../shared/wifi_ap_survey.c"
+        "wifi_packet_count_scan.c"
+        "wifi_packet_monitor_scan.c"
+        "wifi_channel_analyzer_scan.c"
+        "wifi_fox_hunt_scan.c"
+        "saved_ble_lookup.c"
+        "wifi_packet_count_record.c"
+        "wifi_packet_count_diagnostics.c"
+        "../../shared/wifi_packet_count.c"
+        "../../shared/wifi_capture_plan.c"
+        "../../shared/wifi_capture_ring.c"
         "wifi_beacon_session.c"
         "wifi_multissid_session.c"
         "wifi_pinescan_session.c"
@@ -56,6 +123,9 @@ idf_component_register(
         "../../shared/wifi_ap_job.c"
         "../../shared/ble_attack_payload.c"
         "recon_store.c"
+        "recon_journal.c"
+        "recon_inventory.c"
+        "recon_recorder.c"
         "remote_id_inventory.c"
         "remote_id_session.c"
         "remote_id_diagnostics.c"
@@ -97,6 +167,9 @@ idf_component_register(
         "."
         "../../shared"
     PRIV_REQUIRES
+        app_update
+        esp_app_format
+        spi_flash
         bt
         bootloader_support
         efuse
@@ -105,9 +178,14 @@ idf_component_register(
         esp_driver_usb_serial_jtag
         esp_driver_uart
         esp_http_server
+        esp_http_client
+        esp_psram
         esp_wifi
         esp_netif
         mbedtls
         nvs_flash
         sdmmc
 )
+
+target_compile_definitions(${COMPONENT_LIB} PRIVATE
+    CERBERUS_APP_VERSION="${PROJECT_VER}")

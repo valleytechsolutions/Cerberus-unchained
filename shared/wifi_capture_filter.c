@@ -4,14 +4,28 @@
 
 static bool sae_commit_frame(const uint8_t *frame,size_t length)
 {
-    /* Authentication has a 24-byte MAC header, three LE16 fixed fields,
-     * then an SAE group field. Capture this frame family, including status
-     * replies; this does not validate the scalar, element or token body.
+    /* Authentication has a 24-byte MAC header and three LE16 fixed fields.
+     * Failure replies need not contain a group. Capture this frame family,
+     * including short bodies; this does not validate scalar/element/token data.
      * Encrypted/fragmented frames cannot establish these fields here. */
-    if(length<32U||frame[0]!=0xb0U||
+    if(length<30U||frame[0]!=0xb0U||
        (frame[1]&0xc7U)!=0U||(frame[22]&0x0fU)!=0U)return false;
     return frame[24]==3U&&frame[25]==0U&&
         frame[26]==1U&&frame[27]==0U;
+}
+
+const uint8_t *cerberus_wifi_capture_filter_bssid(const uint8_t *frame,size_t length)
+{
+    if(!frame||length<24U)return NULL;
+    unsigned type=(frame[0]>>2U)&3U;
+    if(type==0U)return frame+16U;
+    if(type==2U){
+        unsigned ds=frame[1]&3U;
+        if(ds==0U)return frame+16U;
+        if(ds==1U)return frame+4U;
+        if(ds==2U)return frame+10U;
+    }
+    return NULL;
 }
 
 bool cerberus_wifi_capture_filter_match(uint8_t mode_mask,bool filter_bssid,
@@ -20,18 +34,8 @@ bool cerberus_wifi_capture_filter_match(uint8_t mode_mask,bool filter_bssid,
     if(!frame||length<2U||!mode_mask||(mode_mask&~CERBERUS_WIFI_CAPTURE_MODE_ALL)||
        (filter_bssid&&!bssid))return false;
     unsigned type=(frame[0]>>2U)&3U,subtype=(frame[0]>>4U)&15U;
-    const uint8_t *frame_bssid=NULL;
-    if(type==0U){
-        if(length<24U)return false;
-        frame_bssid=frame+16U;
-    }else if(type==2U){
-        if(length<24U)return false;
-        bool to_ds=(frame[1]&1U)!=0U,from_ds=(frame[1]&2U)!=0U;
-        if(!to_ds&&!from_ds)frame_bssid=frame+16U;
-        else if(to_ds&&!from_ds)frame_bssid=frame+4U;
-        else if(!to_ds&&from_ds)frame_bssid=frame+10U;
-        /* Four-address WDS frames have no BSSID. */
-    }
+    if((type==0U||type==2U)&&length<24U)return false;
+    const uint8_t *frame_bssid=cerberus_wifi_capture_filter_bssid(frame,length);
     if(filter_bssid&&(!frame_bssid||memcmp(frame_bssid,bssid,6U)!=0))return false;
     if(mode_mask&CERBERUS_WIFI_CAPTURE_MODE_RAW)return true;
     if(type==0U){

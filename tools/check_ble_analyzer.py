@@ -1,4 +1,4 @@
-"""Host-check bounded S3 BLE Analyzer rate, evidence and freshness."""
+"""Host-check bounded Analyzer evidence; long fixtures do not prove native extended RX."""
 from pathlib import Path
 import subprocess
 import sys
@@ -16,4 +16,4 @@ subprocess.run([
     "-o", str(exe),
 ], check=True)
 subprocess.run([str(exe)], check=True)
-print("BLE Analyzer event-rate, evidence, malformed AD and freshness: pass")
+print("BLE Analyzer event-rate, independent family evidence, malformed AD and freshness: pass")

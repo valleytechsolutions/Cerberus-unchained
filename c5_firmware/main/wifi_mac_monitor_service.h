@@ -22,30 +22,14 @@ static wifi_promiscuous_filter_t mac_previous_filter,mac_previous_control_filter
 static const uint8_t mac_5g_channels[]={36,40,44,48,52,56,60,64,100,104,108,112,116,120,124,128,
     132,136,140,144,149,153,157,161,165,169,173,177};
 
-/* Only clear transmitter headers are interpreted. Retries, encrypted payloads
- * and fragments remain observations; no association or payload claim is made.
- * ACK/CTS/wrapper and variable BAR/BA layouts are deliberately not admitted. */
-static bool mac_wifi_header(const uint8_t *p,size_t n,wifi_promiscuous_pkt_type_t type,
-    uint8_t address[6],uint8_t *kind)
+#include "wifi_transmitter.h"
+
+static bool mac_wifi_header(const uint8_t *p, size_t n, wifi_promiscuous_pkt_type_t type,
+    uint8_t address[6], uint8_t *kind)
 {
-    if(!p||n<2U||(p[0]&3U))return false;
-    unsigned frame_type=(p[0]>>2U)&3U,subtype=p[0]>>4U;
-    size_t minimum=0U;
-    if(type==WIFI_PKT_MGMT&&frame_type==0U){
-        if(p[1]&3U)return false;
-        minimum=24U+((p[1]&0x80U)?4U:0U);*kind=CERBERUS_MAC_WIFI_MGMT;
-    }else if(type==WIFI_PKT_DATA&&frame_type==2U){
-        minimum=24U+((p[1]&3U)==3U?6U:0U);
-        if(subtype&8U)minimum+=2U+((p[1]&0x80U)?4U:0U);
-        *kind=CERBERUS_MAC_WIFI_DATA;
-    }else if(type==WIFI_PKT_CTRL&&frame_type==1U&&(subtype==10U||subtype==11U||subtype==14U||subtype==15U)){
-        if((p[1]&3U)||n!=16U)return false;
-        minimum=16U;*kind=CERBERUS_MAC_WIFI_CONTROL;
-    }else return false;
-    if(n<minimum||(p[10]&1U))return false;
-    uint8_t any=0U;for(unsigned i=0;i<6U;++i)any|=p[10U+i];
-    if(!any)return false;
-    memcpy(address,p+10U,6U);return true;
+    unsigned frame_type = type == WIFI_PKT_MGMT ? 0U : type == WIFI_PKT_CTRL ? 1U :
+        type == WIFI_PKT_DATA ? 2U : 3U;
+    return cerberus_wifi_transmitter(p, n, frame_type, address, kind);
 }
 
 static bool mac_clock_valid_locked(int64_t now)
@@ -259,7 +243,7 @@ esp_err_t cerberus_wifi_mac_start(const cerberus_mac_start_request_t *r,cerberus
         return error;
     }
     int64_t now=esp_timer_get_time();
-    if(!scanner_ready||!scanner_task_handle||r->job_id<mac_request.job_id||now<0||mac_epoch_counter==UINT64_MAX||
+    if(!scanner_ready||(atomic_load_explicit(&probe_sniff_radio_reserved,memory_order_acquire)||(atomic_load_explicit(&ap_survey_radio_reserved,memory_order_acquire)||atomic_load_explicit(&packet_count_radio_reserved,memory_order_acquire)))||!scanner_task_handle||r->job_id<mac_request.job_id||now<0||mac_epoch_counter==UINT64_MAX||
        atomic_load_explicit(&mac_admission_token,memory_order_relaxed)==UINT32_MAX||
        another_radio_operation_is_active()||cerberus_c5_test_running()||station_reserved||
        atomic_load_explicit(&channel_survey_radio_reserved,memory_order_acquire)||

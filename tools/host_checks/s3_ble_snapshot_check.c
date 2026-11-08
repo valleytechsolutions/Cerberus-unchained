@@ -636,7 +636,7 @@ static void check_findmy_provenance(void)
     cerberus_s3_ble_snapshot_observe(&snapshot,&r,8020U);
     assert(e->findmy_scan_response.bits && (e->flags&CERBERUS_S3_BLE_EVIDENCE_RESPONSE_VALID));
     assert(!(e->flags&CERBERUS_S3_BLE_EVIDENCE_SID_VALID) && record->last_advertisement_ms==8010U);
-    assert(sizeof(*e)<=64U);
+    assert(sizeof(*e)==104U); /* Original provenance + bounded matched response and raw sequence. */
     printf("Shared discovery provenance: %zu bytes per record, %zu-byte host snapshot; original/response identity, sequence, SID, time, invalidation and truncation checks passed.\n",
         sizeof(*e),sizeof(snapshot));
 }
@@ -1049,7 +1049,7 @@ static void check_hc_provenance(void)
     cerberus_s3_ble_snapshot_begin(&snapshot,35U,100U,true);
     cerberus_s3_ble_snapshot_observe(&snapshot,&r,110U);
     assert(!snapshot.status.stored_count);
-    assert(sizeof(*e)==64U);
+    assert(sizeof(*e)==104U);
     puts("HC source checks passed: exact codes, current replacement, admission, raw isolation, extended reports and wrap.");
 }
 
@@ -1529,5 +1529,6 @@ int main(void)
     check_wardrive_evidence_codec();
     check_recent_inventory_retention();
     check_focused_discovery_collect();
+    check_raw_matched_responses();
     puts("S3 BLE snapshot checks passed: dedupe, raw packets, focused evidence/filter mapping, malformed/incomplete reports, bounded cache, activity and finish.");
 }

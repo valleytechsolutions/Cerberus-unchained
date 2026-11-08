@@ -6,6 +6,9 @@ on:
       - 's3_main/**'
       - 'c5_firmware/**'
       - 'shared/**'
+      - 'third_party/**'
+      - 'CMakeLists.txt'
+      - 'sdkconfig*.defaults'
       - 'expansion/**'
       - 'tools/**'
       - 'sdcard/**'
@@ -15,6 +18,9 @@ on:
       - 's3_main/**'
       - 'c5_firmware/**'
       - 'shared/**'
+      - 'third_party/**'
+      - 'CMakeLists.txt'
+      - 'sdkconfig*.defaults'
       - 'expansion/**'
       - 'tools/**'
       - 'sdcard/**'
@@ -26,8 +32,30 @@ permissions:
 
 jobs:
   host-checks:
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
+    name: host-checks (${{ matrix.label }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            label: ubuntu-full
+            shard_args: ''
+          - os: windows-latest
+            label: windows-0
+            shard_args: '--shard-index 0 --shard-count 4'
+          - os: windows-latest
+            label: windows-1
+            shard_args: '--shard-index 1 --shard-count 4'
+          - os: windows-latest
+            label: windows-2
+            shard_args: '--shard-index 2 --shard-count 4'
+          - os: windows-latest
+            label: windows-3
+            shard_args: '--shard-index 3 --shard-count 4'
+    runs-on: ${{ matrix.os }}
+    # Four isolated Windows jobs preserve per-suite caches and the serial UI
+    # boundary. The full cold Windows run exceeded this existing 120m limit.
+    timeout-minutes: ${{ matrix.os == 'windows-latest' && 120 || 45 }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -35,17 +63,67 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: '3.13'
+      - name: Check shard selection and aggregate rejection paths
+        if: matrix.os == 'ubuntu-latest' || matrix.label == 'windows-0'
+        run: python tools/check_host_shards.py
       - name: Install pinned host compiler
         run: python -m pip install ziglang==0.14.1
-      - name: Run rev81 host suites
-        run: python tools/run_host_checks.py --jobs 2
+      - name: Run assigned host suites
+        run: python tools/run_host_checks.py --jobs 2 ${{ matrix.shard_args }}
+      - name: Check build-report failure handling
+        if: matrix.os == 'ubuntu-latest' || matrix.label == 'windows-0'
+        run: python tools/check_build_unified.py
       - name: Check SD resources
+        if: matrix.os == 'ubuntu-latest' || matrix.label == 'windows-0'
         run: python tools/check_field_kit.py
       - name: Save host-check results
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: cerberus-unchained-host-checks-${{ github.run_number }}
-          path: artifacts/host-checks/
+          name: cerberus-unchained-host-checks-${{ matrix.label }}-${{ github.run_number }}-attempt-${{ github.run_attempt }}
+          path: |
+            artifacts/host-checks/host-checks.json
+            artifacts/host-checks/*.log
+          if-no-files-found: ignore
+          retention-days: 14
+
+  host-coverage:
+    name: Verify complete host coverage
+    needs: host-checks
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+      - name: Download the four isolated Windows results
+        uses: actions/download-artifact@v7
+        with:
+          # Keep old attempts immutable. Retry with "Re-run all jobs"; the
+          # coverage gate refuses to borrow successful shards from old attempts.
+          pattern: cerberus-unchained-host-checks-windows-*-${{ github.run_number }}-attempt-${{ github.run_attempt }}
+          path: artifacts/windows-host-shards
+          merge-multiple: false
+      - name: Require all 207 Windows suites and matching source bindings
+        run: >-
+          python tools/verify_host_shards.py artifacts/windows-host-shards
+          --expected-head "${{ github.sha }}"
+          --expected-run-id "${{ github.run_id }}"
+          --expected-run-attempt "${{ github.run_attempt }}"
+          --output artifacts/host-checks/windows-aggregate.json
+      - name: Require Ubuntu and every Windows job to succeed
+        env:
+          MATRIX_RESULT: ${{ needs.host-checks.result }}
+        run: python -c "import os,sys; sys.exit(0 if os.environ['MATRIX_RESULT'] == 'success' else 1)"
+      - name: Save aggregate coverage proof
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: cerberus-unchained-host-coverage-${{ github.run_number }}-attempt-${{ github.run_attempt }}
+          path: artifacts/host-checks/windows-aggregate.json
           if-no-files-found: ignore
           retention-days: 14

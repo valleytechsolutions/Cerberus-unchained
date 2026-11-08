@@ -17,11 +17,18 @@ static unsigned free_bytes = 128U * 1024U;
 static int held, fail_start, stop_failures, fail_claim, terminate_failures;
 static bool adv_active, host_initialized, host_synced = true, run_on_delay, freeze_expiry;
 static bool connected, freeze_disconnect, saw_connectable, saw_nonconnectable;
+static bool replace_on_reset,replace_after_claim,foreign_connection;
+static unsigned stops_at_replacement,terminates_at_replacement;
+static uint32_t old_callback_at;
+static int (*old_gap_callback)(struct ble_gap_event *,void *);
+static void *old_gap_arg;
 static uint16_t connected_handle = 0x40U;
 static int (*gap_callback)(struct ble_gap_event *, void *);
 static void *gap_arg;
 static void (*queued_worker)(void *);
 static cerberus_s3_ble_owner_t owner;
+static uint64_t next_host_token;
+static cerberus_s3_ble_host_lease_t host_lease;
 static cerberus_s3_wifi_owner_t wifi_owner;
 static uint16_t stopped_job, touched_job;
 
@@ -46,18 +53,31 @@ cerberus_s3_ble_owner_t cerberus_s3_ble_host_owner(void) { return owner; }
 bool cerberus_s3_ble_host_initialized(void) { return host_initialized; }
 bool cerberus_s3_ble_host_synced(void) { return host_synced; }
 unsigned cerberus_s3_ble_host_epoch(void) { return host_epoch; }
-esp_err_t cerberus_s3_ble_host_claim(cerberus_s3_ble_owner_t requested)
+esp_err_t cerberus_s3_ble_host_claim(cerberus_s3_ble_owner_t requested,
+    cerberus_s3_ble_host_lease_t *lease)
 {
+    memset(lease,0,sizeof(*lease));
     if (fail_claim) return ESP_ERR_INVALID_STATE;
     assert(owner == CERBERUS_S3_BLE_OWNER_NONE);
     assert(requested == CERBERUS_S3_BLE_OWNER_ADVERTISER);
     owner = requested; host_initialized = true;
+    host_lease=(cerberus_s3_ble_host_lease_t){.token=++next_host_token,.epoch=host_epoch,.owner=requested};
+    *lease=host_lease;
+    if(replace_after_claim){
+        replace_after_claim=false;host_lease.token=++next_host_token;
+        adv_active=true;adv_expires_ms=tick_ms+10000;
+        stops_at_replacement=stops;terminates_at_replacement=terminate_calls;
+    }
     return ESP_OK;
 }
-esp_err_t cerberus_s3_ble_host_release(cerberus_s3_ble_owner_t requested)
+bool cerberus_s3_ble_host_lease_valid(const cerberus_s3_ble_host_lease_t *lease)
+{ return lease&&lease->token&&lease->token==host_lease.token&&lease->epoch==host_epoch&&lease->owner==owner; }
+esp_err_t cerberus_s3_ble_host_release(const cerberus_s3_ble_host_lease_t *lease)
 {
-    assert(owner == requested && !adv_active && !connected);
+    if(!cerberus_s3_ble_host_lease_valid(lease))return ESP_ERR_INVALID_STATE;
+    assert(!adv_active && !connected);
     owner = CERBERUS_S3_BLE_OWNER_NONE;
+    host_lease=(cerberus_s3_ble_host_lease_t){0};
     return ESP_OK;
 }
 int ble_hs_id_set_rnd(const uint8_t *address)
@@ -129,6 +149,12 @@ void vTaskDelay(TickType_t ticks)
         owner = CERBERUS_S3_BLE_OWNER_NONE;
         adv_active = connected = false;
         connect_at_ms = disconnect_at_ms = 0U;
+        if(replace_on_reset){
+            replace_on_reset=false;host_synced=true;owner=CERBERUS_S3_BLE_OWNER_ADVERTISER;
+            host_lease=(cerberus_s3_ble_host_lease_t){.token=++next_host_token,.epoch=host_epoch,.owner=owner};
+            adv_active=true;connected=foreign_connection;adv_expires_ms=tick_ms+10000;
+            stops_at_replacement=stops;terminates_at_replacement=terminate_calls;
+        }
     }
     if (connect_at_ms && tick_ms >= connect_at_ms && adv_active) {
         connect_at_ms = 0U;
@@ -147,6 +173,16 @@ void vTaskDelay(TickType_t ticks)
         assert(gap_callback && gap_callback(&event, gap_arg) == 0);
     }
     if (adv_active && !freeze_expiry && tick_ms >= adv_expires_ms) adv_active = false;
+    if(old_callback_at&&tick_ms>=old_callback_at){
+        old_callback_at=0;
+        unsigned before_terminate=terminate_calls;
+        struct ble_gap_event stale={.type=BLE_GAP_EVENT_CONNECT,
+            .connect={.status=0,.conn_handle=connected_handle}};
+        assert(old_gap_callback&&old_gap_callback(&stale,old_gap_arg)==0);
+        stale=(struct ble_gap_event){.type=BLE_GAP_EVENT_DISCONNECT,
+            .disconnect={.conn={.conn_handle=connected_handle}}};
+        assert(old_gap_callback(&stale,old_gap_arg)==0&&terminate_calls==before_terminate);
+    }
     if (touch_at_ms && tick_ms >= touch_at_ms) {
         touch_at_ms = 0U;
         assert(cerberus_s3_ble_attack_touch(touched_job) == ESP_OK);
@@ -200,6 +236,34 @@ static uint32_t seed_with_connectable(cerberus_ble_attack_mode_t mode)
     }
     assert(!"no connectable Apple Juice frame in initial cycle");
     return 0U;
+}
+
+static void exact_lease_regressions(void)
+{
+    /* Retire the intentionally held prior timeout job as a native reset would. */
+    ++host_epoch;owner=CERBERUS_S3_BLE_OWNER_NONE;host_lease=(cerberus_s3_ble_host_lease_t){0};
+    adv_active=connected=false;freeze_expiry=false;stop_failures=0;
+    connect_at_ms=disconnect_at_ms=stop_at_ms=0;host_synced=true;
+    old_gap_callback=gap_callback;old_gap_arg=gap_arg;
+    cerberus_s3_ble_attack_request_t value=request(30,CERBERUS_BLE_ATTACK_SWIFT_PAIR);
+    start(&value);stopped_job=value.job_id;stop_at_ms=tick_ms+300;old_callback_at=tick_ms+50;
+    run_worker();cerberus_s3_ble_attack_status_t status;cerberus_s3_ble_attack_get_status(&status);
+    assert(status.state==CERBERUS_S3_BLE_ATTACK_STOPPED&&!status.connections_accepted&&!status.connections_closed);
+    assert(owner==CERBERUS_S3_BLE_OWNER_NONE);
+    for(unsigned fault=0;fault<3;++fault){
+        value.job_id=(uint16_t)(31+fault);start(&value);
+        foreign_connection=fault==2;
+        if(fault==0)replace_after_claim=true;
+        else{replace_on_reset=true;reset_at_ms=tick_ms+50;}
+        run_worker();cerberus_s3_ble_attack_get_status(&status);
+        assert(status.state==CERBERUS_S3_BLE_ATTACK_ERROR&&!status.connection_active);
+        assert(owner==CERBERUS_S3_BLE_OWNER_ADVERTISER&&adv_active);
+        assert(stops==stops_at_replacement&&terminate_calls==terminates_at_replacement);
+        assert(cerberus_s3_ble_host_lease_valid(&host_lease));
+        adv_active=connected=false;cerberus_s3_ble_host_lease_t foreign=host_lease;
+        assert(cerberus_s3_ble_host_release(&foreign)==ESP_OK);
+    }
+    puts("Advertiser exact-lease regressions: stale callbacks, post-claim replacement and reset/new-owner cleanup pass.");
 }
 
 int main(void)
@@ -403,5 +467,6 @@ int main(void)
     assert(status.error == ESP_ERR_TIMEOUT);
     assert(owner == CERBERUS_S3_BLE_OWNER_ADVERTISER && adv_active);
     assert(cerberus_s3_ble_attack_quiesce(50U) == ESP_ERR_TIMEOUT);
+    exact_lease_regressions();
     puts("S3 BLE attack runtime checks passed: gating, connectable links, disconnect before release, late release, reset, Stop, lease and controller faults.");
 }

@@ -1,5 +1,23 @@
 # Ordinary Wi-Fi AP/client observations
 
+## Rev170 continuous survey
+
+[AP/CLIENT SURVEY](WIFI_AP_CLIENT_SURVEY.md) adds a separate continuous passive
+workspace with S3 2.4 GHz and C5 5 GHz reception, stable AP/client lists and
+direction-specific details. Immutable copying leaves both receivers running;
+Stop takes final snapshots and releases their sessions. Back and sleep drain
+ownership before the workspace is freed. The ordinary finite-scan publication
+described below remains unchanged. Rev170 source `5f49203` passed all 207 host
+suites and five native targets; packaging and installation remain pending.
+Physical reception, navigation, saved-report readback and full upstream parity
+remain open.
+
+## Rev93 source contribution
+
+Ordinary AP transfer now uses staged bounded readout and before/after relation proofs. Supported-peer proof failures preserve the previous complete bank rather than publish mixed rows. Cached selected-SSID analysis binds the exact publication and copied identity. These changes do not prove authenticated associations or repair active Wi-Fi modes. See [readout recovery](WIFI_READOUT_RECOVERY.md).
+
+See [CONTRIBUTION_REV93.md](CONTRIBUTION_REV93.md) for validation boundaries and [the coverage ledger](MARAUDER_COVERAGE_LEDGER.md) for remaining work. The following sections retain the earlier contribution history.
+
 Revision 81 S3 is installed with the byte-identical C5 firmware 60 retained
 from paired rev80. The
 [installation receipt](../../integration/device-test-2026-10-27/rev81-flash-receipt.json)

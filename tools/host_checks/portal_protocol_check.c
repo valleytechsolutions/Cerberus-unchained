@@ -52,10 +52,10 @@ static void form_checks(void)
 {
     cerberus_portal_form_field_t fields[CERBERUS_PORTAL_FORM_FIELDS];
     uint8_t count = 0U;
-    const char body[] = "name=Yasin+Home&code=A%26B%3D7";
+    const char body[] = "name=Example+AP&code=A%26B%3D7";
     assert(cerberus_portal_form_decode(body, sizeof(body)-1U, fields, &count));
     assert(count == 2U && strcmp(fields[0].name,"name") == 0);
-    assert(strcmp(fields[0].value,"Yasin Home") == 0);
+    assert(strcmp(fields[0].value,"Example AP") == 0);
     assert(strcmp(fields[1].name,"code") == 0 && strcmp(fields[1].value,"A&B=7") == 0);
     const char *invalid[] = {"", "x", "=x", "x=", "x=%", "x=%GG", "x=a&", "x=a&y=%00",
         "x=a%0A", "x=a&y=b&z=c&a=d&b=e", "x=a&bad.name=x"};

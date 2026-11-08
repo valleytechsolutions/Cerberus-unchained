@@ -7,10 +7,50 @@
 #include <stdlib.h>
 #include <string.h>
 
-static int64_t fake_time_us=1000000;
+static int64_t fake_time_us=100000;
 int64_t esp_timer_get_time(void){return fake_time_us;}
 size_t heap_caps_get_free_size(unsigned caps){(void)caps;return 81U*1024U;}
 void *heap_caps_malloc(size_t size,unsigned caps){(void)caps;return malloc(size);}
+
+static void admission_fences(void)
+{
+    uint8_t frame[40]={0x50};
+    fake_time_us=4000000;
+    cerberus_wifi_capture_start_request_t r={.generation=14,.channel=6,
+        .mode_mask=CERBERUS_WIFI_CAPTURE_MODE_PROBE,.lease_ms=1000};
+    assert(cerberus_wifi_capture_service_start(&r)==ESP_OK);
+    assert(!cerberus_wifi_capture_service_admission_token());
+    cerberus_wifi_capture_service_receive(frame,sizeof(frame),6,-40,fake_time_us,0);
+    assert(cerberus_wifi_capture_service_set_channel(6)==ESP_OK);
+    uint32_t old=cerberus_wifi_capture_service_admission_token();
+    cerberus_wifi_capture_service_receive(frame,sizeof(frame),6,-40,fake_time_us-1,old);
+    cerberus_wifi_capture_service_receive(frame,sizeof(frame),6,-40,-1,old);
+    cerberus_wifi_capture_service_receive(frame,sizeof(frame),6,-40,INT64_C(0x1000000000000),old);
+    cerberus_wifi_capture_status_payload_t s;
+    cerberus_wifi_capture_service_status(&s);assert(!s.accepted&&!s.pending);
+    cerberus_wifi_capture_service_stop(ESP_OK);++r.generation;
+    assert(cerberus_wifi_capture_service_start(&r)==ESP_OK);
+    assert(cerberus_wifi_capture_service_set_channel(6)==ESP_OK);
+    cerberus_wifi_capture_service_receive(frame,sizeof(frame),6,-40,fake_time_us,old);
+    cerberus_wifi_capture_service_status(&s);assert(!s.accepted&&!s.pending);
+    assert(cerberus_wifi_capture_service_set_channel(0)==ESP_OK);
+    fake_time_us=-1;
+    assert(cerberus_wifi_capture_service_set_channel(6)==ESP_ERR_INVALID_STATE);
+    assert(!cerberus_wifi_capture_service_admission_token());
+    fake_time_us=INT64_C(0x1000000000000);
+    assert(cerberus_wifi_capture_service_set_channel(6)==ESP_ERR_INVALID_STATE);
+    assert(!cerberus_wifi_capture_service_admission_token());
+    fake_time_us=5000000;
+    assert(cerberus_wifi_capture_service_set_channel(6)==ESP_OK);
+    cerberus_wifi_capture_service_receive(frame,sizeof(frame),6,-40,fake_time_us,
+        cerberus_wifi_capture_service_admission_token());
+    cerberus_wifi_capture_service_status(&s);assert(s.accepted==1&&s.pending==1);
+    cerberus_wifi_capture_service_stop(ESP_OK);
+    cerberus_wifi_capture_peek_payload_t p;
+    assert(cerberus_wifi_capture_service_peek(r.generation,&p)==ESP_OK&&p.sequence);
+    cerberus_wifi_capture_ack_request_t ack={r.generation,p.sequence};
+    assert(cerberus_wifi_capture_service_ack(&ack)==ESP_OK);
+}
 
 int main(void)
 {
@@ -29,13 +69,14 @@ int main(void)
     assert(cerberus_wifi_capture_service_start(&request)==ESP_ERR_INVALID_ARG);
     request.lease_ms=5000;
     assert(cerberus_wifi_capture_service_start(&request)==ESP_OK);
+    if(request.channel)assert(cerberus_wifi_capture_service_set_channel(request.channel)==ESP_OK);
     assert(cerberus_wifi_capture_service_same_request(&request));
     cerberus_wifi_capture_service_set_deadline(6000);
     uint8_t frame[40]={0x50};memcpy(frame+16,request.bssid,6);
-    cerberus_wifi_capture_service_receive(frame,sizeof(frame),6,-42,123456);
-    cerberus_wifi_capture_service_receive(frame,sizeof(frame),6,-41,123457);
-    cerberus_wifi_capture_service_receive(frame,sizeof(frame),6,-40,123458);
-    cerberus_wifi_capture_service_receive(frame,sizeof(frame),11,-40,123459);
+    cerberus_wifi_capture_service_receive(frame,sizeof(frame),6,-42,123456,cerberus_wifi_capture_service_admission_token());
+    cerberus_wifi_capture_service_receive(frame,sizeof(frame),6,-41,123457,cerberus_wifi_capture_service_admission_token());
+    cerberus_wifi_capture_service_receive(frame,sizeof(frame),6,-40,123458,cerberus_wifi_capture_service_admission_token());
+    cerberus_wifi_capture_service_receive(frame,sizeof(frame),11,-40,123459,cerberus_wifi_capture_service_admission_token());
     cerberus_wifi_capture_service_status(&status);
     assert(status.state==CERBERUS_WIFI_CAPTURE_RUNNING&&status.generation==10&&
         status.pending==2&&status.accepted==2&&status.dropped_full==1);
@@ -58,7 +99,7 @@ int main(void)
     query.offset=40;
     assert(cerberus_wifi_capture_service_read(&query,&chunk)==ESP_ERR_INVALID_STATE);
     cerberus_wifi_capture_service_stop(ESP_OK);
-    cerberus_wifi_capture_service_receive(frame,sizeof(frame),6,-40,123460);
+    cerberus_wifi_capture_service_receive(frame,sizeof(frame),6,-40,123460,cerberus_wifi_capture_service_admission_token());
     cerberus_wifi_capture_service_status(&status);
     assert(status.state==CERBERUS_WIFI_CAPTURE_STOPPED&&status.pending==2);
     cerberus_wifi_capture_ack_request_t ack={.generation=10,.sequence=1};
@@ -70,30 +111,34 @@ int main(void)
     cerberus_wifi_capture_service_status(&status);
     assert(status.state==CERBERUS_WIFI_CAPTURE_STOPPED&&status.pending==0);
     assert(cerberus_wifi_capture_service_start(&request)==ESP_ERR_INVALID_STATE);
+    fake_time_us=123460;
     request.generation=11;request.mode_mask=CERBERUS_WIFI_CAPTURE_MODE_RAW;
     assert(cerberus_wifi_capture_service_start(&request)==ESP_OK);
-    cerberus_wifi_capture_service_receive(frame,4097,6,-40,123461);
+    if(request.channel)assert(cerberus_wifi_capture_service_set_channel(request.channel)==ESP_OK);
+    cerberus_wifi_capture_service_receive(frame,4097,6,-40,123461,cerberus_wifi_capture_service_admission_token());
     cerberus_wifi_capture_service_status(&status);
     assert(status.dropped_other==1&&status.accepted==0);
     cerberus_wifi_capture_service_stop(ESP_ERR_TIMEOUT);
     cerberus_wifi_capture_service_status(&status);
     assert(status.state==CERBERUS_WIFI_CAPTURE_STOPPED&&status.error_code==ESP_ERR_TIMEOUT);
+    fake_time_us=222000;
     request.generation=12;request.mode_mask=CERBERUS_WIFI_CAPTURE_MODE_SAE_COMMIT;
     request.channel=36;
     assert(cerberus_wifi_capture_service_start(&request)==ESP_OK);
+    if(request.channel)assert(cerberus_wifi_capture_service_set_channel(request.channel)==ESP_OK);
     uint8_t sae[128]={0xb0};memcpy(sae+16,request.bssid,6);
     sae[24]=3U;sae[26]=1U;sae[30]=19U;
     for(size_t i=32U;i<sizeof(sae);++i)sae[i]=(uint8_t)i;
-    cerberus_wifi_capture_service_receive(sae,sizeof(sae),6,-50,222000);
-    cerberus_wifi_capture_service_receive(sae,31,36,-50,222001);
+    cerberus_wifi_capture_service_receive(sae,sizeof(sae),6,-50,222000,cerberus_wifi_capture_service_admission_token());
+    cerberus_wifi_capture_service_receive(sae,29,36,-50,222001,cerberus_wifi_capture_service_admission_token());
     sae[25]=1U;
-    cerberus_wifi_capture_service_receive(sae,sizeof(sae),36,-50,222002);
+    cerberus_wifi_capture_service_receive(sae,sizeof(sae),36,-50,222002,cerberus_wifi_capture_service_admission_token());
     sae[25]=0U;sae[26]=2U;
-    cerberus_wifi_capture_service_receive(sae,sizeof(sae),36,-50,222003);
+    cerberus_wifi_capture_service_receive(sae,sizeof(sae),36,-50,222003,cerberus_wifi_capture_service_admission_token());
     sae[26]=1U;sae[16]^=2U;
-    cerberus_wifi_capture_service_receive(sae,sizeof(sae),36,-50,222004);
+    cerberus_wifi_capture_service_receive(sae,sizeof(sae),36,-50,222004,cerberus_wifi_capture_service_admission_token());
     sae[16]^=2U;
-    cerberus_wifi_capture_service_receive(sae,sizeof(sae),36,-51,222005);
+    cerberus_wifi_capture_service_receive(sae,sizeof(sae),36,-51,222005,cerberus_wifi_capture_service_admission_token());
     cerberus_wifi_capture_service_status(&status);
     assert(status.mode_mask==CERBERUS_WIFI_CAPTURE_MODE_SAE_COMMIT&&
         status.channel==36&&status.accepted==1&&status.pending==1&&
@@ -110,6 +155,7 @@ int main(void)
     assert(cerberus_wifi_capture_service_peek(12,&peek)==ESP_OK&&peek.sequence==0);
     /* Generic hopping has no AP prerequisite and starts with RX admission
      * paused. Changing the admitted channel never restarts the ring. */
+    fake_time_us=333000;
     request=(cerberus_wifi_capture_start_request_t){.generation=13,
         .mode_mask=CERBERUS_WIFI_CAPTURE_MODE_BEACON,
         .flags=CERBERUS_WIFI_CAPTURE_FLAG_HOP,.lease_ms=5000};
@@ -122,22 +168,23 @@ int main(void)
     assert(cerberus_wifi_capture_service_start(&request)==ESP_ERR_INVALID_ARG);
     request.mode_mask=CERBERUS_WIFI_CAPTURE_MODE_BEACON;
     assert(cerberus_wifi_capture_service_start(&request)==ESP_OK);
+    if(request.channel)assert(cerberus_wifi_capture_service_set_channel(request.channel)==ESP_OK);
     uint8_t beacon[48]={0x80};beacon[36]=0;beacon[37]=3;
     memcpy(beacon+38,"one",3);
-    cerberus_wifi_capture_service_receive(beacon,sizeof(beacon),6,-40,333000);
+    cerberus_wifi_capture_service_receive(beacon,sizeof(beacon),6,-40,333000,cerberus_wifi_capture_service_admission_token());
     cerberus_wifi_capture_service_status(&status);
     assert(status.channel==0&&status.accepted==0&&cerberus_wifi_capture_service_active());
     cerberus_wifi_capture_service_set_channel(6);
-    cerberus_wifi_capture_service_receive(beacon,sizeof(beacon),6,-41,333001);
+    cerberus_wifi_capture_service_receive(beacon,sizeof(beacon),6,-41,333001,cerberus_wifi_capture_service_admission_token());
     assert(cerberus_wifi_capture_service_peek(13,&peek)==ESP_OK&&peek.channel==6);
     uint32_t first_sequence=peek.sequence;
     uint32_t first_crc=peek.crc32;
     cerberus_wifi_capture_service_set_channel(0);
-    cerberus_wifi_capture_service_receive(beacon,sizeof(beacon),6,-30,333002);
+    cerberus_wifi_capture_service_receive(beacon,sizeof(beacon),6,-30,333002,cerberus_wifi_capture_service_admission_token());
     cerberus_wifi_capture_service_set_channel(36);
     beacon[38]='t';
-    cerberus_wifi_capture_service_receive(beacon,sizeof(beacon),6,-30,333003);
-    cerberus_wifi_capture_service_receive(beacon,sizeof(beacon),36,-50,333004);
+    cerberus_wifi_capture_service_receive(beacon,sizeof(beacon),6,-30,333003,cerberus_wifi_capture_service_admission_token());
+    cerberus_wifi_capture_service_receive(beacon,sizeof(beacon),36,-50,333004,cerberus_wifi_capture_service_admission_token());
     cerberus_wifi_capture_service_status(&status);
     assert(status.channel==36&&status.generation==13&&status.accepted==2&&status.pending==2);
     assert(cerberus_wifi_capture_service_same_request(&request));
@@ -156,6 +203,7 @@ int main(void)
     ack.sequence=peek.sequence;
     assert(cerberus_wifi_capture_service_ack(&ack)==ESP_OK);
     assert(cerberus_wifi_capture_service_peek(13,&peek)==ESP_OK&&peek.sequence==0);
-    puts("Wi-Fi capture service passed: validation, bounded callback, status, lease renewal, read, CRC, ACK retry and stop/drain.");
+    admission_fences();
+    puts("Wi-Fi capture service passed: validation, bounded callback, generation/arm/clock fences, status, lease renewal, read, CRC, ACK retry and stop/drain.");
     return 0;
 }

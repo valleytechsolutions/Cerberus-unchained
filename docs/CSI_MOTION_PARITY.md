@@ -1,5 +1,11 @@
 # CSI Motion Monitor
 
+## Rev93 source contribution
+
+This contribution does not change the CSI radio engine or establish new CSI accuracy/calibration acceptance. It preserves prior source and physical evidence at its original scope; the current work is summarized in [rev93 contribution](CONTRIBUTION_REV93.md).
+
+See [CONTRIBUTION_REV93.md](CONTRIBUTION_REV93.md) for validation boundaries and [the coverage ledger](MARAUDER_COVERAGE_LEDGER.md) for remaining work. The following sections retain the earlier contribution history.
+
 Revision 77 is installed as a paired S3/C5 update, with C5 firmware 58. Physical
 CSI reception, format, sensitivity, sustained transfer and repeated cleanup
 acceptance remain pending. Overall mode coverage is partial.

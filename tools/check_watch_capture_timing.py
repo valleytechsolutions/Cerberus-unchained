@@ -11,11 +11,13 @@ env = dict(os.environ, ZIG_GLOBAL_CACHE_DIR=str(out / "zig-cache"))
 source = (root / "c5_firmware/main/ble_scanner.c").read_text()
 record_start = source.index("typedef struct {")
 (out / "c5_ble_watch_record_type.h").write_text(source[record_start:source.index("} cerberus_ble_record_t;", record_start) + len("} cerberus_ble_record_t;")])
+control_start = source.index("static uint32_t scan_start_pending_epoch,")
+(out / "c5_ble_control_state.h").write_text(source[control_start:source.index("static cerberus_ble_inventory_admission_t", control_start)])
 pieces = []
 for first, after in (
-    ("static void record_advertisement(", "static int gap_event("),
-    ("static void start_scan_event(", "static void stop_scan_event("),
-    ("esp_err_t cerberus_ble_scanner_start(", "esp_err_t cerberus_ble_watch_get_status("),
+    ("static bool analyzer_observe(", "static int gap_event("),
+    ("static void set_control_error_for_epoch(", "static void stop_scan_event("),
+    ("static esp_err_t start_scan(", "esp_err_t cerberus_ble_watch_get_status("),
     ("esp_err_t cerberus_ble_watch_get_timing(", "esp_err_t cerberus_ble_watch_get_activity("),
 ):
     start = source.index(first)
@@ -37,7 +39,7 @@ for first, after in (
 source = (root / "c5_firmware/main/main.c").read_text()
 start = source.index("    case CERBERUS_SPI_COMMAND_WATCH_SCAN_MOTION:")
 (out / "c5_watch_motion_dispatch.h").write_text(
-    source[start:source.index("    case CERBERUS_SPI_COMMAND_REMOTE_ID_START:", start)])
+    source[start:source.index("    case CERBERUS_SPI_COMMAND_WATCH_PROFILE_BEGIN:", start)])
 exe = out / ("watch-capture-timing-check.exe" if os.name == "nt" else "watch-capture-timing-check")
 subprocess.run([
     sys.executable, "-m", "ziglang", "cc", "-std=c11", "-O1", "-Wall", "-Wextra", "-Werror",
@@ -56,7 +58,7 @@ for extended in (0, 1):
     exe = out / f"c5-ble-watch-timing-{extended}.exe"
     subprocess.run([
         sys.executable, "-m", "ziglang", "cc", "-std=c11", "-O1", "-Wall", "-Wextra", "-Werror",
-        f"-DTEST_EXTENDED={extended}", "-I", str(out), "-I", str(root / "shared"),
+        f"-DTEST_EXTENDED={extended}", "-I", str(out), "-I", str(root / "shared"), "-I", str(root / "c5_firmware/main"),
         str(root / "tools/host_checks/c5_ble_watch_timing_check.c"),
         str(root / "shared/cerberus_watch_capture.c"), str(root / "shared/sentinel_watch_protocol.c"),
         "-o", str(exe),

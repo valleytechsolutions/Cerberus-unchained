@@ -9,7 +9,9 @@
 #include "storage.h"
 #include "wardrive_core.h"
 #include "wardrive_wigle.h"
+#include "wardrive_rssi_filter.h"
 #include "wardrive_gps_uart.h"
+#include "settings.h"
 #include "wifi_capture_session.h"
 #include "esp_heap_caps.h"
 #include "esp_timer.h"
@@ -34,8 +36,29 @@ static const char wigle_header[] =
 static portMUX_TYPE wardrive_lock = portMUX_INITIALIZER_UNLOCKED;
 static cerberus_wardrive_status_t wardrive_status;
 static bool worker_active, start_in_progress, stop_requested;
+static uint8_t wardrive_selected_mode;
+static bool stream_recording;
+static cerberus_wardrive_rssi_filter_t *rssi_filter;
+static uint64_t stream_observed_ms;
+esp_err_t cerberus_wardrive_set_mode(uint8_t mode)
+{
+    if(mode>CERBERUS_WD_BLE)return ESP_ERR_INVALID_ARG;
+    portENTER_CRITICAL(&wardrive_lock);
+    bool busy=worker_active||start_in_progress;
+    if(!busy)wardrive_selected_mode=mode;
+    portEXIT_CRITICAL(&wardrive_lock);return busy?ESP_ERR_INVALID_STATE:ESP_OK;
+}
 static bool c5_has_channel_survey;
 static uint64_t started_ms;
+static cerberus_wardrive_recent_t *wardrive_recent;
+static uint64_t recent_session_id, recent_sequence;
+static bool recent_available, recent_worker_session;
+static esp_err_t recent_error;
+typedef struct {
+    cerberus_wardrive_recent_ticket_t ticket;
+    esp_err_t result;
+    bool previewed, completed;
+} wardrive_recent_attempt_t;
 /* These bounded buffers are needed only during a session. Keep the idle S3
  * internal heap available for NimBLE's first controller/host initialization. */
 typedef struct {
@@ -44,6 +67,7 @@ typedef struct {
     cerberus_wardrive_probe_dedupe_t probe_dedupe;
     cerberus_wardrive_relation_dedupe_t relation_dedupe;
     cerberus_c5_wifi_result_t wifi_stage[CERBERUS_WIFI_SCAN_MAX_RESULTS];
+    wardrive_recent_attempt_t wifi_attempts[CERBERUS_WIFI_SCAN_MAX_RESULTS];
     cerberus_wifi_probe_row_t probe_stage[CERBERUS_WIFI_PROBE_LIMIT];
     cerberus_c5_wifi_probe_bank_t probe_bank;
     cerberus_wifi_relation_row_t relation_stage[CERBERUS_WIFI_RELATION_LIMIT];
@@ -54,13 +78,18 @@ typedef struct {
     cerberus_wardrive_probe_state_t probe_capture_state;
     cerberus_wardrive_relation_state_t relation_capture_state;
     cerberus_c5_ble_result_t ble_stage[CERBERUS_BLE_SCAN_MAX_RESULTS];
+    wardrive_recent_attempt_t ble_attempts[CERBERUS_BLE_SCAN_MAX_RESULTS];
     cerberus_s3_ble_wardrive_evidence_t ble_evidence_stage[CERBERUS_BLE_SCAN_MAX_RESULTS];
+    cerberus_s3_ble_passive_state_t ble_capture_state;
+    uint64_t ble_capture_epoch;
     bool ble_capture_ready;
-    uint8_t ble_capture_generation, ble_capture_count, ble_capture_next;
+    uint8_t ble_capture_count, ble_capture_next;
+    char ble_capture_error_radio;
     field_survey_snapshot_t expansion_stage;
     expansion_record_t expansion_event;
     uint32_t expansion_dropped_at_start_by_slot[6];
     char row_buffer[384];
+    cerberus_geofence_config_t geofences;
 } wardrive_workspace_t;
 static wardrive_workspace_t *workspace;
 #define dedupe (workspace->dedupe)
@@ -68,6 +97,7 @@ static wardrive_workspace_t *workspace;
 #define probe_dedupe (workspace->probe_dedupe)
 #define relation_dedupe (workspace->relation_dedupe)
 #define wifi_stage (workspace->wifi_stage)
+#define wifi_attempts (workspace->wifi_attempts)
 #define probe_stage (workspace->probe_stage)
 #define probe_bank (workspace->probe_bank)
 #define relation_stage (workspace->relation_stage)
@@ -81,15 +111,19 @@ static wardrive_workspace_t *workspace;
 #define relation_capture_next (workspace->relation_capture_next)
 #define relation_capture_state (workspace->relation_capture_state)
 #define ble_stage (workspace->ble_stage)
+#define ble_attempts (workspace->ble_attempts)
 #define ble_evidence_stage (workspace->ble_evidence_stage)
 #define ble_capture_ready (workspace->ble_capture_ready)
-#define ble_capture_generation (workspace->ble_capture_generation)
+#define ble_capture_state (workspace->ble_capture_state)
+#define ble_capture_epoch (workspace->ble_capture_epoch)
 #define ble_capture_count (workspace->ble_capture_count)
 #define ble_capture_next (workspace->ble_capture_next)
+#define ble_capture_error_radio (workspace->ble_capture_error_radio)
 #define expansion_stage (workspace->expansion_stage)
 #define expansion_event (workspace->expansion_event)
 #define expansion_dropped_at_start_by_slot (workspace->expansion_dropped_at_start_by_slot)
 #define row_buffer (workspace->row_buffer)
+#define wardrive_geofences (workspace->geofences)
 static uint32_t open_file_rows;
 static bool wardrive_file_open;
 static uint32_t wigle_file_rows;
@@ -105,10 +139,22 @@ static esp_err_t allocate_workspace(void)
 
 static void release_workspace(void)
 {
+    heap_caps_free(rssi_filter);
+    rssi_filter = NULL;
     heap_caps_free(workspace);
     workspace = NULL;
 }
 
+static void begin_rssi_filter(void)
+{
+    rssi_filter = heap_caps_calloc(1U, sizeof(*rssi_filter),
+        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    portENTER_CRITICAL(&wardrive_lock);
+    wardrive_status.rssi_filter_enabled = rssi_filter != NULL;
+    portEXIT_CRITICAL(&wardrive_lock);
+}
+
+static size_t post_ble_reserve_bytes(bool enable_gps) __attribute__((unused));
 static size_t post_ble_reserve_bytes(bool enable_gps)
 {
     return 32768U + WARDRIVE_WORKER_STACK +
@@ -118,6 +164,131 @@ static size_t post_ble_reserve_bytes(bool enable_gps)
 
 static uint32_t now_ms(void) { return (uint32_t)(esp_timer_get_time() / 1000LL); }
 static uint64_t now_ms64(void) { return (uint64_t)(esp_timer_get_time() / 1000LL); }
+
+/* Called only by the accepted worker, before it consumes any results. Failed
+ * admission/task creation never resets the preceding session's history. The
+ * optional allocation is outside the lock and never falls back to internal RAM. */
+static void recent_begin_session(void)
+{
+    cerberus_wardrive_recent_t *candidate = NULL;
+    portENTER_CRITICAL(&wardrive_lock);
+    bool needs_model = wardrive_recent == NULL;
+    portEXIT_CRITICAL(&wardrive_lock);
+    if (needs_model)
+        candidate = heap_caps_calloc(1U, sizeof(*candidate),
+            MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    portENTER_CRITICAL(&wardrive_lock);
+    if (wardrive_recent == NULL) {
+        wardrive_recent = candidate;
+        candidate = NULL;
+    }
+    recent_available = false;
+    recent_worker_session = true;
+    recent_sequence = 0U;
+    if (recent_session_id == UINT64_MAX) recent_error = ESP_ERR_INVALID_STATE;
+    else {
+        ++recent_session_id;
+        if (wardrive_recent == NULL) recent_error = ESP_ERR_NO_MEM;
+        else {
+            recent_available = cerberus_wardrive_recent_begin(wardrive_recent,
+                recent_session_id);
+            recent_error = recent_available ? ESP_OK : ESP_ERR_INVALID_STATE;
+        }
+    }
+    portEXIT_CRITICAL(&wardrive_lock);
+    heap_caps_free(candidate);
+}
+
+static void recent_preview(const cerberus_wardrive_observation_t *observation,
+    wardrive_recent_attempt_t *attempt)
+{
+    if (attempt->previewed) return;
+    attempt->previewed = true;
+    if ((observation->type != CERBERUS_WARDRIVE_WIFI &&
+            observation->type != CERBERUS_WARDRIVE_BLE) ||
+        !cerberus_wardrive_observation_valid(observation)) return;
+    const int64_t receipt_us = esp_timer_get_time();
+    portENTER_CRITICAL(&wardrive_lock);
+    if (recent_worker_session && recent_available && wardrive_recent != NULL) {
+        if (recent_sequence == UINT64_MAX ||
+            !cerberus_wardrive_recent_observe(wardrive_recent, recent_session_id,
+                ++recent_sequence, observation,
+                receipt_us >= 0 ? (uint64_t)receipt_us / 1000U : 0U,
+                receipt_us >= 0, &attempt->ticket))
+            recent_error = ESP_ERR_INVALID_STATE;
+    }
+    portEXIT_CRITICAL(&wardrive_lock);
+}
+
+static void recent_outcome(cerberus_wardrive_recent_ticket_t ticket,
+    cerberus_wardrive_recent_outcome_t outcome)
+{
+    if (ticket.session_id == 0U) return;
+    portENTER_CRITICAL(&wardrive_lock);
+    if (recent_worker_session && recent_available && wardrive_recent != NULL &&
+        !cerberus_wardrive_recent_set_outcome(wardrive_recent, ticket, outcome))
+        recent_error = ESP_ERR_INVALID_STATE;
+    portEXIT_CRITICAL(&wardrive_lock);
+}
+
+void cerberus_wardrive_get_recent_status(cerberus_wardrive_recent_status_t *out)
+{
+    if (out == NULL) return;
+    memset(out, 0, sizeof(*out));
+    portENTER_CRITICAL(&wardrive_lock);
+    out->session_id = recent_session_id;
+    out->state = wardrive_status.state;
+    out->error = wardrive_status.error_code;
+    out->view_error = recent_error;
+    out->worker_active = worker_active;
+    out->available = recent_available && wardrive_recent != NULL;
+    if (out->available) {
+        out->revision = wardrive_recent->revision;
+        out->events = wardrive_recent->event_count;
+        out->clock_faults = wardrive_recent->invalid_receipts;
+        out->retained_events = wardrive_recent->count;
+        out->count = (uint8_t)cerberus_wardrive_recent_visible_count(wardrive_recent);
+    }
+    portEXIT_CRITICAL(&wardrive_lock);
+}
+
+void cerberus_wardrive_copy_recent(cerberus_wardrive_recent_snapshot_t *out)
+{
+    if (out == NULL) return;
+    memset(out, 0, sizeof(*out));
+    portENTER_CRITICAL(&wardrive_lock);
+    out->session_id = recent_session_id;
+    out->state = wardrive_status.state;
+    out->error = wardrive_status.error_code;
+    out->view_error = recent_error;
+    out->worker_active = worker_active;
+    out->available = recent_available && wardrive_recent != NULL;
+    if (out->available) {
+        out->revision = wardrive_recent->revision;
+        out->retained_events = wardrive_recent->count;
+        out->count = (uint8_t)cerberus_wardrive_recent_copy_recent(wardrive_recent,
+            out->rows, CERBERUS_WARDRIVE_RECENT_VISIBLE);
+    }
+    portEXIT_CRITICAL(&wardrive_lock);
+}
+
+esp_err_t cerberus_wardrive_clear_recent(void)
+{
+    portENTER_CRITICAL(&wardrive_lock);
+    if (worker_active || start_in_progress) {
+        portEXIT_CRITICAL(&wardrive_lock);
+        return ESP_ERR_INVALID_STATE;
+    }
+    cerberus_wardrive_recent_t *old = wardrive_recent;
+    wardrive_recent = NULL;
+    recent_available = false;
+    recent_worker_session = false;
+    recent_error = ESP_OK;
+    portEXIT_CRITICAL(&wardrive_lock);
+    heap_caps_free(old);
+    return ESP_OK;
+}
+
 static bool before_deadline(uint32_t deadline)
 {
     return (int32_t)(deadline - now_ms()) > 0;
@@ -143,6 +314,7 @@ static void snapshot_optional_gps(bool enabled,
     snapshot->sentence_age_ms = UINT32_MAX;
     snapshot->fix_age_ms = UINT32_MAX;
     snapshot->utc_age_ms = UINT32_MAX;
+    snapshot->gga_age_ms = UINT32_MAX;
     if (uart_error != NULL) *uart_error = ESP_OK;
 }
 
@@ -166,13 +338,14 @@ static void publish_error(esp_err_t error, char radio)
     if (radio == 'C') wardrive_status.c5_error = error;
     else if (radio == 'B') wardrive_status.s3_ble_error = error;
     else if (radio == 'E') wardrive_status.expansion_error = error;
+    else if (radio == 'G') wardrive_status.gps_error = error;
     else wardrive_status.sd_error = error;
     if (wardrive_status.error_code == ESP_OK) wardrive_status.error_code = error;
     portEXIT_CRITICAL(&wardrive_lock);
 }
 
 static void publish_sighting(const cerberus_wardrive_observation_t *observation,
-    bool logged)
+    bool logged, bool duplicate)
 {
     portENTER_CRITICAL(&wardrive_lock);
     if (observation->type == CERBERUS_WARDRIVE_WIFI_RELATION) {
@@ -181,6 +354,10 @@ static void publish_sighting(const cerberus_wardrive_observation_t *observation,
     } else if (observation->type == CERBERUS_WARDRIVE_WIFI_PROBE) {
         wardrive_status.c5_probe_observations = plus_one(wardrive_status.c5_probe_observations);
         if (logged) wardrive_status.c5_probe_logged = plus_one(wardrive_status.c5_probe_logged);
+    } else if (observation->radio == CERBERUS_WARDRIVE_RADIO_C5 && observation->type == CERBERUS_WARDRIVE_BLE) {
+        if(logged)wardrive_status.c5_ble_logged=plus_one(wardrive_status.c5_ble_logged);
+    } else if (observation->radio == CERBERUS_WARDRIVE_RADIO_S3 && observation->type == CERBERUS_WARDRIVE_WIFI) {
+        if(logged)wardrive_status.s3_wifi_logged=plus_one(wardrive_status.s3_wifi_logged);
     } else if (observation->radio == CERBERUS_WARDRIVE_RADIO_C5) {
         wardrive_status.c5_wifi_observations = plus_one(wardrive_status.c5_wifi_observations);
         if (logged) wardrive_status.c5_wifi_logged = plus_one(wardrive_status.c5_wifi_logged);
@@ -202,7 +379,7 @@ static void publish_sighting(const cerberus_wardrive_observation_t *observation,
         if (logged) wardrive_status.expansion_logged = plus_one(wardrive_status.expansion_logged);
     }
     if (logged) wardrive_status.sd_rows = plus_one(wardrive_status.sd_rows);
-    else wardrive_status.duplicate_sightings = plus_one(wardrive_status.duplicate_sightings);
+    else if (duplicate) wardrive_status.duplicate_sightings = plus_one(wardrive_status.duplicate_sightings);
     wardrive_status.dedupe_evicted = plus_saturated(
         plus_saturated(dedupe.evicted, wigle_dedupe.evicted),
         plus_saturated(probe_dedupe.evicted, relation_dedupe.evicted));
@@ -236,13 +413,34 @@ static esp_err_t save_log_stream(bool located, bool keep)
 {
     char name[24] = {0};
     uint64_t bytes = 0U;
+    cerberus_wardrive_compact_stats_t compact = {0};
+    uint64_t save_started_ms = now_ms64();
+    portENTER_CRITICAL(&wardrive_lock);
+    wardrive_status.compacting = located && keep;
+    portEXIT_CRITICAL(&wardrive_lock);
     esp_err_t error;
     do {
-        error = located ? cerberus_storage_wardrive_wigle_finish(keep, name, sizeof(name), &bytes) :
+        error = located ? cerberus_storage_wardrive_wigle_finish(keep, name, sizeof(name), &bytes, &compact) :
             cerberus_storage_wardrive_finish(keep, name, sizeof(name), &bytes);
         /* A mutex timeout leaves the FILE open. Keep ownership until close. */
         if (error == ESP_ERR_TIMEOUT) vTaskDelay(pdMS_TO_TICKS(100));
     } while (error == ESP_ERR_TIMEOUT);
+    uint64_t elapsed = now_ms64() - save_started_ms;
+    portENTER_CRITICAL(&wardrive_lock);
+    wardrive_status.compacting = false;
+    if (located && keep) {
+        wardrive_status.compact_ms = elapsed > UINT32_MAX ? UINT32_MAX : (uint32_t)elapsed;
+        wardrive_status.compact_passes = compact.merge_passes;
+        wardrive_status.compact_index_read_bytes = compact.index_read_bytes;
+        wardrive_status.compact_index_write_bytes = compact.index_write_bytes;
+    }
+    if (error == ESP_OK && compact.input_rows) {
+        wardrive_status.csv_rows += compact.output_rows;
+        wardrive_status.csv_devices += compact.devices;
+        wardrive_status.compacted_rows += compact.input_rows - compact.output_rows;
+        wardrive_status.sd_bytes -= compact.input_bytes - compact.output_bytes;
+    }
+    portEXIT_CRITICAL(&wardrive_lock);
     if (located) { wigle_file_open = false; wigle_file_rows = 0U; }
     else { wardrive_file_open = false; open_file_rows = 0U; }
     if (error != ESP_OK) { publish_error(error, 'S'); return error; }
@@ -270,8 +468,10 @@ static void finish_storage_session(void)
     if (error != ESP_OK) publish_error(error, 'S');
 }
 
-static esp_err_t append_observation(const cerberus_wardrive_observation_t *observation)
+static esp_err_t append_observation_impl(const cerberus_wardrive_observation_t *observation,
+    cerberus_wardrive_recent_outcome_t *outcome)
 {
+    *outcome = CERBERUS_WARDRIVE_RECENT_NOT_LOGGED;
     const uint64_t uptime = now_ms64();
     if (!cerberus_wardrive_observation_valid(observation)) {
         publish_invalid();
@@ -283,6 +483,8 @@ static esp_err_t append_observation(const cerberus_wardrive_observation_t *obser
     bool located = false;
     bool probe = observation->type == CERBERUS_WARDRIVE_WIFI_PROBE;
     bool relation = observation->type == CERBERUS_WARDRIVE_WIFI_RELATION;
+    cerberus_wigle_result_t format = probe || relation ?
+        CERBERUS_WIGLE_INVALID_ARG : CERBERUS_WIGLE_NO_LOCATION;
     if (wardrive_status.gps_requested && !probe && !relation) {
         /* Radio scan results do not carry synchronized RF timestamps. Match
          * the preserved firmware's GPS-at-result-receipt semantics and label
@@ -292,25 +494,65 @@ static esp_err_t append_observation(const cerberus_wardrive_observation_t *obser
             .result_received_monotonic_ms = uptime,
             .gps_snapshot_monotonic_ms = now_ms64(),
         };
-        located = cerberus_wardrive_wigle_format_observation(observation, &gps,
-            &time, row_buffer, sizeof(row_buffer), &row_length) == CERBERUS_WIGLE_OK;
+        if(stream_recording&&observation->radio<=CERBERUS_WARDRIVE_RADIO_S3){
+            time.source=CERBERUS_WIGLE_TIME_RF_CALLBACK;
+            time.rf_observed_monotonic_ms=stream_observed_ms;
+        }
+        format = cerberus_wardrive_wigle_format_observation(observation, &gps,
+            &time, row_buffer, sizeof(row_buffer), &row_length);
+        located = format == CERBERUS_WIGLE_OK;
+    }
+    if (stream_recording && !located) {
+        /* One directly uploadable CSV per recording. A missing/stale fix,
+         * unaligned RF time or unrepresentable row must not invent location
+         * or open a second UNLOC file. The radios and live preview continue. */
+        portENTER_CRITICAL(&wardrive_lock);
+        if (format == CERBERUS_WIGLE_NO_LOCATION || format == CERBERUS_WIGLE_NO_VALID_UTC)
+            wardrive_status.skipped_no_fix = plus_one(wardrive_status.skipped_no_fix);
+        else if (format == CERBERUS_WIGLE_UNCERTAIN_OBSERVATION_TIME)
+            wardrive_status.skipped_time = plus_one(wardrive_status.skipped_time);
+        else wardrive_status.skipped_format = plus_one(wardrive_status.skipped_format);
+        portEXIT_CRITICAL(&wardrive_lock);
+        publish_sighting(observation, false, false);
+        return ESP_OK;
     }
     if (!located) {
         row_length = cerberus_wardrive_format_unlocated_row(observation, &gps,
             uptime, uptime - started_ms, row_buffer, sizeof(row_buffer));
-        if (row_length == 0U) return ESP_ERR_INVALID_SIZE;
+        if (row_length == 0U) {
+            *outcome = CERBERUS_WARDRIVE_RECENT_ERROR;
+            return ESP_ERR_INVALID_SIZE;
+        }
     }
-    /* Separate histories let the first fresh fix record an identity that was
-     * previously written without location. A failed append never commits. */
-    cerberus_wardrive_dedupe_t *history = located ? &wigle_dedupe : &dedupe;
-    cerberus_wardrive_decision_t decision = relation ?
-        cerberus_wardrive_relation_decide(&relation_dedupe, observation, (uint32_t)uptime) : probe ?
-        cerberus_wardrive_probe_decide(&probe_dedupe, observation, (uint32_t)uptime) : located ?
-        cerberus_wardrive_decide(history, observation, (uint32_t)uptime) :
-        cerberus_wardrive_decide_evidence(history, observation, (uint32_t)uptime);
-    if (!decision.should_log) {
-        publish_sighting(observation, false);
+    /* Only accepted valid rows teach the filter. New extrema and cache misses
+     * reach the journal; final compaction retains the original earliest ties. */
+    cerberus_ward_log_identity_t identity = {
+        .type = (uint8_t)observation->type, .rssi = observation->rssi_dbm,
+    };
+    memcpy(identity.address, observation->address, sizeof(identity.address));
+    if (stream_recording && !cerberus_wardrive_rssi_needs_append(rssi_filter, &identity)) {
+        portENTER_CRITICAL(&wardrive_lock);
+        wardrive_status.rssi_filtered = plus_one(wardrive_status.rssi_filtered);
+        portEXIT_CRITICAL(&wardrive_lock);
+        *outcome = CERBERUS_WARDRIVE_RECENT_DUPLICATE;
+        publish_sighting(observation, false, true);
         return ESP_OK;
+    }
+    cerberus_wardrive_dedupe_t *history = located ? &wigle_dedupe : &dedupe;
+    cerberus_wardrive_decision_t decision = {0};
+    if (!stream_recording) {
+        /* Legacy result snapshots retain separate located/unlocated histories;
+         * only a successful append commits their decision. */
+        decision = relation ?
+            cerberus_wardrive_relation_decide(&relation_dedupe, observation, (uint32_t)uptime) : probe ?
+            cerberus_wardrive_probe_decide(&probe_dedupe, observation, (uint32_t)uptime) : located ?
+            cerberus_wardrive_decide(history, observation, (uint32_t)uptime) :
+            cerberus_wardrive_decide_evidence(history, observation, (uint32_t)uptime);
+        if (!decision.should_log) {
+            *outcome = CERBERUS_WARDRIVE_RECENT_DUPLICATE;
+            publish_sighting(observation, false, true);
+            return ESP_OK;
+        }
     }
     esp_err_t error = ESP_OK;
     if (!(located ? wigle_file_open : wardrive_file_open))
@@ -318,7 +560,7 @@ static esp_err_t append_observation(const cerberus_wardrive_observation_t *obser
     if (error == ESP_OK)
         error = located ? cerberus_storage_wardrive_wigle_append(row_buffer, row_length) :
             cerberus_storage_wardrive_append(row_buffer, row_length);
-    if (error == ESP_ERR_INVALID_SIZE &&
+    if (!stream_recording && error == ESP_ERR_INVALID_SIZE &&
         (located ? wigle_file_open : wardrive_file_open)) {
         error = save_log_stream(located, true);
         if (error == ESP_OK) error = begin_log_stream(located);
@@ -326,8 +568,13 @@ static esp_err_t append_observation(const cerberus_wardrive_observation_t *obser
             error = located ? cerberus_storage_wardrive_wigle_append(row_buffer, row_length) :
                 cerberus_storage_wardrive_append(row_buffer, row_length);
     }
-    if (error != ESP_OK) { publish_error(error, 'S'); return error; }
-    if (relation) cerberus_wardrive_relation_commit(&relation_dedupe, observation, decision, (uint32_t)uptime);
+    if (error != ESP_OK) {
+        *outcome = CERBERUS_WARDRIVE_RECENT_ERROR;
+        publish_error(error, 'S');
+        return error;
+    }
+    if (stream_recording) cerberus_wardrive_rssi_record_append(rssi_filter, &identity);
+    else if (relation) cerberus_wardrive_relation_commit(&relation_dedupe, observation, decision, (uint32_t)uptime);
     else if (probe) cerberus_wardrive_probe_commit(&probe_dedupe, observation, decision, (uint32_t)uptime);
     else cerberus_wardrive_commit(history, observation, decision, (uint32_t)uptime);
     if (located) ++wigle_file_rows;
@@ -341,12 +588,36 @@ static esp_err_t append_observation(const cerberus_wardrive_observation_t *obser
             wardrive_status.gps_fallback_rows = plus_one(wardrive_status.gps_fallback_rows);
     }
     portEXIT_CRITICAL(&wardrive_lock);
-    publish_sighting(observation, true);
+    publish_sighting(observation, true, false);
+    *outcome = located ? CERBERUS_WARDRIVE_RECENT_APPENDED_WIGLE :
+        CERBERUS_WARDRIVE_RECENT_APPENDED_UNLOCATED;
     return ESP_OK;
+}
+
+static esp_err_t append_observation(const cerberus_wardrive_observation_t *observation)
+{
+    cerberus_wardrive_recent_outcome_t outcome;
+    return append_observation_impl(observation, &outcome);
+}
+
+/* Each immutable bank row is previewed once before any GPS/SD work. Cache the
+ * terminal append result as well as its ticket: final-drain cleanup must never
+ * reissue a failed/possibly partial write or freshen the same received row. */
+static esp_err_t append_recent_observation(const cerberus_wardrive_observation_t *observation,
+    wardrive_recent_attempt_t *attempt)
+{
+    if (attempt->completed) return attempt->result;
+    recent_preview(observation, attempt);
+    cerberus_wardrive_recent_outcome_t outcome;
+    attempt->result = append_observation_impl(observation, &outcome);
+    attempt->completed = true;
+    recent_outcome(attempt->ticket, outcome);
+    return attempt->result;
 }
 
 static void reset_wifi_capture(void)
 {
+    memset(wifi_attempts, 0, sizeof(wifi_attempts));
     wifi_capture_ready = false;
     wifi_capture_generation = wifi_capture_count = wifi_capture_next = probe_capture_next = 0U;
     relation_capture_next = 0U;
@@ -446,7 +717,7 @@ static esp_err_t capture_wifi(uint8_t generation, uint8_t count, bool final_drai
         size_t label_length = strnlen(source->ssid, CERBERUS_WARDRIVE_LABEL_CAPACITY);
         observation.label_length = (uint8_t)label_length;
         memcpy(observation.label, source->ssid, label_length);
-        error = append_observation(&observation);
+        error = append_recent_observation(&observation, &wifi_attempts[i]);
         if (error != ESP_OK) return error;
         wifi_capture_next = (uint8_t)(i + 1U);
     }
@@ -516,23 +787,55 @@ static esp_err_t wifi_survey_ready(bool *ready, bool *timeout_pending,
     return ESP_OK;
 }
 
-static esp_err_t capture_ble(uint8_t generation, uint8_t count, bool final_drain)
+static bool ble_completed_state(uint64_t epoch, uint8_t count,
+    const cerberus_s3_ble_passive_state_t *state)
 {
+    return epoch != 0U && state->attached && state->epoch == epoch &&
+        state->scan_epoch != 0U && !state->owned && !state->receiving &&
+        !state->stopping && state->error == ESP_OK &&
+        state->scan.error_code == ESP_OK &&
+        state->scan.state == CERBERUS_BLE_SCAN_COMPLETE &&
+        state->scan.stored_count == count && count <= CERBERUS_BLE_SCAN_MAX_RESULTS &&
+        state->source_now_ms >= state->started_ms &&
+        state->source_now_ms - state->started_ms <= UINT32_MAX;
+}
+
+static bool ble_capture_same_state(const cerberus_s3_ble_passive_state_t *a,
+    const cerberus_s3_ble_passive_state_t *b)
+{
+    return a->epoch == b->epoch && a->scan_epoch == b->scan_epoch &&
+        a->host_epoch == b->host_epoch && a->started_ms == b->started_ms &&
+        memcmp(&a->scan, &b->scan, sizeof(a->scan)) == 0;
+}
+
+static esp_err_t capture_ble(uint64_t epoch, uint8_t count, bool final_drain)
+{
+    ble_capture_error_radio = 'B';
     if (count > CERBERUS_BLE_SCAN_MAX_RESULTS) return ESP_ERR_INVALID_SIZE;
     if (!final_drain && wants_stop()) return ESP_OK;
     /* One completed-bank copy binds each result and its independent packet
      * evidence under the scanner mutex. No row getter can race a new sweep. */
     esp_err_t error = ESP_OK;
+    cerberus_s3_ble_passive_state_t state = {0};
     if (ble_capture_ready) {
-        if (ble_capture_generation != generation || ble_capture_count != count)
+        if (ble_capture_epoch != epoch || ble_capture_count != count)
+            return ESP_ERR_INVALID_STATE;
+        error = cerberus_s3_ble_scanner_passive_get_state(epoch, &state);
+        if (error != ESP_OK) return error;
+        if (!ble_completed_state(epoch, count, &state) ||
+            !ble_capture_same_state(&ble_capture_state, &state))
             return ESP_ERR_INVALID_STATE;
     } else {
-        error = cerberus_s3_ble_scanner_copy_wardrive(generation, count,
-            ble_stage, ble_evidence_stage, CERBERUS_BLE_SCAN_MAX_RESULTS);
+        error = cerberus_s3_ble_scanner_passive_copy_wardrive(epoch, count,
+            ble_stage, ble_evidence_stage, CERBERUS_BLE_SCAN_MAX_RESULTS, &state);
         if (error != ESP_OK) return error;
-        ble_capture_generation = generation;
+        if (!ble_completed_state(epoch, count, &state))
+            return ESP_ERR_INVALID_STATE;
+        ble_capture_epoch = epoch;
+        ble_capture_state = state;
         ble_capture_count = count;
         ble_capture_next = 0U;
+        memset(ble_attempts, 0, sizeof(ble_attempts));
         ble_capture_ready = true;
     }
     /* Cleanup resumes this immutable bank after a mid-row Stop. Successful
@@ -554,7 +857,8 @@ static esp_err_t capture_ble(uint8_t generation, uint8_t count, bool final_drain
         size_t label_length = strnlen(source->name, CERBERUS_WARDRIVE_LABEL_CAPACITY);
         observation.label_length = (uint8_t)label_length;
         memcpy(observation.label, source->name, label_length);
-        error = append_observation(&observation);
+        ble_capture_error_radio = 'S';
+        error = append_recent_observation(&observation, &ble_attempts[i]);
         if (error != ESP_OK) return error;
         ble_capture_next = (uint8_t)(i + 1U);
     }
@@ -609,7 +913,8 @@ static esp_err_t capture_expansions(bool final_drain)
             label_length = CERBERUS_WARDRIVE_LABEL_CAPACITY;
         observation.label_length = (uint8_t)label_length;
         memcpy(observation.label, source->ssid, label_length);
-        esp_err_t error = append_observation(&observation);
+        wardrive_recent_attempt_t attempt = {0};
+        esp_err_t error = append_recent_observation(&observation, &attempt);
         if (error != ESP_OK) return error;
     }
     /* A healthy acknowledged Stop has no producer and can drain at most the
@@ -654,23 +959,93 @@ static esp_err_t drain_completed_wifi(const cerberus_wifi_scan_status_payload_t 
     return ESP_OK;
 }
 
-static void drain_completed_ble(const cerberus_ble_scan_status_payload_t *status)
+static void publish_completed_ble(const cerberus_ble_scan_status_payload_t *status)
 {
-    esp_err_t error = capture_ble(status->generation, status->stored_count, true);
-    if (error != ESP_OK) { publish_error(error, 'B'); return; }
     portENTER_CRITICAL(&wardrive_lock);
     wardrive_status.s3_ble_sweeps = plus_one(wardrive_status.s3_ble_sweeps);
-    wardrive_status.s3_ble_scan_dropped += status->dropped_reports;
+    wardrive_status.s3_ble_scan_dropped = plus_saturated(
+        wardrive_status.s3_ble_scan_dropped, status->dropped_reports);
     portEXIT_CRITICAL(&wardrive_lock);
+}
+
+static esp_err_t drain_completed_ble(uint64_t epoch, uint8_t count)
+{
+    esp_err_t error = capture_ble(epoch, count, true);
+    if (error == ESP_OK) publish_completed_ble(&ble_capture_state.scan);
+    return error;
+}
+
+/* A completed data bank and a held native attachment are independent. Even a
+ * failed append retires only data eligibility; exact cleanup must still finish.
+ * A missing token is authoritative absence, never permission to stop whatever
+ * happens to have the global SCANNER label or the same generation byte. */
+static void stop_owned_ble(uint64_t *epoch, bool *pending, esp_err_t *last_error)
+{
+    if (*epoch == 0U) return;
+    cerberus_s3_ble_passive_state_t state = {0};
+    esp_err_t error = cerberus_s3_ble_scanner_passive_get_state(*epoch, &state);
+    if (error != ESP_OK && error != ESP_ERR_NOT_FOUND) {
+        *last_error = error;
+        /* The token-scoped Stop is safe even if the preceding query failed. */
+        error = cerberus_s3_ble_scanner_passive_stop(*epoch, &state);
+    } else if (error == ESP_OK && state.attached && state.epoch == *epoch &&
+        (state.owned || state.stopping)) {
+        error = cerberus_s3_ble_scanner_passive_stop(*epoch, &state);
+    }
+    if (error == ESP_ERR_NOT_FOUND) {
+        publish_error(ESP_ERR_INVALID_STATE, 'B');
+        *epoch = 0U;
+        *pending = false;
+        return;
+    }
+    if (error != ESP_OK) { *last_error = error; return; }
+    if (!state.attached || state.epoch != *epoch) {
+        *last_error = ESP_ERR_INVALID_RESPONSE;
+        return;
+    }
+    if (state.error != ESP_OK || state.scan.error_code != ESP_OK) {
+        esp_err_t fault = state.error != ESP_OK ? (esp_err_t)state.error :
+            (esp_err_t)state.scan.error_code;
+        publish_error(fault, 'B');
+        *last_error = fault;
+        *pending = false;
+    }
+    if (state.owned || state.stopping) return;
+    if (*pending) {
+        char error_radio = 'B';
+        if (ble_completed_state(*epoch, state.scan.stored_count, &state)) {
+            error = drain_completed_ble(*epoch, state.scan.stored_count);
+            error_radio = ble_capture_error_radio;
+        } else if (state.scan_epoch != 0U && !state.receiving &&
+            state.scan.state == CERBERUS_BLE_SCAN_IDLE && state.scan.stored_count == 0U) {
+            /* Native cancellation intentionally discards the incomplete
+             * sweep and returns error-free IDLE. It is not a completed bank
+             * and must neither append rows nor turn an ordinary Stop into ERROR. */
+            error = ESP_OK;
+        } else error = ESP_ERR_INVALID_STATE;
+        /* An append can fail after reaching SD. Never retry a failed row, and
+         * never recount a bank whose final drain already succeeded. */
+        *pending = false;
+        if (error != ESP_OK) {
+            publish_error(error, error_radio);
+            /* SD failure is not evidence of an S3 radio cleanup failure. */
+            if (error_radio == 'B') *last_error = error;
+        }
+    }
+    error = cerberus_s3_ble_scanner_passive_release(*epoch);
+    if (error == ESP_OK || error == ESP_ERR_NOT_FOUND) {
+        if (error == ESP_ERR_NOT_FOUND) publish_error(ESP_ERR_INVALID_STATE, 'B');
+        *epoch = 0U;
+    } else *last_error = error;
 }
 
 static void stop_own_scans(bool wifi_own, uint8_t wifi_generation,
     bool wifi_start_uncertain, uint8_t wifi_start_baseline,
-    bool ble_own, uint8_t ble_generation)
+    uint64_t *ble_epoch, bool *ble_pending)
 {
     uint32_t deadline = now_ms() + WARDRIVE_STOP_GRACE_MS;
     esp_err_t wifi_last_error = ESP_OK, ble_last_error = ESP_OK;
-    while ((wifi_own || wifi_start_uncertain || ble_own) &&
+    while ((wifi_own || wifi_start_uncertain || *ble_epoch != 0U) &&
         before_deadline(deadline)) {
         if (wifi_own || wifi_start_uncertain) {
             cerberus_wifi_scan_status_payload_t status = {0};
@@ -728,43 +1103,18 @@ static void stop_own_scans(bool wifi_own, uint8_t wifi_generation,
                 }
             }
         }
-        if (ble_own) {
-            cerberus_ble_scan_status_payload_t status = {0};
-            esp_err_t error = cerberus_s3_ble_scanner_get_status(&status);
-            if (error != ESP_OK) ble_last_error = error;
-            else if (status.generation != ble_generation) {
-                publish_error(ESP_ERR_INVALID_STATE, 'B');
-                ble_own = false;
-            } else if (status.state == CERBERUS_BLE_SCAN_RUNNING) {
-                error = cerberus_s3_ble_scanner_stop(&status);
-                if (error != ESP_OK) ble_last_error = error;
-                else if (status.generation != ble_generation) {
-                    publish_error(ESP_ERR_INVALID_STATE, 'B');
-                    ble_own = false;
-                } else if (status.state != CERBERUS_BLE_SCAN_RUNNING) {
-                    if (status.state == CERBERUS_BLE_SCAN_COMPLETE)
-                        drain_completed_ble(&status);
-                    ble_own = false;
-                }
-            } else {
-                if (status.state == CERBERUS_BLE_SCAN_COMPLETE)
-                    drain_completed_ble(&status);
-                if (status.state == CERBERUS_BLE_SCAN_ERROR)
-                    publish_error(status.error_code != ESP_OK ?
-                        (esp_err_t)status.error_code : ESP_FAIL, 'B');
-                ble_own = false;
-            }
-        }
-        if (wifi_own || wifi_start_uncertain || ble_own)
+        stop_owned_ble(ble_epoch, ble_pending, &ble_last_error);
+        if (wifi_own || wifi_start_uncertain || *ble_epoch != 0U)
             vTaskDelay(pdMS_TO_TICKS(100));
     }
     if (wifi_own) publish_error(wifi_last_error != ESP_OK ? wifi_last_error : ESP_ERR_TIMEOUT, 'C');
     if (wifi_start_uncertain)
         publish_error(wifi_last_error != ESP_OK ? wifi_last_error : ESP_ERR_TIMEOUT, 'C');
-    if (ble_own) publish_error(ble_last_error != ESP_OK ? ble_last_error : ESP_ERR_TIMEOUT, 'B');
+    if (*ble_epoch != 0U)
+        publish_error(ble_last_error != ESP_OK ? ble_last_error : ESP_ERR_TIMEOUT, 'B');
 }
 
-static void stop_expansions(void)
+static void stop_expansions_impl(bool drain_records)
 {
     esp_err_t error = field_survey_set_running(false);
     if (error != ESP_OK) publish_error(error, 'E');
@@ -791,23 +1141,38 @@ static void stop_expansions(void)
     }
     /* Stop acknowledgment means no further R1-R6 queue push is in flight.
      * Drain every retained report before closing the SD file or USB handoff. */
-    error = capture_expansions(true);
-    if (error != ESP_OK) publish_error(error, 'E');
+    if (drain_records) {
+        error = capture_expansions(true);
+        if (error != ESP_OK) publish_error(error, 'E');
+    }
     field_survey_stream_close();
     /* Manual Field Survey must not inherit Wardriving's channel allocation. */
     error = field_survey_set_expansion_plan(NULL);
     if (error != ESP_OK) publish_error(error, 'E');
 }
 
+static void stop_expansions(void)
+{
+    stop_expansions_impl(true);
+}
+
 static void stop_scans_and_close_file(bool wifi_own, uint8_t wifi_generation,
     bool wifi_start_uncertain, uint8_t wifi_start_baseline,
-    bool ble_own, uint8_t ble_generation)
+    uint64_t ble_epoch, bool ble_pending)
 {
     if (wardrive_status.expansions_requested)
         (void)field_survey_set_running(false);
     stop_own_scans(wifi_own, wifi_generation, wifi_start_uncertain,
-        wifi_start_baseline, ble_own, ble_generation);
+        wifi_start_baseline, &ble_epoch, &ble_pending);
     if (wardrive_status.expansions_requested) stop_expansions();
+    /* C5 and expansion grace periods remain bounded. An uncertain S3 release
+     * retains this worker, workspace and open streams instead of pretending
+     * Stop finished. Only this accepted token is retried; no radio is rearmed. */
+    esp_err_t ble_last_error = ESP_OK;
+    while (ble_epoch != 0U) {
+        stop_owned_ble(&ble_epoch, &ble_pending, &ble_last_error);
+        if (ble_epoch != 0U) vTaskDelay(pdMS_TO_TICKS(WARDRIVE_POLL_MS));
+    }
     bool keep = open_file_rows != 0U;
     if (wardrive_file_open) (void)save_open_file(keep);
     if (wigle_file_open) (void)save_log_stream(true, wigle_file_rows != 0U);
@@ -816,15 +1181,17 @@ static void stop_scans_and_close_file(bool wifi_own, uint8_t wifi_generation,
     if (error != ESP_OK) publish_error(error, 'E');
 }
 
+static void wardrive_worker(void *) __attribute__((unused));
 static void wardrive_worker(void *unused)
 {
     (void)unused;
-    /* An unwired receiver is the default. GPS owns no UART/task/heap until
-     * explicitly enabled for this session. It never gates C5/S3 scanning. */
+    recent_begin_session();
+    /* Retain the preview reader and its acquired fix for this session. */
     bool gps_enabled = wardrive_status.gps_requested;
     esp_err_t gps_error = start_optional_gps(gps_enabled);
-    bool wifi_own = false, ble_own = false;
-    uint8_t wifi_generation = 0U, ble_generation = 0U;
+    bool wifi_own = false, ble_pending = false;
+    uint8_t wifi_generation = 0U;
+    uint64_t ble_epoch = 0U;
     uint32_t last_expansion = now_ms(), last_sync = now_ms();
     uint32_t last_c5_status_ok = now_ms();
     uint32_t wifi_capture_deadline = 0U;
@@ -834,12 +1201,12 @@ static void wardrive_worker(void *unused)
     uint32_t wifi_start_retry_deadline = 0U;
     bool wifi_start_retry_active = false, wifi_start_uncertain = false;
     uint8_t wifi_start_baseline = 0U;
-    uint8_t ble_release_retries = 0U;
-    esp_err_t failure = ESP_OK;
+    esp_err_t failure = gps_error == ESP_OK ? cerberus_wardrive_start_check(gps_enabled) : gps_error;
     portENTER_CRITICAL(&wardrive_lock);
     wardrive_status.gps_error = gps_error;
-    wardrive_status.state = CERBERUS_WARDRIVE_RUNNING;
+    wardrive_status.state = failure == ESP_OK ? CERBERUS_WARDRIVE_RUNNING : CERBERUS_WARDRIVE_ERROR;
     portEXIT_CRITICAL(&wardrive_lock);
+    if (failure != ESP_OK) publish_error(failure, 'G');
     while (!wants_stop() && failure == ESP_OK) {
         if (wifi_start_retry_active &&
             !before_deadline(wifi_start_retry_deadline)) {
@@ -967,49 +1334,55 @@ static void wardrive_worker(void *unused)
                 }
             }
         }
-        cerberus_ble_scan_status_payload_t ble = {0};
-        failure = cerberus_s3_ble_scanner_get_status(&ble);
-        if (failure != ESP_OK) { publish_error(failure, 'B'); break; }
-        if (ble_own) {
-            if (ble.generation != ble_generation) failure = ESP_ERR_INVALID_STATE;
-            else if (ble.state == CERBERUS_BLE_SCAN_COMPLETE) {
-                failure = capture_ble(ble_generation, ble.stored_count, false);
-                if (failure == ESP_OK && wants_stop()) break;
-                if (failure == ESP_OK) {
-                    portENTER_CRITICAL(&wardrive_lock);
-                    wardrive_status.s3_ble_sweeps = plus_one(wardrive_status.s3_ble_sweeps);
-                    wardrive_status.s3_ble_scan_dropped += ble.dropped_reports;
-                    portEXIT_CRITICAL(&wardrive_lock);
-                }
-                ble_own = false;
-            } else if (ble.state != CERBERUS_BLE_SCAN_RUNNING)
-                failure = ble.error_code != ESP_OK ? (esp_err_t)ble.error_code : ESP_FAIL;
-        } else if (ble.state == CERBERUS_BLE_SCAN_RUNNING) failure = ESP_ERR_INVALID_STATE;
-        if (failure != ESP_OK) { publish_error(failure, 'B'); break; }
-        if (!ble_own && !wants_stop()) {
-            cerberus_s3_ble_owner_t owner = cerberus_s3_ble_host_owner();
-            if (owner == CERBERUS_S3_BLE_OWNER_SCANNER &&
-                ble.state == CERBERUS_BLE_SCAN_COMPLETE &&
-                ble_release_retries < 20U) {
-                /* finish_scan publishes COMPLETE before releasing the host.
-                 * Give that callback time to finish before claiming it again. */
-                ++ble_release_retries;
-                vTaskDelay(pdMS_TO_TICKS(WARDRIVE_POLL_MS));
-                continue;
-            }
-            ble_release_retries = 0U;
-            if (owner != CERBERUS_S3_BLE_OWNER_NONE) {
-                publish_error(ESP_ERR_INVALID_STATE, 'B');
+        cerberus_s3_ble_passive_state_t ble = {0};
+        if (ble_epoch != 0U) {
+            failure = cerberus_s3_ble_scanner_passive_get_state(ble_epoch, &ble);
+            if (failure == ESP_OK && (!ble.attached || ble.epoch != ble_epoch))
+                failure = ESP_ERR_INVALID_RESPONSE;
+            if (failure == ESP_OK && (ble.error != ESP_OK || ble.scan.error_code != ESP_OK))
+                failure = ble.error != ESP_OK ? (esp_err_t)ble.error :
+                    (esp_err_t)ble.scan.error_code;
+            if (failure != ESP_OK) {
+                ble_pending = false;
+                publish_error(failure, 'B');
                 break;
             }
-            failure = cerberus_s3_ble_scanner_start(&ble);
-            if (failure == ESP_OK && ble.state == CERBERUS_BLE_SCAN_RUNNING) {
-                /* Accepted START distinguishes a new bank even after the
-                 * public generation byte wraps. */
+            if (ble_pending && ble.scan.state == CERBERUS_BLE_SCAN_COMPLETE &&
+                !ble.owned && !ble.stopping) {
+                failure = capture_ble(ble_epoch, ble.scan.stored_count, false);
+                if (failure == ESP_OK && wants_stop()) break;
+                /* Retire data eligibility separately from the native lease:
+                 * even a failed append must still release exactly our token. */
+                ble_pending = false;
+                if (failure != ESP_OK) {
+                    publish_error(failure, ble_capture_error_radio);
+                    break;
+                }
+                publish_completed_ble(&ble_capture_state.scan);
+            } else if (ble_pending && ble.scan.state != CERBERUS_BLE_SCAN_RUNNING &&
+                ble.scan.state != CERBERUS_BLE_SCAN_COMPLETE) {
+                ble_pending = false;
+                failure = ESP_ERR_INVALID_STATE;
+                publish_error(failure, 'B');
+                break;
+            }
+        }
+        if (!ble_pending && !wants_stop()) {
+            const uint64_t previous = ble_epoch;
+            failure = cerberus_s3_ble_scanner_passive_start(previous, &ble);
+            /* A failed acquisition can still hold a cleanup attachment. A
+             * failed rearm can return the old completed lease. Preserve both;
+             * an empty error response never erases our previously held token. */
+            if (ble.attached && ble.epoch != 0U) ble_epoch = ble.epoch;
+            if (failure == ESP_OK && ble.attached && ble.epoch != 0U &&
+                ble.epoch != previous && ble.scan_epoch != 0U &&
+                ble.error == ESP_OK && ble.scan.error_code == ESP_OK &&
+                ble.scan.state == CERBERUS_BLE_SCAN_RUNNING) {
                 ble_capture_ready = false;
+                ble_capture_epoch = 0U;
+                memset(&ble_capture_state, 0, sizeof(ble_capture_state));
                 ble_capture_next = 0U;
-                ble_own = true;
-                ble_generation = ble.generation;
+                ble_pending = true;
             } else {
                 if (failure == ESP_OK) failure = ESP_ERR_INVALID_RESPONSE;
                 publish_error(failure, 'B');
@@ -1043,22 +1416,31 @@ static void wardrive_worker(void *unused)
     wardrive_status.state = CERBERUS_WARDRIVE_STOPPING;
     portEXIT_CRITICAL(&wardrive_lock);
     stop_scans_and_close_file(wifi_own, wifi_generation,
-        wifi_start_uncertain, wifi_start_baseline, ble_own, ble_generation);
-    gps_error = stop_optional_gps(gps_enabled);
-    if (gps_error != ESP_OK) {
+        wifi_start_uncertain, wifi_start_baseline, ble_epoch, ble_pending);
+    /* A timeout or driver-delete error is retained GPS ownership, not a
+     * terminal session. Reuse this worker for paced cleanup, with files already
+     * drained above and the workspace still owned until the UART is released. */
+    do {
+        gps_error = stop_optional_gps(gps_enabled);
         portENTER_CRITICAL(&wardrive_lock);
         wardrive_status.gps_error = gps_error;
         portEXIT_CRITICAL(&wardrive_lock);
-    }
+        if (gps_error != ESP_OK) vTaskDelay(pdMS_TO_TICKS(WARDRIVE_POLL_MS));
+    } while (gps_error != ESP_OK);
     release_workspace();
     portENTER_CRITICAL(&wardrive_lock);
     wardrive_status.elapsed_ms = (uint32_t)(now_ms64() - started_ms);
     wardrive_status.state = wardrive_status.error_code == ESP_OK ?
         CERBERUS_WARDRIVE_STOPPED : CERBERUS_WARDRIVE_ERROR;
+    recent_worker_session = false;
     worker_active = false;
     portEXIT_CRITICAL(&wardrive_lock);
     vTaskDelete(NULL);
 }
+
+#if defined(ESP_PLATFORM) || defined(CERBERUS_WARDRIVE_STREAM_HOST)
+#include "wardrive_stream_worker.h"
+#endif
 
 static esp_err_t prepare_expansion_plan(uint8_t present_mask)
 {
@@ -1076,12 +1458,37 @@ static esp_err_t prepare_expansion_plan(uint8_t present_mask)
     return field_survey_set_expansion_plan(&plan);
 }
 
+esp_err_t cerberus_wardrive_start_check(bool enable_gps)
+{
+    if (!enable_gps) return ESP_ERR_NOT_FINISHED;
+    cerberus_wardrive_gps_uart_state_t receiver;
+    esp_err_t error = cerberus_wardrive_gps_uart_get_state(&receiver);
+    if (error != ESP_OK) return error;
+    if (receiver.error != ESP_OK) return receiver.error;
+    return cerberus_wardrive_gps_start_ready(true, &receiver) ? ESP_OK : ESP_ERR_NOT_FINISHED;
+}
+
 static esp_err_t wardrive_start_with_idle_probes_paused(bool include_expansions,
     bool enable_gps)
 {
+    bool geofences_enabled = false;
+#if defined(ESP_PLATFORM) || defined(CERBERUS_WARDRIVE_STREAM_HOST)
+    cerberus_geofence_config_t geofences;
+    esp_err_t settings_error = cerberus_settings_geofences_get(&geofences);
+    if (settings_error != ESP_OK) return settings_error;
+    if (!cerberus_geofence_config_valid(&geofences)) return ESP_ERR_INVALID_STATE;
+    for (unsigned i = 0; i < CERBERUS_GEOFENCE_SLOTS; ++i)
+        geofences_enabled |= geofences.areas[i].enabled != 0;
+    /* R1-R6 currently acknowledge the requested setting, not RF quiescence. */
+    if (geofences_enabled && include_expansions) return ESP_ERR_NOT_SUPPORTED;
+#endif
     cerberus_c5_status_t c5 = {0};
     esp_err_t error = c5_spi_link_get_status(&c5);
     if (error != ESP_OK) return error;
+    #if defined(ESP_PLATFORM) || defined(CERBERUS_WARDRIVE_STREAM_HOST)
+    if(c5.firmware_version<CERBERUS_WD_MIN_FIRMWARE)return ESP_ERR_NOT_SUPPORTED;
+    if(geofences_enabled&&c5.firmware_version<CERBERUS_WD_PAUSE_MIN_FIRMWARE)return ESP_ERR_NOT_SUPPORTED;
+    #endif
     if ((c5.capabilities & (CERBERUS_C5_CAP_WIFI_2_4_GHZ |
          CERBERUS_C5_CAP_WIFI_5_GHZ)) == 0U || c5.radio_state != 0U)
         return ESP_ERR_INVALID_STATE;
@@ -1116,12 +1523,17 @@ static esp_err_t wardrive_start_with_idle_probes_paused(bool include_expansions,
     /* The worker and optional GPS UART consume internal heap before the first
      * BLE sweep. Initialize NimBLE while the idle heap still satisfies the
      * scanner's first-use reserve, then release ownership for that sweep. */
-    if (!cerberus_s3_ble_host_initialized()) {
+    if (wardrive_selected_mode!=CERBERUS_WD_WIFI && !cerberus_s3_ble_host_initialized()) {
+#if !defined(ESP_PLATFORM) && !defined(CERBERUS_WARDRIVE_STREAM_HOST)
         if (heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) < 98304U)
             return ESP_ERR_NO_MEM;
-        error = cerberus_s3_ble_host_claim(CERBERUS_S3_BLE_OWNER_SCANNER);
+#endif
+        cerberus_s3_ble_host_lease_t warm_lease = {0};
+        error = cerberus_s3_ble_host_claim(CERBERUS_S3_BLE_OWNER_SCANNER, &warm_lease);
         if (error != ESP_OK) return error;
-        error = cerberus_s3_ble_host_release(CERBERUS_S3_BLE_OWNER_SCANNER);
+        /* The host checks token, epoch and owner together. A reset or later
+         * SCANNER claim cannot be released by this temporary initializer. */
+        error = cerberus_s3_ble_host_release(&warm_lease);
         if (error != ESP_OK) return error;
     }
     /* GPS OFF allocates no UART. Its reserve is the scanner's 32 KiB gate,
@@ -1129,12 +1541,20 @@ static esp_err_t wardrive_start_with_idle_probes_paused(bool include_expansions,
      * The measured no-GPS Stop state has 45980 bytes free; excess reserve
      * must not reject a known working restart. GPS adds a 1 KiB UART ring and
      * its existing 3.5 KiB reader stack; 2 KiB covers UART/task metadata. */
-    const size_t post_ble_reserve = post_ble_reserve_bytes(enable_gps);
+    const size_t post_ble_reserve =
+#if defined(ESP_PLATFORM) || defined(CERBERUS_WARDRIVE_STREAM_HOST)
+        16384U; /* Driver allocations have checked cleanup; no duplicate GPS reserve. */
+#else
+        post_ble_reserve_bytes(enable_gps);
+#endif
     if (heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) <
         post_ble_reserve)
         return ESP_ERR_NO_MEM;
     error = allocate_workspace();
     if (error != ESP_OK) return error;
+#if defined(ESP_PLATFORM) || defined(CERBERUS_WARDRIVE_STREAM_HOST)
+    wardrive_geofences = geofences;
+#endif
     field_survey_snapshot(&expansion_stage);
     if (expansion_stage.requested ||
         (include_expansions && (expansion_stage.scanning_mask != 0U ||
@@ -1152,7 +1572,9 @@ static esp_err_t wardrive_start_with_idle_probes_paused(bool include_expansions,
             return error;
         }
     }
-    error = cerberus_storage_wardrive_session_begin();
+    /* Driver warm-up and owner checks can outlast the fix that admitted us. */
+    error = cerberus_wardrive_start_check(enable_gps);
+    if (error == ESP_OK) error = cerberus_storage_wardrive_session_begin();
     if (error != ESP_OK) {
         if (include_expansions) {
             esp_err_t reset_error = field_survey_set_expansion_plan(NULL);
@@ -1173,7 +1595,8 @@ static esp_err_t wardrive_start_with_idle_probes_paused(bool include_expansions,
             release_workspace();
             return error;
         }
-        error = field_survey_set_running(true);
+        error = cerberus_wardrive_start_check(enable_gps);
+        if (error == ESP_OK) error = field_survey_set_running(true);
         if (error != ESP_OK) {
             field_survey_stream_close();
             esp_err_t reset_error = field_survey_set_expansion_plan(NULL);
@@ -1196,14 +1619,28 @@ static esp_err_t wardrive_start_with_idle_probes_paused(bool include_expansions,
     memset(&wardrive_status, 0, sizeof(wardrive_status));
     wardrive_status.state = CERBERUS_WARDRIVE_STARTING;
     wardrive_status.gps_requested = enable_gps;
+    wardrive_status.mode = wardrive_selected_mode;
     wardrive_status.expansions_requested = include_expansions;
+    wardrive_status.geofences_enabled = geofences_enabled;
+    wardrive_status.geofence.slot = CERBERUS_GEOFENCE_SLOTS;
     wardrive_status.sd_bytes = 0U;
     stop_requested = false;
+    /* Failed task creation discards the optional expansion FIFO. Only an
+     * accepted worker's entry point owns a new Recent session. */
+    recent_worker_session = false;
     worker_active = true;
     portEXIT_CRITICAL(&wardrive_lock);
-    if (xTaskCreate(wardrive_worker, "wardrive", WARDRIVE_WORKER_STACK,
+    if (xTaskCreate(
+#if defined(ESP_PLATFORM) || defined(CERBERUS_WARDRIVE_STREAM_HOST)
+        wardrive_stream_worker,
+#else
+        wardrive_worker,
+#endif
+        "wardrive", WARDRIVE_WORKER_STACK,
         NULL, 2, NULL) != pdPASS) {
-        if (include_expansions) stop_expansions();
+        /* No worker accepted this session. Discard its optional FIFO when
+         * closing it; do not open SD files or mutate the previous Recent view. */
+        if (include_expansions) stop_expansions_impl(false);
         finish_storage_session();
         wardrive_file_open = false;
         portENTER_CRITICAL(&wardrive_lock);
@@ -1227,8 +1664,12 @@ esp_err_t cerberus_wardrive_start(bool include_expansions, bool enable_gps)
 
     /* Idle R1-R6 presence probes share the SPI bus with onboard C5 scan
      * commands. Drain any in-flight probe before Wardriving takes the bus. */
-    esp_err_t error = field_survey_set_idle_probe_enabled(false);
-    bool gate_closed = error == ESP_OK || error == ESP_ERR_TIMEOUT;
+    esp_err_t error = cerberus_wardrive_start_check(enable_gps);
+    bool gate_closed = false;
+    if (error == ESP_OK) {
+        error = field_survey_set_idle_probe_enabled(false);
+        gate_closed = error == ESP_OK || error == ESP_ERR_TIMEOUT;
+    }
     if (error == ESP_OK)
         error = wardrive_start_with_idle_probes_paused(include_expansions,
             enable_gps);

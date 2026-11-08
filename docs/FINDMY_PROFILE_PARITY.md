@@ -1,5 +1,11 @@
 # Find My profile parity audit
 
+## Rev93 source contribution
+
+Selected Find My observations can now use the same passive SD snapshot/offline viewer as generic BLE rows. This does not import saved addresses into Sound/GATT/live selection, persist raw scan responses or expand active eligibility. See [BLE SD snapshots](BLE_SD_SNAPSHOTS.md).
+
+See [CONTRIBUTION_REV93.md](CONTRIBUTION_REV93.md) for validation boundaries and [the coverage ledger](MARAUDER_COVERAGE_LEDGER.md) for remaining work. The following sections retain the earlier contribution history.
+
 Date: 2026-10-29. Compared against Marauder `develop` commit
 `79cc6bcba1db6679baee1dab2b0c1ad5010e6363` in
 `../integration/marauder-develop-2026-10-29`.

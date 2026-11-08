@@ -108,6 +108,12 @@ sentinel_scan_command_t sentinel_scan_session_step(sentinel_scan_session_t *sess
  * or duplicate acknowledgements are ignored and return false. A failed START
  * remains tracked until a fresh status query rules out an ambiguous delivery. */
 bool sentinel_scan_session_ack(sentinel_scan_session_t *session, sentinel_scan_command_t command, sentinel_scan_result_t result, uint32_t now_ms);
+/* Local admission has no transport-delivery ambiguity. For a rejected START,
+ * use this only when the adapter proves that no operation or cleanup lease was
+ * accepted/held. An error code alone is not that proof. Preserve retry/backoff,
+ * but do not infer ownership from a later unrelated RUNNING observation.
+ * Accepted START and all STOP results retain the normal acknowledgement rules. */
+bool sentinel_scan_session_ack_local(sentinel_scan_session_t *session, sentinel_scan_command_t command, sentinel_scan_result_t result, uint32_t now_ms);
 
 #ifdef __cplusplus
 }

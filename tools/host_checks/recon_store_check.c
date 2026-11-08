@@ -45,10 +45,13 @@ typedef int *SemaphoreHandle_t;
 static int recon_mutex_object;
 static bool storage_locked, storage_busy, recon_locked, recon_busy;
 static bool sd_mounted, sd_bus_ready, wardrive_busy;
+/* Lease boundary only; actual session lifecycle has a dedicated storage fixture. */
+static struct { bool active; } sd_recon;
 static cerberus_storage_owner_t storage_owner;
 static uint32_t sd_read_epoch;
 static sdmmc_card_t card_object, *sd_card;
 static FILE *sd_wifi_capture_file;
+static void *sd_packet_count; /* Optional capture lease excludes SD handoff. */
 static char sd_operation_source_path[768];
 static unsigned mount_failures;
 static bool unmount_failure, alloc_failure, psram_failure, mutex_failure;
@@ -186,6 +189,16 @@ static void epoch_tests(void)
     unmount_failure = false; wardrive_busy = true;
     assert(cerberus_storage_reserve_for_usb() == ESP_ERR_INVALID_STATE && sd_read_epoch == mounted);
     wardrive_busy = false;
+    sd_recon.active = true;
+    assert(cerberus_storage_unmount() == ESP_ERR_INVALID_STATE);
+    assert(sd_mounted && sd_card == &card_object && sd_read_epoch == mounted);
+    assert(storage_owner == CERBERUS_STORAGE_OWNER_FIRMWARE && !storage_locked);
+    assert(cerberus_storage_reserve_for_usb() == ESP_ERR_INVALID_STATE);
+    assert(sd_mounted && sd_card == &card_object && sd_read_epoch == mounted);
+    assert(storage_owner == CERBERUS_STORAGE_OWNER_FIRMWARE && !storage_locked);
+    assert(cerberus_storage_get_read_epoch(&epoch) == ESP_OK && epoch == mounted);
+    assert(!storage_locked); /* Recorder lease permits ordinary read-only lookups. */
+    sd_recon.active = false;
     assert(cerberus_storage_reserve_for_usb() == ESP_OK && sd_read_epoch != mounted);
     assert(cerberus_storage_get_read_epoch(&epoch) == ESP_ERR_INVALID_STATE && epoch == 0U);
     assert(cerberus_storage_mount() == ESP_ERR_INVALID_STATE);
@@ -198,7 +211,7 @@ static void epoch_tests(void)
     assert(cerberus_storage_unmount() == ESP_OK);
     sd_read_epoch = UINT32_MAX;
     assert(cerberus_storage_mount() == ESP_OK && sd_read_epoch == 1U);
-    puts("PASS: real mount/unmount/USB epoch transitions, failure paths, busy state and wrap.");
+    puts("PASS: real mount/unmount/USB epochs, recording lease, failure paths, busy state and wrap.");
 }
 int main(int argc, char **argv)
 {

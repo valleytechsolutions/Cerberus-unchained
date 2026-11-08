@@ -32,11 +32,38 @@ static void expect_rejected(cerberus_wigle_result_t expected,
     assert(strcmp(row, "UNCHANGED") == 0 && written == 777U);
 }
 
-int main(void)
+static void fix_class_rows(const cerberus_wardrive_observation_t *ap)
+{
+    const char *bad[]={
+        "GNRMC,120000.000,A,4807.038,N,01131.000,E,0,0,081126,,,E,V",
+        "GNRMC,120000.000,V,,,,,,,081126,,,N,V",
+        "GNGGA,120000.000,4807.038,N,01131.000,E,6,08,0.9,20,M,,,"};
+    const char *rmc="GNRMC,120000.000,A,4807.038,N,01131.000,E,0,0,081126,,,A,V";
+    const char *gga="GNGGA,120000.000,4807.038,N,01131.000,E,1,08,0.9,20,M,,,";
+    cerberus_wigle_time_provenance_t time={.source=CERBERUS_WIGLE_TIME_RF_CALLBACK,
+        .rf_observed_monotonic_ms=1020,.gps_snapshot_monotonic_ms=1020};
+    for(unsigned i=0;i<3;++i)for(unsigned reverse=0;reverse<2;++reverse){
+        cerberus_wardrive_gps_core_t core;cerberus_wardrive_gps_snapshot_t gps;
+        cerberus_wardrive_gps_core_reset(&core);const char *good=i==2?rmc:gga;
+        feed(&core,reverse?good:bad[i],1000);feed(&core,reverse?bad[i]:good,1020);
+        cerberus_wardrive_gps_core_snapshot(&core,1020,&gps);
+        expect_rejected(CERBERUS_WIGLE_NO_LOCATION,ap,&gps,&time);
+        feed(&core,"GNRMC,120001.000,A,4807.038,N,01131.000,E,0,0,081126,,,A,V",2000);
+        cerberus_wardrive_gps_core_snapshot(&core,2000,&gps);
+        time.rf_observed_monotonic_ms=time.gps_snapshot_monotonic_ms=2000;
+        char row[384];size_t written;
+        assert(cerberus_wardrive_wigle_format_wifi(ap,&gps,&time,row,sizeof(row),&written)==CERBERUS_WIGLE_OK);
+        time.rf_observed_monotonic_ms=time.gps_snapshot_monotonic_ms=1020;
+    }
+}
+int main(int argc, char **argv)
 {
     assert(strncmp(CERBERUS_WIGLE_METADATA_HEADER, "WigleWifi-1.6,", 14U) == 0);
     assert(strstr(CERBERUS_WIGLE_METADATA_HEADER,
-        "locationSource=GPS-at-result-receipt,timeSource=latest-RMC,rfTime=unavailable") != NULL);
+        "star=Sol,body=3,subBody=0,") != NULL);
+    assert(strstr(CERBERUS_WIGLE_METADATA_HEADER,
+        "locationSource=GNSS,timeSource=RMC-UTC,rfTime=onboard-age-checked;expansion-receipt") != NULL);
+    assert(sizeof(CERBERUS_WIGLE_METADATA_HEADER CERBERUS_WIGLE_COLUMN_HEADER) - 1U <= 512U);
     assert(strcmp(CERBERUS_WIGLE_COLUMN_HEADER,
         "MAC,SSID,AuthMode,FirstSeen,Channel,Frequency,RSSI,CurrentLatitude,"
         "CurrentLongitude,AltitudeMeters,AccuracyMeters,RCOIs,MfgrId,Type\n") == 0);
@@ -51,6 +78,7 @@ int main(void)
     static const char raw_ssid[] = "Cafe, \"Lab\"";
     ap.label_length = (uint8_t)strlen(raw_ssid);
     memcpy(ap.label, raw_ssid, ap.label_length);
+    fix_class_rows(&ap);
     cerberus_wardrive_gps_core_t core;
     cerberus_wardrive_gps_core_reset(&core);
     cerberus_wardrive_gps_snapshot_t gps;
@@ -75,6 +103,24 @@ int main(void)
     assert(strcmp(row,
         "02:11:22:33:44:55,\"Cafe, \"\"Lab\"\"\",WPA2,1994-03-23 12:35:19,"
         "6,2437,-45,48.1173000,11.5166667,,,,,WIFI\n") == 0);
+
+    /* Cross-check actual C formatter output through the independent CSV reader.
+     * Retain duplicate sightings, escaped names and both radio record types. */
+    if (argc == 2) {
+        FILE *file = fopen(argv[1], "wb");
+        assert(file != NULL);
+        assert(fputs(CERBERUS_WIGLE_METADATA_HEADER CERBERUS_WIGLE_COLUMN_HEADER, file) >= 0);
+        assert(fputs(row, file) >= 0 && fputs(row, file) >= 0);
+        cerberus_wardrive_observation_t ble = ap;
+        ble.type = CERBERUS_WARDRIVE_BLE;
+        ble.channel = 0;
+        ble.manufacturer_id = 76;
+        char ble_row[384]; size_t ble_written = 0;
+        assert(cerberus_wardrive_wigle_format_observation(&ble,&gps,&time,
+            ble_row,sizeof(ble_row),&ble_written) == CERBERUS_WIGLE_OK);
+        assert(fputs(ble_row,file) >= 0);
+        assert(fclose(file) == 0);
+    }
 
     /* A requested SSID is neither an AP nor a located BLE observation. Both
      * WiGLE entry points reject it transactionally even with valid GPS/time. */

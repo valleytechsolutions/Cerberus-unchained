@@ -83,7 +83,7 @@ static const guide_lesson_t lessons[SENTINEL_GUIDE_LESSON_COUNT] = {
     {
         "Shared Airspace", "SENSE / 802.15.4",
         "Explore 802.15.4 channels in the 2.4 GHz band. Zigbee and Thread use this radio technology. Wi-Fi and other signals may overlap the same frequencies.",
-        "Open Radio Sense and run an energy scan. Compare stronger and quieter channels. Repeat nearby while your own Wi-Fi is active. Return here to interpret the result.",
+        "Open Mesh Detection, choose Channel energy, and run a scan. Compare stronger and quieter channels. Repeat nearby while your own Wi-Fi is active. Return here to interpret the result.",
         "Energy detection measures received energy. It does not identify a protocol or decode encrypted traffic. Activity and beacons add clues, but do not explain every signal.",
         "High energy on an 802.15.4 channel proves what?",
         {"A Zigbee device is present", "Energy was detected there"},
@@ -348,7 +348,7 @@ static esp_err_t draw_lesson(void)
 
 static esp_err_t draw_demo(void)
 {
-    static const char *const panels[] = {"01 / 03   WI-FI WATCH", "02 / 03   BLUETOOTH SCOUT", "03 / 03   RADIO SENSE"};
+    static const char *const panels[] = {"01 / 03   WI-FI WATCH", "02 / 03   BLUETOOTH SCOUT", "03 / 03   MESH DETECTION"};
     static const char *const notes[] = {
         "Stronger bars show received power, not speed or trust.",
         "Signal varies. This is a time history, not a distance ruler.",

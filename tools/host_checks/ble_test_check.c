@@ -9,6 +9,8 @@ static cerberus_s3_wifi_owner_t wifi_owner;
 cerberus_s3_wifi_owner_t cerberus_s3_wifi_owner(void){return wifi_owner;}
 static unsigned tick,free_bytes=128*1024,starts,stop_at,stop_failures,stop_calls;
 static bool active,fail_init;
+static bool foreign_active;
+static unsigned reset_at,stops_at_reset;
 static unsigned init_calls;
 static void(*queued)(void*);
 static int held;
@@ -20,6 +22,7 @@ int xTaskCreate(void(*fn)(void*),const char*n,unsigned stack,void*a,unsigned p,v
 void vTaskDelete(void*p){(void)p;}
 int64_t esp_timer_get_time(void){return (int64_t)tick*1000;}
 size_t heap_caps_get_free_size(unsigned caps){(void)caps;return free_bytes;}
+size_t heap_caps_get_minimum_free_size(unsigned caps){(void)caps;return free_bytes;}
 int nimble_port_init(void){++init_calls;return fail_init?ESP_FAIL:ESP_OK;}
 void nimble_port_run(void){}
 void nimble_port_freertos_init(void(*fn)(void*)){(void)fn;assert(ble_hs_cfg.sync_cb);ble_hs_cfg.sync_cb();}
@@ -32,8 +35,17 @@ int ble_gap_adv_start(uint8_t type,const void*peer,int32_t ms,const struct ble_g
 int ble_gap_adv_stop(void){++stop_calls;if(stop_failures){--stop_failures;return 9;}active=false;return 0;}
 int ble_gap_adv_active(void){return active;}
 #include "ble_test.c"
-void vTaskDelay(unsigned ms){tick+=ms;if(stop_at&&tick>=stop_at){stop_at=0;cerberus_ble_test_stop(status.job_id);}}
-static void run(void){void(*fn)(void*)=queued;queued=NULL;assert(fn);fn(NULL);assert(!held&&!running&&!active);}
+static cerberus_s3_ble_host_lease_t replacement_lease;
+void vTaskDelay(unsigned ms){
+    tick+=ms;
+    if(stop_at&&tick>=stop_at){stop_at=0;cerberus_ble_test_stop(status.job_id);}
+    if(reset_at&&tick>=reset_at){
+        reset_at=0;ble_hs_cfg.reset_cb(9);ble_hs_cfg.sync_cb();
+        assert(cerberus_s3_ble_host_claim(CERBERUS_S3_BLE_OWNER_ADVERTISER,&replacement_lease)==ESP_OK);
+        foreign_active=active=true;stops_at_reset=stop_calls;
+    }
+}
+static void run(void){void(*fn)(void*)=queued;queued=NULL;assert(fn);fn(NULL);assert(!held&&!running&&(!active||foreign_active));}
 int main(void)
 {
     cerberus_radio_test_config_t c={.job_id=1,.mode=2,.seconds=1,.name_length=11,.name="CerberusLab"};
@@ -44,12 +56,23 @@ int main(void)
     fail_init=false;assert(cerberus_ble_test_start(&c)==ESP_OK);assert(cerberus_ble_test_start(&c)==ESP_ERR_INVALID_STATE);run();
     assert(status.state==CERBERUS_TEST_COMPLETE&&starts==1&&init_calls==2&&cerberus_s3_ble_host_initialized());
     assert(cerberus_s3_ble_host_owner()==CERBERUS_S3_BLE_OWNER_NONE);
-    assert(cerberus_s3_ble_host_claim(CERBERUS_S3_BLE_OWNER_SCANNER)==ESP_OK);
+    cerberus_s3_ble_host_lease_t scanner_lease={0};
+    assert(cerberus_s3_ble_host_claim(CERBERUS_S3_BLE_OWNER_SCANNER,&scanner_lease)==ESP_OK);
     c.job_id=9;assert(cerberus_ble_test_start(&c)==ESP_OK);run();
     assert(status.state==CERBERUS_TEST_ERROR&&status.error_code==ESP_ERR_INVALID_STATE);
-    assert(cerberus_s3_ble_host_release(CERBERUS_S3_BLE_OWNER_SCANNER)==ESP_OK);
+    assert(cerberus_s3_ble_host_release(&scanner_lease)==ESP_OK);
     c.job_id=2;c.seconds=10;assert(cerberus_ble_test_start(&c)==ESP_OK);unsigned before=tick;run();assert(status.state==CERBERUS_TEST_CANCELLED&&tick-before<=3050);
     c.job_id=3;assert(cerberus_ble_test_start(&c)==ESP_OK);stop_at=tick+250;stop_failures=2;before=tick;run();assert(status.state==CERBERUS_TEST_ERROR&&tick-before<=400&&stop_calls>=3);
     cerberus_radio_test_status_t snapshot;before=contact_ms;tick+=100;cerberus_ble_test_status(0,&snapshot);assert(contact_ms==before);cerberus_ble_test_status(3,&snapshot);assert(contact_ms==tick);
+    for(unsigned during_stop=0;during_stop<2;++during_stop){
+        c.job_id=(uint16_t)(20+during_stop);c.seconds=10;
+        assert(cerberus_ble_test_start(&c)==ESP_OK);
+        stop_at=during_stop?tick+50:0;stop_failures=during_stop?100:0;
+        reset_at=tick+(during_stop?100:50);run();
+        assert(status.state==CERBERUS_TEST_ERROR&&foreign_active&&active);
+        assert(stop_calls==stops_at_reset&&cerberus_s3_ble_host_lease_valid(&replacement_lease));
+        active=foreign_active=false;stop_failures=0;
+        assert(cerberus_s3_ble_host_release(&replacement_lease)==ESP_OK);
+    }
     puts("S3 BLE worker checks passed: shared host ownership, lazy initialization, heap guard, duration, lease, stop retries, init failure and read-only status.");
 }

@@ -41,6 +41,7 @@ static bool record_valid(const cerberus_s3_ble_discovery_record_t *r,
         (r->advertisement.flags & ~(CERBERUS_BLE_ADVERTISEMENT_TRUNCATED |
             CERBERUS_BLE_ADVERTISEMENT_MALFORMED)) ||
         (r->focus.category_bits & ~0x3fU) || (d->flags & ~0x3fU) ||
+        !cerberus_s3_ble_response_storage_valid(d) ||
         d->address_type != r->peer.address_type || d->generation != r->generation ||
         memcmp(d->address, r->peer.address, 6U) ||
         !lift(m->started_ms, m->source_now_ms, r->observed_ms, NULL)) return false;
@@ -57,13 +58,18 @@ static bool record_valid(const cerberus_s3_ble_discovery_record_t *r,
     if ((d->flags & CERBERUS_S3_BLE_EVIDENCE_SID_VALID) &&
         ((d->flags & CERBERUS_S3_BLE_EVIDENCE_SID_INVALID) || d->sid > 15U)) return false;
     if (d->flags & CERBERUS_S3_BLE_EVIDENCE_RESPONSE_VALID) {
-        uint64_t original, response;
+        uint64_t original, response, raw_original, response_source;
         if (!(d->flags & CERBERUS_S3_BLE_EVIDENCE_ADV_VALID) ||
             (d->flags & CERBERUS_S3_BLE_EVIDENCE_SID_INVALID) ||
             d->scan_response_sequence <= d->advertisement_sequence ||
             !lift(m->started_ms, m->source_now_ms, d->advertisement_observed_ms, &original) ||
             !lift(m->started_ms, m->source_now_ms, d->scan_response_observed_ms, &response) ||
-            response < original || response - original > 2000U) return false;
+            response < original || response - original > 2000U ||
+            !lift(m->started_ms, m->source_now_ms, r->observed_ms, &raw_original) ||
+            cerberus_s3_ble_discovery_response(&r->focus, &r->advertisement,
+                r->generation, r->observed_ms, raw_original, m->source_now_ms,
+                &response_source) != CERBERUS_S3_BLE_RESPONSE_PRESENT ||
+            response_source != response) return false;
     }
     if (r->focus.ibeacon_valid && (!r->focus.ibeacon_sequence ||
             !lift(m->started_ms, m->source_now_ms, r->focus.ibeacon_observed_ms, NULL)))

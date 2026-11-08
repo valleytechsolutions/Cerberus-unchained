@@ -3,6 +3,7 @@
 #endif
 #include "c5_spi_link.h"
 #include "wifi_packet_monitor_core.h"
+#include "wifi_capture_plan.h"
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
@@ -110,6 +111,59 @@ static void gates(void)
     assert(c5_spi_link_wifi_capture_start(&expected_start,&out)==ESP_ERR_TIMEOUT&&exchanges==0);
     reset(50,CERBERUS_WIFI_CAPTURE_MODE_BEACON,true);fail_lock=true;
     assert(c5_spi_link_wifi_capture_start(&expected_start,&out)==ESP_ERR_TIMEOUT&&exchanges==0&&releases==0);
+    for(unsigned version=85;version<=86;++version){
+        reset(version,CERBERUS_WIFI_CAPTURE_MODE_SAE_COMMIT,true);
+        expected_start.flags|=CERBERUS_WIFI_CAPTURE_FLAG_PLAN;
+        assert(c5_spi_link_wifi_capture_start(&expected_start,&out)==
+            (version==86?ESP_OK:ESP_ERR_NOT_SUPPORTED));
+        assert(exchanges==(version==86?1U:0U));
+    }
+    response_status.channel=0;
+    assert(c5_spi_link_wifi_capture_start(&expected_start,&out)==ESP_OK);
+    response_status.channel=177;
+    assert(c5_spi_link_wifi_capture_start(&expected_start,&out)==ESP_OK);
+    response_status.channel=35;
+    assert(c5_spi_link_wifi_capture_start(&expected_start,&out)==ESP_ERR_INVALID_RESPONSE);
+    reset(86,CERBERUS_WIFI_CAPTURE_MODE_SAE_COMMIT,true);
+    assert(c5_spi_link_wifi_capture_start(&expected_start,&out)==ESP_ERR_INVALID_ARG&&!exchanges);
+    expected_start.flags=CERBERUS_WIFI_CAPTURE_FLAG_PLAN;expected_start.channel=6;
+    assert(c5_spi_link_wifi_capture_start(&expected_start,&out)==ESP_ERR_INVALID_ARG&&!exchanges);
+    const uint8_t eapol_modes[]={CERBERUS_WIFI_CAPTURE_MODE_EAPOL,
+        CERBERUS_WIFI_CAPTURE_MODE_EAPOL|CERBERUS_WIFI_CAPTURE_MODE_BEACON};
+    for(unsigned m=0;m<sizeof(eapol_modes);++m)for(unsigned version=85;version<=87;++version){
+        reset(version,eapol_modes[m],true);expected_start.flags|=CERBERUS_WIFI_CAPTURE_FLAG_PLAN;
+        assert(c5_spi_link_wifi_capture_start(&expected_start,&out)==
+            (version==87?ESP_OK:ESP_ERR_NOT_SUPPORTED));
+        assert(exchanges==(version==87?1U:0U));
+        if(version!=87){assert(zero(&out,sizeof(out)));continue;}
+        response_status.channel=0;
+        assert(c5_spi_link_wifi_capture_start(&expected_start,&out)==ESP_OK);
+        response_status.channel=177;
+        assert(c5_spi_link_wifi_capture_start(&expected_start,&out)==ESP_OK);
+        response_status.channel=35;
+        assert(c5_spi_link_wifi_capture_start(&expected_start,&out)==ESP_ERR_INVALID_RESPONSE);
+        expected_start.mode_mask|=CERBERUS_WIFI_CAPTURE_MODE_RAW;
+        assert(c5_spi_link_wifi_capture_start(&expected_start,&out)==ESP_ERR_INVALID_ARG);
+    }
+    const uint8_t frame_modes[]={CERBERUS_WIFI_CAPTURE_MODE_RAW,
+        CERBERUS_WIFI_CAPTURE_MODE_PROBE,CERBERUS_WIFI_CAPTURE_MODE_DEAUTH};
+    for(unsigned m=0;m<sizeof(frame_modes);++m)for(unsigned version=86;version<=88;++version){
+        reset(version,frame_modes[m],true);expected_start.flags|=CERBERUS_WIFI_CAPTURE_FLAG_PLAN;
+        assert(c5_spi_link_wifi_capture_start(&expected_start,&out)==
+            (version==88?ESP_OK:ESP_ERR_NOT_SUPPORTED));
+        assert(exchanges==(version==88?1U:0U));
+        if(version!=88){assert(zero(&out,sizeof(out)));continue;}
+        response_status.channel=0;
+        assert(c5_spi_link_wifi_capture_start(&expected_start,&out)==ESP_OK);
+        response_status.channel=177;
+        assert(c5_spi_link_wifi_capture_start(&expected_start,&out)==ESP_OK);
+        response_status.channel=35;
+        assert(c5_spi_link_wifi_capture_start(&expected_start,&out)==ESP_ERR_INVALID_RESPONSE);
+        expected_start.mode_mask|=CERBERUS_WIFI_CAPTURE_MODE_SAE_COMMIT;
+        assert(c5_spi_link_wifi_capture_start(&expected_start,&out)==ESP_ERR_INVALID_ARG);
+    }
+    reset(85,CERBERUS_WIFI_CAPTURE_MODE_EAPOL,false);
+    assert(c5_spi_link_wifi_capture_start(&expected_start,&out)==ESP_OK); /* Existing fixed path. */
 }
 static void status_validation(void)
 {
@@ -130,7 +184,7 @@ static void status_validation(void)
         if(kind==3)response_status.mode_mask=0;
         if(kind==4)response_status.channel=35;
         if(kind==5){response_status.mode_mask=CERBERUS_WIFI_CAPTURE_MODE_RAW;response_status.channel=178;}
-        if(kind==6){response_status.mode_mask=CERBERUS_WIFI_CAPTURE_MODE_RAW;response_status.channel=0;}
+        if(kind==6){response_status.mode_mask=CERBERUS_WIFI_CAPTURE_MODE_RAW|CERBERUS_WIFI_CAPTURE_MODE_PROBE;response_status.channel=0;}
         memset(&out,0xa5,sizeof(out));
         assert(c5_spi_link_wifi_capture_status(&out)==ESP_ERR_INVALID_RESPONSE&&zero(&out,sizeof(out)));
         response_status=saved;

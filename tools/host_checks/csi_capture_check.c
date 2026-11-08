@@ -1,3 +1,4 @@
+#include "ap_survey_foreign_boundary.h"
 #undef NDEBUG
 #include "cerberus_protocol.h"
 #include "csi_protocol.h"
@@ -5,6 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdatomic.h>
+static atomic_bool packet_count_radio_reserved;
 #include <string.h>
 static unsigned checks;
 #define CHECK(x) do {++checks;if(!(x)){fprintf(stderr,"CSI check failed at %d: %s\n",__LINE__,#x);exit(1);}} while(0)
@@ -31,6 +33,8 @@ typedef int portMUX_TYPE;
 static int mutex,task;
 static void *scanner_mutex=&mutex,*scanner_task_handle=&task;
 static bool locked,critical,scanner_ready=true,station_reserved,foreign,test_running,connected;
+/* Separate passive Probe owner; the actual admission body below checks it. */
+static atomic_bool probe_sniff_radio_reserved;
 static atomic_bool csi_radio_reserved,channel_survey_radio_reserved,mac_radio_reserved;
 static cerberus_wifi_scan_status_payload_t scan_status;
 static cerberus_wifi_defense_status_payload_t defense_status;
@@ -109,7 +113,7 @@ static void reset(void)
     csi_token=csi_inflight=csi_sequence=csi_last_ack=csi_accepted=csi_invalid=csi_overflow=csi_acked=0;
     csi_head=csi_count=0;csi_accepting=csi_saved=csi_disable_pending=csi_rx_disable_pending=csi_callback_registered=csi_sequence_exhausted=false;
     scanner_ready=true;scanner_mutex=&mutex;scanner_task_handle=&task;station_reserved=foreign=test_running=connected=false;
-    atomic_store(&csi_radio_reserved,false);atomic_store(&channel_survey_radio_reserved,false);
+    atomic_store(&probe_sniff_radio_reserved,false);atomic_store(&csi_radio_reserved,false);atomic_store(&channel_survey_radio_reserved,false);
     memset(&scan_status,0,sizeof(scan_status));memset(&defense_status,0,sizeof(defense_status));
     memset(&channel_survey_status,0,sizeof(channel_survey_status));
     clock_us=0;notifications=allocations=frees=sdk_calls=fail_step=delay_enable_ms=delay_tune_ms=replies=0;
@@ -206,7 +210,7 @@ static void failures_and_lease(void)
 }
 static void request_guards(void)
 {
-    for(unsigned reason=0;reason<12;++reason){
+    for(unsigned reason=0;reason<13;++reason){
         reset();cerberus_csi_start_request_t r=request(1);cerberus_csi_status_t s;
         switch(reason){
         case 0:scanner_ready=false;break;case 1:scanner_task_handle=NULL;break;
@@ -216,6 +220,7 @@ static void request_guards(void)
         case 7:scan_status.state=CERBERUS_WIFI_SCAN_RUNNING;break;
         case 8:defense_status.state=CERBERUS_WIFI_DEFENSE_RUNNING;break;case 9:connected=true;break;
         case 10:csi_token=UINT32_MAX;break;case 11:csi_epoch_counter=UINT64_MAX;break;
+        case 12:atomic_store(&probe_sniff_radio_reserved,true);break;
         }
         CHECK(cerberus_wifi_csi_start(&r,&s)==ESP_ERR_INVALID_STATE&&!allocations&&!sdk_calls&&!notifications&&!csi_ring);
     }

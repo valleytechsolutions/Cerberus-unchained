@@ -1,9 +1,12 @@
+#include "ap_survey_foreign_boundary.h"
+#include "wardrive_foreign_boundary.h"
 #undef NDEBUG
 #include "cerberus_protocol.h"
 #include "mac_observation.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdatomic.h>
+static atomic_bool packet_count_radio_reserved;
 #include <string.h>
 static unsigned checks;
 #define CHECK(x) do {++checks;if(!(x)){fprintf(stderr,"MAC capture line %d: %s\n",__LINE__,#x);exit(1);}} while(0)
@@ -31,8 +34,10 @@ typedef int portMUX_TYPE;
 static int mutex,task;
 static void *scanner_mutex=&mutex,*scanner_task_handle=&task;
 static bool locked,critical,scanner_ready=true,station_reserved,foreign,test_running,connected;
+/* Separate passive Probe owner; the actual admission body below checks it. */
+static atomic_bool probe_sniff_radio_reserved;
 static atomic_bool mac_radio_reserved,csi_radio_reserved,channel_survey_radio_reserved;
-static atomic_uint mac_admission_token;
+static atomic_uint mac_admission_token, wifi_fox_hunt_admission_token;
 static cerberus_wifi_scan_status_payload_t scan_status;
 static cerberus_wifi_relation_table_t relation_capture;
 static atomic_bool relation_receiving;
@@ -85,6 +90,13 @@ static void *test_memcpy(void *d,const void *s,size_t n)
 {if(n==6U&&before_copy){void(*f)(void)=before_copy;before_copy=NULL;f();}return memcpy(d,s,n);}
 #define free test_free
 #define memcpy test_memcpy
+/* Dedicated Probe capture is inactive in this legacy consumer fixture. */
+static void packet_count_receive(const wifi_promiscuous_pkt_t *p,wifi_promiscuous_pkt_type_t type,int64_t entered)
+{(void)p;(void)type;(void)entered;}
+static void probe_sniff_receive(const wifi_promiscuous_pkt_t *p,wifi_promiscuous_pkt_type_t type,int64_t entered)
+{ (void)p;(void)type;(void)entered; }
+/* Generic capture is inactive; this fixture exercises the MAC entry prefix. */
+static uint32_t cerberus_wifi_capture_service_admission_token(void){return 0U;}
 #include "wifi_mac_monitor_service.h"
 #undef memcpy
 #undef free
@@ -116,7 +128,7 @@ static void reset(void)
     mac_inflight=mac_last_ack=0;mac_channel_count=mac_probe_index=mac_accepted_count=mac_next_index=mac_last_next_channel=0;
     mac_accepting=mac_saved=mac_disable_pending=mac_cache_valid=mac_exhausted=false;memset(mac_channels,0,sizeof(mac_channels));
     memset(&mac_cached_country,0,sizeof(mac_cached_country));atomic_store(&mac_admission_token,0);
-    atomic_store(&mac_radio_reserved,false);atomic_store(&csi_radio_reserved,false);atomic_store(&channel_survey_radio_reserved,false);
+    atomic_store(&probe_sniff_radio_reserved,false);atomic_store(&mac_radio_reserved,false);atomic_store(&csi_radio_reserved,false);atomic_store(&channel_survey_radio_reserved,false);
     memset(&scan_status,0,sizeof(scan_status));memset(&defense_status,0,sizeof(defense_status));memset(&channel_survey_status,0,sizeof(channel_survey_status));
     scanner_mutex=&mutex;scanner_task_handle=&task;scanner_ready=true;station_reserved=foreign=test_running=connected=false;
     clock_us=0;allocations=frees=notifications=sdk_calls=fail_step=delay_tune_ms=delay_enable_ms=replies=0;
@@ -263,7 +275,8 @@ static void epochs_and_deadlines(void)
 }
 static void commands_and_guards(void)
 {
-    reset();for(unsigned reason=0;reason<9;++reason){
+    reset();for(unsigned reason=0;reason<10;++reason){
+        atomic_store(&probe_sniff_radio_reserved,reason==9);
         scanner_ready=reason!=0;station_reserved=reason==1;foreign=reason==2;connected=reason==3;test_running=reason==4;
         atomic_store(&csi_radio_reserved,reason==5);scan_status.state=reason==6?CERBERUS_WIFI_SCAN_RUNNING:0;
         defense_status.state=reason==7?CERBERUS_WIFI_DEFENSE_RUNNING:0;channel_survey_status.state=reason==8?CERBERUS_WIFI_CHANNEL_SURVEY_RUNNING:0;

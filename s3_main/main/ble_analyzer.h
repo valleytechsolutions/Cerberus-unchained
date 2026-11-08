@@ -5,6 +5,8 @@
 #include "ibeacon.h"
 #include "ble_flock_hints.h"
 #include "ble_hc_hints.h"
+#include "ble_findmy_hints.h"
+#include "ble_flipper_hints.h"
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -12,7 +14,10 @@
 
 /* A bounded S3 BLE event-rate view. Each bucket counts advertising callbacks,
  * not unique devices or every over-the-air packet. A scanner owner serializes
- * observe, advance and snapshot; this core takes no locks or heap. */
+ * observe, advance and snapshot; this core takes no locks or heap.
+ * Complete reports up to 255 bytes can be parsed here, but the current native
+ * configuration selects legacy reception (BLE_EXT_ADV is disabled). Host
+ * coverage of longer reports does not establish extended over-the-air RX. */
 enum {
     CERBERUS_BLE_ANALYZER_BUCKET_MS = 200U,
     CERBERUS_BLE_ANALYZER_HISTORY = 64U,
@@ -27,6 +32,8 @@ typedef enum {
     CERBERUS_BLE_ANALYZER_EVIDENCE_META_ID_HINT,
     CERBERUS_BLE_ANALYZER_EVIDENCE_HC_NAME_HINT,
     CERBERUS_BLE_ANALYZER_EVIDENCE_FLOCK_HINT,
+    CERBERUS_BLE_ANALYZER_EVIDENCE_FINDMY_HINT,
+    CERBERUS_BLE_ANALYZER_EVIDENCE_FLIPPER_HINT,
 } cerberus_ble_analyzer_evidence_kind_t;
 
 typedef struct {
@@ -50,6 +57,9 @@ typedef struct {
     uint32_t watch_match_events, ibeacon_format_events;
     uint32_t meta_hint_events, hc_name_hint_events;
     uint32_t flock_hint_events; /* Events with a packet hint or typed-address OUI clue, counted once. */
+    /* Each family counts a qualifying event once, even with several hints.
+     * Families may overlap; UINT32_MAX is a saturated lower bound. */
+    uint32_t findmy_hint_events, flipper_hint_events;
     uint32_t last_seen_age_ms;
     uint8_t last_address[6];
     uint8_t last_address_type;
@@ -58,6 +68,11 @@ typedef struct {
     uint8_t last_name_length;
     cerberus_ble_meta_evidence_t last_meta;
     cerberus_ble_flock_hints_t last_flock;
+    /* Independent facts from this latest complete event, cleared by the next
+     * ordinary/invalid event. RSP means one response event, not a bound peer or
+     * facts joined with an earlier ADV. These never authorize Sound or GATT. */
+    cerberus_ble_findmy_hints_t last_findmy;
+    cerberus_ble_flipper_hints_t last_flipper;
     bool last_scan_response, last_report_valid;
     cerberus_ibeacon_t last_ibeacon;
     bool last_ibeacon_valid;
@@ -94,11 +109,14 @@ typedef struct {
     uint32_t malformed_reports, watch_match_events, ibeacon_format_events;
     uint32_t meta_hint_events, hc_name_hint_events, last_seen_ms;
     uint32_t flock_hint_events;
+    uint32_t findmy_hint_events, flipper_hint_events;
     uint8_t last_address[6], last_address_type;
     int8_t last_rssi_dbm;
     uint8_t last_name[CERBERUS_BLE_ANALYZER_NAME_MAX], last_name_length;
     cerberus_ble_meta_evidence_t last_meta;
     cerberus_ble_flock_hints_t last_flock;
+    cerberus_ble_findmy_hints_t last_findmy;
+    cerberus_ble_flipper_hints_t last_flipper;
     bool last_scan_response, last_report_valid;
     cerberus_ibeacon_t last_ibeacon;
     bool last_ibeacon_valid;

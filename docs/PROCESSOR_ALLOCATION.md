@@ -1,5 +1,11 @@
 # S3/C5 allocation for Marauder parity
 
+## Rev93 source contribution
+
+C5 remains responsible for dual-band Wi-Fi reception; S3 owns BLE reception, display, bounded result models and storage orchestration. The new list/inventory/Recent Nets views consume existing observations without starting another radio task. PSRAM allocations are scoped to their workflows; SD archive and Recon recording use explicit worker ownership. Using both chips means coordinating appropriate roles, not forcing both onto each operation.
+
+See [CONTRIBUTION_REV93.md](CONTRIBUTION_REV93.md) for validation boundaries and [the coverage ledger](MARAUDER_COVERAGE_LEDGER.md) for remaining work. The following sections retain the earlier contribution history.
+
 Current validation is tracked in the [source-pinned ledger](MARAUDER_COVERAGE_LEDGER.md).
 The revision-43 transmit results below are historical evidence, not a repair
 of the later NO MEM, Association Sleep and Bad Message reports; those remain

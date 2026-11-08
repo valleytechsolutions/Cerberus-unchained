@@ -5,12 +5,19 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/* WiGLE 1.6 formatter. The runtime records GPS at result receipt, matching the
- * separate Wardriving firmware. This is explicitly not an RF timestamp. */
+/* Firmware builds supply PROJECT_VER; standalone host fixtures use a clearly
+ * identified development value rather than impersonating a device build. */
+#ifndef CERBERUS_APP_VERSION
+#define CERBERUS_APP_VERSION "development"
+#endif
+/* WiGLE's pre-header order includes the observed planetary body. Onboard
+ * streaming checks RF callback age; expansion snapshots use receipt time.
+ * UTC always comes from a validated RMC sentence, not the uptime clock. */
 #define CERBERUS_WIGLE_METADATA_HEADER \
-    "WigleWifi-1.6,appRelease=Cerberus-Unified,model=Cerberus,release=unversioned," \
+    "WigleWifi-1.6,appRelease=" CERBERUS_APP_VERSION ",model=Cerberus,release=ESP-IDF," \
     "device=Cerberus,display=ST7796,board=ESP32-S3-C5,brand=Cerberus," \
-    "locationSource=GPS-at-result-receipt,timeSource=latest-RMC,rfTime=unavailable\n"
+    "star=Sol,body=3,subBody=0,locationSource=GNSS,timeSource=RMC-UTC," \
+    "rfTime=onboard-age-checked;expansion-receipt\n"
 #define CERBERUS_WIGLE_COLUMN_HEADER \
     "MAC,SSID,AuthMode,FirstSeen,Channel,Frequency,RSSI,CurrentLatitude," \
     "CurrentLongitude,AltitudeMeters,AccuracyMeters,RCOIs,MfgrId,Type\n"

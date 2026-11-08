@@ -1,8 +1,11 @@
+#include "ap_survey_foreign_boundary.h"
+#include "wardrive_foreign_boundary.h"
 #undef NDEBUG
 #include "wifi_scan_observation.h"
 #include <assert.h>
 #include <setjmp.h>
 #include <stdatomic.h>
+static atomic_bool packet_count_radio_reserved;
 #include <stdio.h>
 
 typedef int esp_err_t;
@@ -10,7 +13,12 @@ typedef unsigned wifi_promiscuous_pkt_type_t;
 typedef struct { unsigned filter_mask; } wifi_promiscuous_filter_t;
 typedef struct { unsigned rx_state,sig_len,channel; int rssi,noise_floor; } wifi_pkt_rx_ctrl_t;
 typedef struct { wifi_pkt_rx_ctrl_t rx_ctrl; uint8_t payload[2400]; } wifi_promiscuous_pkt_t;
-typedef struct { bool show_hidden; unsigned scan_type; struct {unsigned passive;} scan_time; } wifi_scan_config_t;
+typedef struct {
+    bool show_hidden;
+    unsigned scan_type;
+    struct { unsigned passive; } scan_time;
+    struct { uint16_t ghz_2_channels; uint32_t ghz_5_channels; } channel_bitmap;
+} wifi_scan_config_t;
 typedef struct { uint8_t bssid[6],ssid[33],primary; int8_t rssi; uint8_t authmode; } wifi_ap_record_t;
 typedef struct { unsigned kind; } sentinel_watch_protocol_record_t;
 enum { ESP_OK, ESP_FAIL, ESP_ERR_INVALID_ARG, ESP_ERR_INVALID_STATE,
@@ -30,6 +38,12 @@ static int mutex_token, task_token;
 static void *scanner_mutex=&mutex_token, *scanner_task_handle=&task_token;
 static bool locked, scanner_ready=true, station_reserved, scan_cancelled;
 static cerberus_wifi_scan_status_payload_t scan_status;
+static uint8_t scan_band;
+static uint64_t scan_session_id, scan_session_epoch;
+static cerberus_wifi_channel_survey_status_payload_t channel_survey_status;
+/* Separate passive Probe owner; the actual admission body below checks it. */
+static atomic_bool probe_sniff_radio_reserved;
+static atomic_bool channel_survey_radio_reserved;
 static cerberus_wifi_radio_stats_payload_t radio_stats;
 static cerberus_wifi_defense_status_payload_t defense_status;
 static wifi_ap_record_t scan_results[32], sdk_results[32];
@@ -50,7 +64,7 @@ static uint8_t watch_capture_channel;
 static atomic_bool remote_id_radio_reserved;
 static atomic_bool csi_radio_reserved;
 static atomic_bool mac_radio_reserved;
-static atomic_uint mac_admission_token;
+static atomic_uint mac_admission_token, wifi_fox_hunt_admission_token;
 static void mac_worker_tick(void) { CHECK(false); }
 static void mac_receive(const wifi_promiscuous_pkt_t *p,wifi_promiscuous_pkt_type_t type,int64_t entered,uint32_t token)
 { (void)p;(void)type;(void)entered;(void)token; }
@@ -122,10 +136,15 @@ static void wifi_capture_worker_tick(void) { CHECK(false); }
 static void remote_id_worker_tick(void) { CHECK(false); }
 static bool station_run(void) { return false; }
 static void channel_survey_receive(const wifi_promiscuous_pkt_t *p,unsigned type) {(void)p;(void)type;}
+/* Fox Hunt is inactive in this receiver-specific SDK fixture. */
+static void wifi_fox_hunt_receive(const wifi_promiscuous_pkt_t *p,
+    wifi_promiscuous_pkt_type_t type, int64_t entered, uint32_t token)
+{ (void)p; (void)type; (void)entered; (void)token; }
 static void packet_monitor_receive(const wifi_promiscuous_pkt_t *p,unsigned type) {(void)p;(void)type;}
+static uint32_t cerberus_wifi_capture_service_admission_token(void) { return 0; }
 static bool cerberus_wifi_capture_service_active(void) { return false; }
-static void cerberus_wifi_capture_service_receive(const uint8_t *p,unsigned length,unsigned channel,int rssi,uint64_t time)
-{ (void)p;(void)length;(void)channel;(void)rssi;(void)time;CHECK(false); }
+static void cerberus_wifi_capture_service_receive(const uint8_t *p,unsigned length,unsigned channel,int rssi,int64_t time,uint32_t generation)
+{ (void)p;(void)length;(void)channel;(void)rssi;(void)time;(void)generation;CHECK(false); }
 static void station_receive(const wifi_promiscuous_pkt_t *p)
 {(void)p;if(probe_test_consumer_hook)probe_test_consumer_hook();}
 static void cerberus_c5_test_receive(const uint8_t *p,unsigned n,unsigned c) {(void)p;(void)n;(void)c;}
@@ -167,6 +186,8 @@ static esp_err_t esp_wifi_set_promiscuous(bool enable)
 static esp_err_t esp_wifi_scan_start(const wifi_scan_config_t *config,bool block)
 {
     CHECK(block && config->show_hidden && config->scan_type==WIFI_SCAN_TYPE_PASSIVE && config->scan_time.passive==120);
+    CHECK(config->channel_bitmap.ghz_2_channels == cerberus_wifi_scan_band_2g_bitmap(scan_band));
+    CHECK(config->channel_bitmap.ghz_5_channels == cerberus_wifi_scan_band_5g_bitmap(scan_band));
     ++scan_calls;
     if(stop_during_scan)CHECK(cerberus_wifi_scanner_stop()==ESP_OK);
     now_us+=1234;
@@ -175,6 +196,17 @@ static esp_err_t esp_wifi_scan_start(const wifi_scan_config_t *config,bool block
     return scan_failure?ESP_FAIL:ESP_OK;
 }
 
+/* Dedicated Probe capture is inactive in this legacy consumer fixture. */
+static void packet_count_receive(const wifi_promiscuous_pkt_t *p,wifi_promiscuous_pkt_type_t type,int64_t entered)
+{(void)p;(void)type;(void)entered;}
+static void probe_sniff_receive(const wifi_promiscuous_pkt_t *p,wifi_promiscuous_pkt_type_t type,int64_t entered)
+{ (void)p;(void)type;(void)entered; }
+static bool probe_sniff_retained(void){return false;}
+static bool packet_count_retained(void){return atomic_load(&packet_count_radio_reserved);}
+static bool packet_monitor_record_retained(void){return false;}
+static void packet_monitor_record_worker_tick(void){CHECK(!packet_monitor_radio_reserved);}
+static void packet_count_worker_tick(void){CHECK(!atomic_load(&packet_count_radio_reserved));}
+static void probe_sniff_worker_tick(void){CHECK(!atomic_load(&probe_sniff_radio_reserved));}
 #include "wifi_scan_observation_impl.h"
 
 static void make_frame(uint8_t channel)
@@ -196,6 +228,9 @@ static void reset(void)
     CHECK(!locked && !observation_locked && !defense_locked);
     memset(&scan_status,0,sizeof(scan_status));memset(&scan_observations,0,sizeof(scan_observations));
     memset(&radio_stats,0,sizeof(radio_stats));scan_cancelled=false;
+    scan_band=CERBERUS_WIFI_SCAN_BAND_ALL;scan_session_id=0;scan_session_epoch=100;
+    memset(&channel_survey_status,0,sizeof(channel_survey_status));
+    atomic_store(&channel_survey_radio_reserved,false);
     notifications=scan_calls=enable_calls=disable_calls=0;
     stop_during_enable=stop_during_scan=hook_action=0;
     filter_failure=enable_failure=scan_failure=disable_failure=records_failure=num_failure=false;

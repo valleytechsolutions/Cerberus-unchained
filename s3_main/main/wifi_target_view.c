@@ -29,7 +29,12 @@ esp_err_t cerberus_wifi_target_draw(const cerberus_wifi_target_view_t *v,
         v->selected&&v->can_scan_stations,v->selected,
         v->selected&&v->can_packet_monitor,true};
     for(unsigned i=0;i<8;++i) {
-        if(i==6U) {
+        if(i==5U) {
+            TRY(cerberus_ui_widget_draw_button((cerberus_ui_rect_t){12,296,144,30},
+                "AP DETAILS",1,enabled[i],theme));
+            TRY(cerberus_ui_widget_draw_button((cerberus_ui_rect_t){164,296,144,30},
+                "FOX HUNT",1,v->selected&&v->can_fox_hunt,theme));
+        } else if(i==6U) {
             TRY(cerberus_ui_widget_draw_button((cerberus_ui_rect_t){12,330,144,30},
                 labels[i],1,enabled[i],theme));
             TRY(cerberus_ui_widget_draw_button((cerberus_ui_rect_t){164,330,144,30},
@@ -52,7 +57,8 @@ cerberus_wifi_target_action_t cerberus_wifi_target_tap(
     if(row==2&&v->can_connect)return CERBERUS_WIFI_TARGET_CONNECT;
     if(row==3&&v->can_scan_ports)return CERBERUS_WIFI_TARGET_PORTS;
     if(row==4&&v->can_scan_stations)return CERBERUS_WIFI_TARGET_STATIONS;
-    if(row==5)return CERBERUS_WIFI_TARGET_DETAILS;
+    if(row==5&&x<156)return CERBERUS_WIFI_TARGET_DETAILS;
+    if(row==5&&x>=164&&v->can_fox_hunt)return CERBERUS_WIFI_TARGET_FOX_HUNT;
     if(row==6&&x<156&&v->can_packet_monitor)return CERBERUS_WIFI_TARGET_PACKET_MONITOR;
     if(row==6&&x>=164&&v->can_csi)return CERBERUS_WIFI_TARGET_CSI;
     return CERBERUS_WIFI_TARGET_NONE;

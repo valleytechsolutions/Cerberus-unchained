@@ -6,8 +6,8 @@
 
 #include <string.h>
 
-_Static_assert(sizeof(cerberus_s3_ble_discovery_evidence_t) == 64U,
-    "Current HC source codes must fit the shared provenance padding");
+_Static_assert(sizeof(cerberus_s3_ble_discovery_evidence_t) == 104U,
+    "Matched response storage and raw sequence must remain bounded");
 
 static size_t smaller(size_t value, size_t limit)
 {
@@ -76,7 +76,9 @@ static void begin_discovery_original(cerberus_s3_ble_record_t *record,
     uint32_t sequence, uint32_t observed_ms)
 {
     cerberus_s3_ble_discovery_evidence_t *evidence = &record->focus.discovery;
+    uint32_t raw_sequence = evidence->raw_advertisement_sequence;
     memset(evidence, 0, sizeof(*evidence));
+    evidence->raw_advertisement_sequence = raw_sequence;
     evidence->advertisement_sequence = sequence;
     evidence->advertisement_observed_ms = observed_ms;
     memcpy(evidence->address, report->address, sizeof(evidence->address));
@@ -90,6 +92,18 @@ static void begin_discovery_original(cerberus_s3_ble_record_t *record,
     if (invalid_sid(report)) evidence->flags |= CERBERUS_S3_BLE_EVIDENCE_SID_INVALID;
     else if (report->sid_valid) evidence->flags |= CERBERUS_S3_BLE_EVIDENCE_SID_VALID;
     publish_discovery_focus(record);
+}
+
+static void copy_discovery_response(cerberus_s3_ble_discovery_evidence_t *source,
+    const cerberus_s3_ble_report_t *report)
+{
+    cerberus_s3_ble_scan_response_t *raw = &source->scan_response;
+    memset(raw, 0, sizeof(*raw));
+    raw->length = (uint8_t)smaller(report->length, sizeof(raw->data));
+    raw->original_length = (uint8_t)report->length;
+    raw->event_type = report->event_type;
+    raw->flags = report->length > raw->length ? CERBERUS_BLE_ADVERTISEMENT_TRUNCATED : 0U;
+    memcpy(raw->data, report->data, raw->length);
 }
 
 size_t cerberus_s3_ble_focus_page(const uint8_t *category_bits, size_t count,
@@ -250,7 +264,7 @@ static void snapshot_observe(cerberus_s3_ble_snapshot_t *snapshot,
     cerberus_ble_ad_hints_t parsed;
     if (report->scan_response) {
         /* A scan response can enrich only a recent advertisement from this
-         * sweep. It is never raw capture, Watch evidence, or a new identity. */
+         * sweep. Its separate copy never replaces ADV or Watch evidence. */
         if (!record || !sequence || !report->complete || report->address_type > 3U ||
             invalid_sid(report) || !valid_response_event(report) || !report->length ||
             report->length > SENTINEL_WATCH_PROTOCOL_BLE_MAX ||
@@ -281,6 +295,7 @@ static void snapshot_observe(cerberus_s3_ble_snapshot_t *snapshot,
         evidence->scan_response_sequence = sequence;
         evidence->scan_response_observed_ms = now_ms;
         evidence->flags |= CERBERUS_S3_BLE_EVIDENCE_RESPONSE_VALID;
+        copy_discovery_response(evidence, report);
         observe_ibeacon(record, report, sequence, now_ms);
         publish_discovery_focus(record);
         return;
@@ -339,6 +354,7 @@ static void snapshot_observe(cerberus_s3_ble_snapshot_t *snapshot,
     record->advertisement_event_type = report->event_type;
     record->advertisement_flags = report->length > raw_length ? CERBERUS_BLE_ADVERTISEMENT_TRUNCATED : 0U;
     record->last_advertisement_ms = now_ms;
+    record->focus.discovery.raw_advertisement_sequence = sequence;
     record->advertisement_sid = report->sid;
     record->advertisement_sid_valid = report->sid_valid;
     if (!fields_validated && !cerberus_ble_ad_hints_parse(report->data, report->length, &parsed))

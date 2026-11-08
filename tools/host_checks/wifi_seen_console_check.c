@@ -61,10 +61,14 @@ static int64_t esp_timer_get_time(void)
 { assert(peer_reads==2U&&scan_reads==2U);++clock_reads;return clock_us; }
 /* Other command bodies are irrelevant to dispatch, and must not be called. */
 #define OTHER(name) static void name(void){++other_commands;}
-OTHER(print_info) OTHER(print_health) OTHER(print_memory) OTHER(print_c5)
+OTHER(print_info) OTHER(print_health) OTHER(print_builds) OTHER(print_memory) OTHER(print_c5)
 OTHER(print_storage) OTHER(print_resources) OTHER(print_capture) OTHER(print_usb)
-OTHER(print_network) OTHER(print_stations) OTHER(print_reports) OTHER(print_radio) OTHER(print_battery)
+OTHER(print_network) OTHER(print_stations) OTHER(print_reports) OTHER(print_radio) OTHER(print_gps) OTHER(print_upload_profile) OTHER(print_upload_status) OTHER(print_wardrive_logs) OTHER(print_battery)
 OTHER(print_remote_id)
+OTHER(print_wifi_readout)
+OTHER(print_recon_record)
+OTHER(print_ble_archive)
+OTHER(print_wifi_dual) OTHER(print_dual_ble) OTHER(print_ble_memory) OTHER(print_packet_count)
 #include "wifi_seen_console_impl.h"
 
 static void has(const char *text){assert(strstr(output,text));}

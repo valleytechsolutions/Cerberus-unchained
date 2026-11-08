@@ -7,6 +7,9 @@
 #include "esp_attr.h"
 #include "esp_ieee802154.h"
 #include "esp_log.h"
+#include "esp_heap_caps.h"
+#include "esp_random.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/semphr.h"
@@ -43,6 +46,92 @@ static volatile bool energy_done;
 static volatile bool energy_failed;
 static volatile int8_t energy_power;
 static volatile uint16_t energy_failure_code;
+
+/* Bulk queue/snapshot storage is optional; fixed pointer/token/lock scalars are
+ * measured separately. The single existing
+ * worker owns SDK operations and disposal. Lock order: scanner_mutex, mesh_mux.
+ * ISR sees the pointer and copies its complete record under mesh_mux only. */
+typedef struct {
+    uint32_t sequence;
+    cerberus_mesh_observation_record_t record;
+} mesh_observation_slot_t;
+typedef struct {
+    mesh_observation_slot_t slots[CERBERUS_MESH_OBSERVATION_CAPACITY];
+    cerberus_mesh_observation_summary_t summary;
+    cerberus_mesh_observation_summary_t pinned_summary;
+    uint64_t lease_us,retention_us,clock_high_us,dwell_started_us;
+    uint32_t summary_pin,summary_pin_counter,last_acked;
+    uint8_t head,count,rx_channel,phase,next_channel,state;
+    bool cancelled,release_requested,retiring,sdk_attempted;
+    esp_err_t primary_error,cleanup_error;
+} mesh_observation_context_t;
+static portMUX_TYPE mesh_mux=portMUX_INITIALIZER_UNLOCKED;
+static mesh_observation_context_t *mesh_context;
+static uint64_t mesh_epoch,mesh_session;
+static cerberus_mesh_observation_start_t mesh_request;
+enum { MESH_SETUP=0,MESH_TUNE,MESH_DWELL,MESH_CLEANUP,MESH_STOPPED };
+
+#include "ieee802154_locate_impl.h"
+
+static uint32_t IRAM_ATTR mesh_increment(uint32_t value,mesh_observation_context_t *c)
+{
+    if(value<UINT32_MAX)++value;
+    if(value==UINT32_MAX)c->summary.flags|=CERBERUS_MESH_OBSERVATION_COUNTERS_SATURATED;
+    return value;
+}
+static void IRAM_ATTR mesh_receive(uint8_t *frame,const esp_ieee802154_frame_info_t *info)
+{
+    portENTER_CRITICAL_ISR(&mesh_mux);
+    mesh_observation_context_t *c=mesh_context;
+    if(c&&c->rx_channel&&!c->cancelled){
+        c->summary.callbacks=mesh_increment(c->summary.callbacks,c);
+        if(!frame||!info||frame[0]<4U||frame[0]>127U||info->channel!=c->rx_channel){
+            c->summary.invalid_callbacks=mesh_increment(c->summary.invalid_callbacks,c);
+        }else if(c->count==CERBERUS_MESH_OBSERVATION_CAPACITY){
+            c->summary.queue_drops=mesh_increment(c->summary.queue_drops,c);
+        }else if(c->summary.last_sequence==CERBERUS_MESH_OBSERVATION_SEQUENCE_MAX){
+            c->summary.flags|=CERBERUS_MESH_OBSERVATION_SEQUENCE_EXHAUSTED;
+            c->cancelled=true;c->rx_channel=0U;
+            if(c->primary_error==ESP_OK)c->primary_error=ESP_ERR_INVALID_STATE;
+            c->summary.invalid_callbacks=mesh_increment(c->summary.invalid_callbacks,c);
+        }else{
+            c->summary.tuned_mask|=(uint16_t)(1U<<(info->channel-11U));
+            c->summary.channel=info->channel;
+            uint8_t index=(uint8_t)((c->head+c->count)%CERBERUS_MESH_OBSERVATION_CAPACITY);
+            mesh_observation_slot_t *slot=&c->slots[index];
+            memset(slot,0,sizeof(*slot));
+            slot->sequence=++c->summary.last_sequence;
+            slot->record.channel=info->channel;slot->record.rssi=info->rssi;slot->record.lqi=info->lqi;
+            slot->record.mac_length=(uint8_t)(frame[0]-2U);
+            slot->record.flags=CERBERUS_MESH_OBSERVATION_RSSI_VALID|CERBERUS_MESH_OBSERVATION_LQI_VALID;
+            int64_t now=esp_timer_get_time();
+            if(now>=0&&(uint64_t)now>=c->clock_high_us&&
+                !(c->summary.flags&CERBERUS_MESH_OBSERVATION_SUMMARY_CLOCK_INVALID)){
+                slot->record.callback_us=(uint64_t)now;
+                slot->record.flags|=CERBERUS_MESH_OBSERVATION_TIME_VALID;
+                c->clock_high_us=(uint64_t)now;
+                /* A callback can occur inside receive() before it returns. Its
+                 * observed source time is the first proven acquisition time. */
+                if(!(c->summary.flags&CERBERUS_MESH_OBSERVATION_START_TIME_VALID)){
+                    c->summary.started_us=(uint64_t)now;
+                    c->summary.flags|=CERBERUS_MESH_OBSERVATION_START_TIME_VALID;
+                }
+            }else{
+                c->summary.flags|=CERBERUS_MESH_OBSERVATION_SUMMARY_CLOCK_INVALID;
+                c->cancelled=true;c->rx_channel=0U;
+                if(c->primary_error==ESP_OK)c->primary_error=ESP_ERR_INVALID_STATE;
+            }
+            memcpy(slot->record.mac,frame+1U,slot->record.mac_length);
+            ++c->count;c->summary.enqueued=mesh_increment(c->summary.enqueued,c);
+            if(c->summary.last_sequence==CERBERUS_MESH_OBSERVATION_SEQUENCE_MAX){
+                c->summary.flags|=CERBERUS_MESH_OBSERVATION_SEQUENCE_EXHAUSTED;
+                c->cancelled=true;c->rx_channel=0U;
+                if(c->primary_error==ESP_OK)c->primary_error=ESP_ERR_INVALID_STATE;
+            }
+        }
+    }
+    portEXIT_CRITICAL_ISR(&mesh_mux);
+}
 
 static bool IRAM_ATTR parse_zigbee_beacon(
     const uint8_t *data,
@@ -176,6 +265,8 @@ void IRAM_ATTR esp_ieee802154_receive_done(
     esp_ieee802154_frame_info_t *frame_info)
 {
     BaseType_t higher_priority_task_woken = pdFALSE;
+    locate_receive(frame,frame_info);
+    mesh_receive(frame,frame_info);
     if (activity_scan_active && frame != NULL && frame_info != NULL && frame[0] >= 4U &&
         frame_info->channel >= CERBERUS_IEEE802154_FIRST_CHANNEL &&
         frame_info->channel < CERBERUS_IEEE802154_FIRST_CHANNEL +
@@ -243,6 +334,389 @@ static bool another_radio_operation_is_active(void)
         wifi_connection.state == CERBERUS_WIFI_CONNECTION_DISCONNECTING ||
         cerberus_wifi_defense_survey_is_running() || cerberus_wifi_station_running() ||
         ble_status.state == CERBERUS_BLE_SCAN_RUNNING || connection_active;
+}
+
+static bool mesh_legacy_running_locked(void)
+{
+    return locate_context!=NULL||scan_status.state==CERBERUS_IEEE802154_ENERGY_SCAN_RUNNING||
+        beacon_status.state==CERBERUS_IEEE802154_BEACON_SCAN_RUNNING||
+        activity_status.state==CERBERUS_IEEE802154_ACTIVITY_SCAN_RUNNING;
+}
+static bool mesh_start_valid(const cerberus_mesh_observation_start_t *q)
+{
+    return q&&q->session_id&&q->channel_mask&&q->dwell_ms>=100U&&q->dwell_ms<=2000U&&
+        (q->mode==CERBERUS_MESH_OBSERVATION_SWEEP||
+        (q->mode==CERBERUS_MESH_OBSERVATION_FIXED&&
+        (q->channel_mask&(uint16_t)(q->channel_mask-1U))==0U));
+}
+/* Both locks held. Clocks are sampled after serialization, never before waiting
+ * for a mutex. Expiry is evaluated before any possible renewal. */
+static bool mesh_now_locked(mesh_observation_context_t *c,uint64_t *now)
+{
+    int64_t source=esp_timer_get_time();
+    if(source<0||(uint64_t)source<c->clock_high_us||
+        (uint64_t)source>INT64_MAX-(uint64_t)CERBERUS_MESH_OBSERVATION_RETENTION_MS*1000U){
+        c->summary.flags|=CERBERUS_MESH_OBSERVATION_SUMMARY_CLOCK_INVALID;
+        c->cancelled=true;c->rx_channel=0U;
+        if(c->primary_error==ESP_OK)c->primary_error=ESP_ERR_INVALID_STATE;
+        if(c->phase==MESH_STOPPED)c->retiring=true;
+        else c->state=CERBERUS_MESH_OBSERVATION_STOPPING;
+        return false;
+    }
+    *now=(uint64_t)source;c->clock_high_us=*now;
+    if(c->phase==MESH_STOPPED){
+        if(*now>=c->retention_us)c->retiring=true;
+    }else if(*now>=c->lease_us){
+        c->cancelled=true;c->rx_channel=0U;c->state=CERBERUS_MESH_OBSERVATION_STOPPING;
+        if(c->primary_error==ESP_OK)c->primary_error=ESP_ERR_TIMEOUT;
+    }
+    return true;
+}
+static void mesh_renew_retention_locked(mesh_observation_context_t *c,uint64_t now)
+{
+    if(c->phase==MESH_STOPPED&&!c->retiring&&!c->release_requested)
+        c->retention_us=now+(uint64_t)CERBERUS_MESH_OBSERVATION_RETENTION_MS*1000U;
+}
+/* scanner_mutex held; helper acquires ISR lock. */
+static void mesh_reply_locked(uint64_t token,bool info,esp_err_t error,
+    cerberus_mesh_observation_control_t *out)
+{
+    memset(out,0,sizeof(*out));out->session_id=info?mesh_epoch:token;out->error_code=error;
+    portENTER_CRITICAL(&mesh_mux);
+    mesh_observation_context_t *c=mesh_context;
+    if(c&&(info||token==mesh_session)){
+        out->flags=CERBERUS_MESH_OBSERVATION_BOUND|CERBERUS_MESH_OBSERVATION_HELD;
+        if(!c->retiring&&!c->release_requested)out->flags|=CERBERUS_MESH_OBSERVATION_DATA_READY;
+        if(c->rx_channel&&!c->cancelled&&c->state==CERBERUS_MESH_OBSERVATION_RECEIVING)
+            out->flags|=CERBERUS_MESH_OBSERVATION_RX_ACTIVE;
+        if(c->summary.flags&CERBERUS_MESH_OBSERVATION_SUMMARY_CLOCK_INVALID)out->flags|=CERBERUS_MESH_OBSERVATION_CLOCK_INVALID;
+        if(c->summary.flags&CERBERUS_MESH_OBSERVATION_COUNTERS_SATURATED)out->flags|=CERBERUS_MESH_OBSERVATION_SATURATED;
+        if(c->summary.flags&CERBERUS_MESH_OBSERVATION_SEQUENCE_EXHAUSTED)out->flags|=CERBERUS_MESH_OBSERVATION_EXHAUSTED;
+        out->sequence=c->summary.last_sequence;out->state=c->state;out->count=c->count;
+        out->capacity=CERBERUS_MESH_OBSERVATION_CAPACITY;out->version=CERBERUS_MESH_OBSERVATION_VERSION;
+        out->channel=c->rx_channel;
+        if(error==ESP_OK)out->error_code=c->cleanup_error!=ESP_OK?c->cleanup_error:c->primary_error;
+    }else if(info){
+        out->capacity=CERBERUS_MESH_OBSERVATION_CAPACITY;out->version=CERBERUS_MESH_OBSERVATION_VERSION;
+        if(mesh_legacy_running_locked()){
+            out->flags=CERBERUS_MESH_OBSERVATION_HELD;out->state=CERBERUS_MESH_OBSERVATION_QUEUED;
+        }
+    }
+    portEXIT_CRITICAL(&mesh_mux);
+}
+void cerberus_mesh_observation_info(cerberus_mesh_observation_control_t *out)
+{
+    if(!out)return;
+    memset(out,0,sizeof(*out));
+    if(!scanner_mutex){out->error_code=ESP_ERR_INVALID_STATE;return;}
+    xSemaphoreTake(scanner_mutex,portMAX_DELAY);
+    mesh_reply_locked(0U,true,ESP_OK,out);
+    xSemaphoreGive(scanner_mutex);
+}
+esp_err_t cerberus_mesh_observation_start(const cerberus_mesh_observation_start_t *q,
+    cerberus_mesh_observation_control_t *out)
+{
+    if(!q||!out)return ESP_ERR_INVALID_ARG;
+    memset(out,0,sizeof(*out));out->session_id=q->session_id;
+    if(!scanner_mutex||!scanner_task_handle){out->error_code=ESP_ERR_INVALID_STATE;return ESP_ERR_INVALID_STATE;}
+    xSemaphoreTake(scanner_mutex,portMAX_DELAY);
+    if(q->session_id&&q->session_id==mesh_session){
+        esp_err_t error=memcmp(q,&mesh_request,sizeof(*q))?ESP_ERR_INVALID_ARG:
+            mesh_context?ESP_OK:ESP_ERR_NOT_FOUND;
+        mesh_reply_locked(q->session_id,false,error,out);xSemaphoreGive(scanner_mutex);return error;
+    }
+    esp_err_t error=!mesh_start_valid(q)?ESP_ERR_INVALID_ARG:
+        mesh_context||mesh_legacy_running_locked()||mesh_epoch==UINT64_MAX||q->session_id!=mesh_epoch+1U?
+        ESP_ERR_INVALID_STATE:ESP_OK;
+    xSemaphoreGive(scanner_mutex);
+    mesh_observation_context_t *candidate=NULL;
+    if(error==ESP_OK){
+        candidate=heap_caps_calloc(1U,sizeof(*candidate),MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT);
+        if(!candidate)error=ESP_ERR_NO_MEM;
+    }
+    if(error==ESP_OK&&(cerberus_c5_test_running()||another_radio_operation_is_active()))error=ESP_ERR_INVALID_STATE;
+    xSemaphoreTake(scanner_mutex,portMAX_DELAY);
+    int64_t source=esp_timer_get_time();
+    if(error==ESP_OK&&(mesh_context||mesh_legacy_running_locked()||mesh_epoch==UINT64_MAX||
+        q->session_id!=mesh_epoch+1U||source<0||
+        (uint64_t)source>INT64_MAX-(uint64_t)CERBERUS_MESH_OBSERVATION_RETENTION_MS*1000U))error=ESP_ERR_INVALID_STATE;
+    if(error==ESP_OK){
+        mesh_epoch=mesh_session=q->session_id;mesh_request=*q;
+        candidate->clock_high_us=(uint64_t)source;
+        candidate->lease_us=(uint64_t)source+(uint64_t)CERBERUS_MESH_OBSERVATION_LEASE_MS*1000U;
+        candidate->state=CERBERUS_MESH_OBSERVATION_QUEUED;
+        candidate->summary.version=CERBERUS_MESH_OBSERVATION_VERSION;
+        candidate->summary.mode=q->mode;candidate->summary.requested_mask=q->channel_mask;
+        candidate->summary.dwell_ms=q->dwell_ms;
+        candidate->summary_pin_counter=CERBERUS_MESH_OBSERVATION_SUMMARY_BASE;
+        portENTER_CRITICAL(&mesh_mux);mesh_context=candidate;portEXIT_CRITICAL(&mesh_mux);
+        candidate=NULL;
+    }
+    mesh_reply_locked(q->session_id,false,error,out);xSemaphoreGive(scanner_mutex);
+    if(candidate)heap_caps_free(candidate);
+    if(error==ESP_OK)xTaskNotifyGive(scanner_task_handle);
+    return error;
+}
+static esp_err_t mesh_control(uint64_t token,unsigned action,cerberus_mesh_observation_control_t *out)
+{
+    if(!out)return ESP_ERR_INVALID_ARG;
+    memset(out,0,sizeof(*out));out->session_id=token;
+    if(!scanner_mutex){out->error_code=ESP_ERR_INVALID_STATE;return ESP_ERR_INVALID_STATE;}
+    xSemaphoreTake(scanner_mutex,portMAX_DELAY);
+    esp_err_t error=token&&token==mesh_session&&(mesh_context||action==2U)?ESP_OK:ESP_ERR_NOT_FOUND;
+    portENTER_CRITICAL(&mesh_mux);
+    mesh_observation_context_t *c=error==ESP_OK?mesh_context:NULL;
+    if(c){
+        uint64_t now=0U;bool valid=mesh_now_locked(c,&now);
+        if(action){
+            c->cancelled=true;c->rx_channel=0U;
+            if(c->phase!=MESH_STOPPED)c->state=CERBERUS_MESH_OBSERVATION_STOPPING;
+            if(action==2U)c->release_requested=c->retiring=true;
+        }else if(valid&&!c->retiring&&!c->release_requested){
+            if(c->phase!=MESH_STOPPED&&!c->cancelled)
+                c->lease_us=now+(uint64_t)CERBERUS_MESH_OBSERVATION_LEASE_MS*1000U;
+            else mesh_renew_retention_locked(c,now);
+        }
+    }
+    portEXIT_CRITICAL(&mesh_mux);
+    mesh_reply_locked(token,false,error,out);xSemaphoreGive(scanner_mutex);
+    if(c&&action)xTaskNotifyGive(scanner_task_handle);
+    return error;
+}
+esp_err_t cerberus_mesh_observation_status(uint64_t token,cerberus_mesh_observation_control_t *out)
+{return mesh_control(token,0U,out);}
+esp_err_t cerberus_mesh_observation_stop(uint64_t token,cerberus_mesh_observation_control_t *out)
+{return mesh_control(token,1U,out);}
+esp_err_t cerberus_mesh_observation_release(uint64_t token,cerberus_mesh_observation_control_t *out)
+{return mesh_control(token,2U,out);}
+
+esp_err_t cerberus_mesh_observation_peek(const cerberus_mesh_observation_peek_t *q,
+    cerberus_mesh_observation_control_t *out)
+{
+    if(!q||!out)return ESP_ERR_INVALID_ARG;
+    memset(out,0,sizeof(*out));out->session_id=q->session_id;
+    if(!scanner_mutex){out->error_code=ESP_ERR_INVALID_STATE;return ESP_ERR_INVALID_STATE;}
+    xSemaphoreTake(scanner_mutex,portMAX_DELAY);
+    esp_err_t error=q->kind>CERBERUS_MESH_OBSERVATION_SUMMARY?ESP_ERR_INVALID_ARG:
+        !q->session_id||q->session_id!=mesh_session||!mesh_context?ESP_ERR_NOT_FOUND:ESP_OK;
+    uint32_t sequence=0U;
+    portENTER_CRITICAL(&mesh_mux);
+    mesh_observation_context_t *c=error==ESP_OK?mesh_context:NULL;
+    if(c){
+        uint64_t now=0U;bool valid=mesh_now_locked(c,&now);
+        if(c->retiring||c->release_requested)error=ESP_ERR_NOT_FOUND;
+        else if(q->kind==CERBERUS_MESH_OBSERVATION_ROW){
+            if(c->count)sequence=c->slots[c->head].sequence;
+        }else if(c->summary_pin_counter==UINT32_MAX){
+            c->summary.flags|=CERBERUS_MESH_OBSERVATION_SEQUENCE_EXHAUSTED;
+            c->cancelled=true;c->rx_channel=0U;error=ESP_ERR_INVALID_STATE;
+            if(c->phase!=MESH_STOPPED)c->state=CERBERUS_MESH_OBSERVATION_STOPPING;
+        }else{
+            c->pinned_summary=c->summary;
+            c->pinned_summary.error_code=c->cleanup_error!=ESP_OK?c->cleanup_error:c->primary_error;
+            c->pinned_summary.copied_us=0U;
+            c->pinned_summary.flags&=(uint8_t)~CERBERUS_MESH_OBSERVATION_COPY_TIME_VALID;
+            if(valid&&!(c->summary.flags&CERBERUS_MESH_OBSERVATION_SUMMARY_CLOCK_INVALID)){
+                c->pinned_summary.copied_us=now;
+                c->pinned_summary.flags|=CERBERUS_MESH_OBSERVATION_COPY_TIME_VALID;
+            }
+            sequence=c->summary_pin=++c->summary_pin_counter;
+        }
+        if(error==ESP_OK&&valid)mesh_renew_retention_locked(c,now);
+    }
+    portEXIT_CRITICAL(&mesh_mux);
+    mesh_reply_locked(q->session_id,false,error,out);out->sequence=error==ESP_OK?sequence:0U;
+    xSemaphoreGive(scanner_mutex);return error;
+}
+esp_err_t cerberus_mesh_observation_read(const cerberus_mesh_observation_read_t *q,
+    cerberus_mesh_observation_chunk_t *out)
+{
+    if(!q||!out)return ESP_ERR_INVALID_ARG;
+    memset(out,0,sizeof(*out));out->session_id=q->session_id;out->part=q->part;
+    esp_err_t error=ESP_ERR_INVALID_STATE;
+    if(scanner_mutex){
+        xSemaphoreTake(scanner_mutex,portMAX_DELAY);
+        size_t length=q->kind==CERBERUS_MESH_OBSERVATION_ROW?CERBERUS_MESH_OBSERVATION_RECORD_BYTES:
+            CERBERUS_MESH_OBSERVATION_SUMMARY_BYTES;
+        size_t offset=(size_t)q->part*CERBERUS_MESH_OBSERVATION_CHUNK_BYTES;
+        error=q->kind>CERBERUS_MESH_OBSERVATION_SUMMARY||offset>=length||!q->sequence?
+            ESP_ERR_INVALID_ARG:!q->session_id||q->session_id!=mesh_session||!mesh_context?ESP_ERR_NOT_FOUND:ESP_OK;
+        portENTER_CRITICAL(&mesh_mux);
+        mesh_observation_context_t *c=error==ESP_OK?mesh_context:NULL;
+        const uint8_t *bytes=NULL;
+        if(c){
+            if(q->kind==CERBERUS_MESH_OBSERVATION_ROW&&q->sequence<=CERBERUS_MESH_OBSERVATION_SEQUENCE_MAX&&
+                c->count&&c->slots[c->head].sequence==q->sequence)bytes=(const uint8_t *)&c->slots[c->head].record;
+            else if(q->kind==CERBERUS_MESH_OBSERVATION_SUMMARY&&q->sequence>CERBERUS_MESH_OBSERVATION_SUMMARY_BASE&&
+                c->summary_pin==q->sequence)bytes=(const uint8_t *)&c->pinned_summary;
+            if(!bytes)error=ESP_ERR_NOT_FOUND;
+            else{
+                uint64_t now=0U;bool valid=mesh_now_locked(c,&now);
+                if(c->retiring||c->release_requested)error=ESP_ERR_NOT_FOUND;
+                else{
+                    size_t count=length-offset;if(count>CERBERUS_MESH_OBSERVATION_CHUNK_BYTES)count=CERBERUS_MESH_OBSERVATION_CHUNK_BYTES;
+                    memcpy(out->data,bytes+offset,count);out->sequence=q->sequence;
+                    if(valid)mesh_renew_retention_locked(c,now);
+                }
+            }
+        }
+        portEXIT_CRITICAL(&mesh_mux);xSemaphoreGive(scanner_mutex);
+    }
+    if(error!=ESP_OK){
+        uint32_t code=(uint32_t)error;
+        for(unsigned i=0U;i<4U;++i)out->data[i]=(uint8_t)(code>>(i*8U));
+    }
+    return error;
+}
+esp_err_t cerberus_mesh_observation_ack(const cerberus_mesh_observation_ack_t *q,
+    cerberus_mesh_observation_control_t *out)
+{
+    if(!q||!out)return ESP_ERR_INVALID_ARG;
+    memset(out,0,sizeof(*out));out->session_id=q->session_id;
+    if(!scanner_mutex){out->error_code=ESP_ERR_INVALID_STATE;return ESP_ERR_INVALID_STATE;}
+    xSemaphoreTake(scanner_mutex,portMAX_DELAY);
+    esp_err_t error=!q->sequence||q->sequence>CERBERUS_MESH_OBSERVATION_SEQUENCE_MAX?ESP_ERR_INVALID_ARG:
+        !q->session_id||q->session_id!=mesh_session||!mesh_context?ESP_ERR_NOT_FOUND:ESP_OK;
+    portENTER_CRITICAL(&mesh_mux);
+    mesh_observation_context_t *c=error==ESP_OK?mesh_context:NULL;
+    if(c){
+        bool current=c->count&&q->sequence==c->slots[c->head].sequence;
+        if(!current&&q->sequence!=c->last_acked)error=ESP_ERR_NOT_FOUND;
+        else{
+            uint64_t now=0U;bool valid=mesh_now_locked(c,&now);
+            if(c->retiring||c->release_requested)error=ESP_ERR_NOT_FOUND;
+            else{
+                if(current){
+                    c->last_acked=q->sequence;c->head=(uint8_t)((c->head+1U)%CERBERUS_MESH_OBSERVATION_CAPACITY);
+                    --c->count;c->summary.acked=mesh_increment(c->summary.acked,c);
+                }
+                if(valid)mesh_renew_retention_locked(c,now);
+            }
+        }
+    }
+    portEXIT_CRITICAL(&mesh_mux);
+    mesh_reply_locked(q->session_id,false,error,out);
+    out->sequence=error==ESP_OK?q->sequence:0U;
+    xSemaphoreGive(scanner_mutex);return error;
+}
+
+/* One worker, no SDK/heap/wait under either lock. Every SDK return is followed
+ * by cancellation revalidation before reopening callback admission. */
+static void run_mesh_observation(void)
+{
+    for(;;){
+        xSemaphoreTake(scanner_mutex,portMAX_DELAY);
+        portENTER_CRITICAL(&mesh_mux);
+        mesh_observation_context_t *c=mesh_context;
+        if(!c){portEXIT_CRITICAL(&mesh_mux);xSemaphoreGive(scanner_mutex);return;}
+        uint64_t now=0U;bool clock_valid=mesh_now_locked(c,&now);
+        if(c->cancelled&&c->phase<MESH_STOPPED){
+            c->rx_channel=0U;c->state=CERBERUS_MESH_OBSERVATION_STOPPING;
+            if(c->phase<MESH_CLEANUP)c->phase=MESH_CLEANUP;
+        }
+        uint8_t phase=c->phase;
+        bool dispose=phase==MESH_STOPPED&&(c->release_requested||c->retiring);
+        if(dispose)mesh_context=NULL;
+        portEXIT_CRITICAL(&mesh_mux);xSemaphoreGive(scanner_mutex);
+        if(dispose){heap_caps_free(c);return;}
+        esp_err_t error=ESP_OK;
+        if(phase==MESH_SETUP){
+            c->sdk_attempted=true;error=esp_ieee802154_enable();
+            if(error==ESP_OK)error=esp_ieee802154_set_coordinator(false);
+            if(error==ESP_OK)error=esp_ieee802154_set_promiscuous(true);
+            if(error==ESP_OK)error=esp_ieee802154_set_rx_when_idle(true);
+            xSemaphoreTake(scanner_mutex,portMAX_DELAY);portENTER_CRITICAL(&mesh_mux);
+            if(error!=ESP_OK){if(c->primary_error==ESP_OK)c->primary_error=error;c->cancelled=true;}
+            c->phase=c->cancelled?MESH_CLEANUP:MESH_TUNE;
+            if(c->cancelled)c->state=CERBERUS_MESH_OBSERVATION_STOPPING;
+            portEXIT_CRITICAL(&mesh_mux);xSemaphoreGive(scanner_mutex);
+            continue;
+        }
+        if(phase==MESH_TUNE){
+            uint8_t index=c->next_channel;
+            while(!(mesh_request.channel_mask&(uint16_t)(1U<<index)))index=(uint8_t)((index+1U)%16U);
+            uint8_t channel=(uint8_t)(11U+index);
+            error=esp_ieee802154_set_channel(channel);
+            /* Publish callback admission before receive(), which may deliver a
+             * frame synchronously. A queued control does not claim RX_ACTIVE
+             * until the SDK accepts, but an actual delivered frame is retained. */
+            xSemaphoreTake(scanner_mutex,portMAX_DELAY);portENTER_CRITICAL(&mesh_mux);
+            uint64_t armed=0U;bool arm_valid=mesh_now_locked(c,&armed);
+            bool call_receive=error==ESP_OK&&arm_valid&&!c->cancelled;
+            if(call_receive){c->rx_channel=channel;c->state=CERBERUS_MESH_OBSERVATION_QUEUED;}
+            portEXIT_CRITICAL(&mesh_mux);xSemaphoreGive(scanner_mutex);
+            if(call_receive)error=esp_ieee802154_receive();
+            xSemaphoreTake(scanner_mutex,portMAX_DELAY);portENTER_CRITICAL(&mesh_mux);
+            uint64_t started=0U;bool valid=mesh_now_locked(c,&started);
+            if(error!=ESP_OK){if(c->primary_error==ESP_OK)c->primary_error=error;c->cancelled=true;}
+            if(!c->cancelled&&valid){
+                c->summary.tuned_mask|=(uint16_t)(1U<<index);
+                if(!(c->summary.flags&CERBERUS_MESH_OBSERVATION_START_TIME_VALID)){
+                    c->summary.started_us=started;c->summary.flags|=CERBERUS_MESH_OBSERVATION_START_TIME_VALID;
+                }
+                c->dwell_started_us=started;c->rx_channel=channel;c->summary.channel=channel;
+                c->next_channel=mesh_request.mode==CERBERUS_MESH_OBSERVATION_FIXED?index:(uint8_t)((index+1U)%16U);
+                c->phase=MESH_DWELL;c->state=CERBERUS_MESH_OBSERVATION_RECEIVING;
+            }else{c->rx_channel=0U;c->phase=MESH_CLEANUP;c->state=CERBERUS_MESH_OBSERVATION_STOPPING;}
+            portEXIT_CRITICAL(&mesh_mux);xSemaphoreGive(scanner_mutex);
+            continue;
+        }
+        if(phase==MESH_DWELL&&clock_valid&&now-c->dwell_started_us>=(uint64_t)mesh_request.dwell_ms*1000U){
+            xSemaphoreTake(scanner_mutex,portMAX_DELAY);portENTER_CRITICAL(&mesh_mux);
+            uint64_t ended=0U;bool valid=mesh_now_locked(c,&ended);
+            /* Stop may have won between the outer decision and this lock. An
+             * interrupted window receives no completed-dwell credit. */
+            if(valid&&!c->cancelled&&c->phase==MESH_DWELL&&c->rx_channel){
+                uint8_t index=(uint8_t)(c->rx_channel-11U);
+                uint64_t elapsed=(ended-c->dwell_started_us)/1000U;
+                uint32_t previous=c->summary.completed_dwell_ms[index];
+                if(elapsed>=UINT32_MAX-previous){c->summary.completed_dwell_ms[index]=UINT32_MAX;c->summary.flags|=CERBERUS_MESH_OBSERVATION_COUNTERS_SATURATED;}
+                else c->summary.completed_dwell_ms[index]=previous+(uint32_t)elapsed;
+            }
+            c->rx_channel=0U;
+            portEXIT_CRITICAL(&mesh_mux);xSemaphoreGive(scanner_mutex);
+            error=esp_ieee802154_sleep();
+            xSemaphoreTake(scanner_mutex,portMAX_DELAY);portENTER_CRITICAL(&mesh_mux);
+            if(error!=ESP_OK){if(c->primary_error==ESP_OK)c->primary_error=error;c->cancelled=true;}
+            c->phase=c->cancelled?MESH_CLEANUP:MESH_TUNE;
+            portEXIT_CRITICAL(&mesh_mux);xSemaphoreGive(scanner_mutex);
+            continue;
+        }
+        if(phase==MESH_CLEANUP){
+            esp_err_t idle_error=ESP_OK,sleep_error=ESP_OK;
+            if(c->sdk_attempted){
+                idle_error=esp_ieee802154_set_rx_when_idle(false);
+                sleep_error=esp_ieee802154_sleep();
+                error=esp_ieee802154_disable();
+                if(error==ESP_OK){
+                    esp_err_t restore=esp_ieee802154_set_promiscuous(false);
+                    if(idle_error==ESP_OK)idle_error=restore;
+                }
+            }
+            xSemaphoreTake(scanner_mutex,portMAX_DELAY);portENTER_CRITICAL(&mesh_mux);
+            c->cleanup_error=error;
+            if(error==ESP_OK){
+                if(c->primary_error==ESP_OK)c->primary_error=idle_error!=ESP_OK?idle_error:sleep_error;
+                uint64_t stopped=0U;bool valid=mesh_now_locked(c,&stopped);
+                c->phase=MESH_STOPPED;c->state=c->primary_error==ESP_OK?CERBERUS_MESH_OBSERVATION_COMPLETE:CERBERUS_MESH_OBSERVATION_ERROR;
+                c->rx_channel=0U;
+                c->summary.channel=0U;c->summary.flags|=CERBERUS_MESH_OBSERVATION_STOPPED;
+                c->summary.error_code=c->primary_error;
+                if(valid&&!(c->summary.flags&CERBERUS_MESH_OBSERVATION_SUMMARY_CLOCK_INVALID)){
+                    c->summary.stopped_us=stopped;c->summary.flags|=CERBERUS_MESH_OBSERVATION_STOP_TIME_VALID;
+                }
+                if(valid)c->retention_us=stopped+(uint64_t)CERBERUS_MESH_OBSERVATION_RETENTION_MS*1000U;
+                else c->retiring=true;
+            }
+            portEXIT_CRITICAL(&mesh_mux);xSemaphoreGive(scanner_mutex);
+            if(error==ESP_OK)continue;
+        }
+        /* Notifications wake Stop promptly; the finite wait also enforces lease
+         * and orphan retention without any SPI caller. SDK duration is unbounded
+         * by this scheduler interval and is not a claimed response-time bound. */
+        TickType_t wait=pdMS_TO_TICKS(phase==MESH_CLEANUP?100U:20U);
+        (void)ulTaskNotifyTake(pdTRUE,wait?wait:1U);
+    }
 }
 
 static void finish_scan(esp_err_t error)
@@ -425,6 +899,11 @@ static void run_beacon_scan(void)
     if (err == ESP_OK) {
         err = esp_ieee802154_set_promiscuous(true);
     }
+    if (err == ESP_OK) {
+        /* IDF otherwise sleeps after the first received frame. Promiscuous
+         * mode disables automatic ACKs; keep listening for this whole dwell. */
+        err = esp_ieee802154_set_rx_when_idle(true);
+    }
     beacon_scan_active = err == ESP_OK;
 
     for (uint8_t index = 0;
@@ -469,6 +948,11 @@ static void run_beacon_scan(void)
     }
 
     beacon_scan_active = false;
+    /* Clear continued reception on every exit, including setup failure. */
+    esp_err_t idle_err = esp_ieee802154_set_rx_when_idle(false);
+    if (err == ESP_OK && idle_err != ESP_OK) {
+        err = idle_err;
+    }
     esp_err_t promiscuous_err = esp_ieee802154_set_promiscuous(false);
     if (err == ESP_OK && promiscuous_err != ESP_OK) {
         err = promiscuous_err;
@@ -488,6 +972,11 @@ static void run_activity_scan(void)
     }
     if (err == ESP_OK) {
         err = esp_ieee802154_set_promiscuous(true);
+    }
+    if (err == ESP_OK) {
+        /* IDF otherwise sleeps after the first received frame. Promiscuous
+         * mode disables automatic ACKs; keep listening for this whole dwell. */
+        err = esp_ieee802154_set_rx_when_idle(true);
     }
     activity_scan_active = err == ESP_OK;
 
@@ -520,6 +1009,11 @@ static void run_activity_scan(void)
     }
 
     activity_scan_active = false;
+    /* Clear continued reception on every exit, including setup failure. */
+    esp_err_t idle_err = esp_ieee802154_set_rx_when_idle(false);
+    if (err == ESP_OK && idle_err != ESP_OK) {
+        err = idle_err;
+    }
     esp_err_t promiscuous_err = esp_ieee802154_set_promiscuous(false);
     if (err == ESP_OK && promiscuous_err != ESP_OK) {
         err = promiscuous_err;
@@ -542,8 +1036,12 @@ static void scanner_task(void *arg)
         bool energy = scan_status.state == CERBERUS_IEEE802154_ENERGY_SCAN_RUNNING;
         bool beacon = beacon_status.state == CERBERUS_IEEE802154_BEACON_SCAN_RUNNING;
         bool activity = activity_status.state == CERBERUS_IEEE802154_ACTIVITY_SCAN_RUNNING;
+        bool mesh = mesh_context != NULL;
+        bool locate = locate_context != NULL;
         xSemaphoreGive(scanner_mutex);
-        if (energy) run_energy_scan();
+        if (locate) run_mesh_locate();
+        else if (mesh) run_mesh_observation();
+        else if (energy) run_energy_scan();
         else if (beacon) run_beacon_scan();
         else if (activity) run_activity_scan();
         /* A spurious/stale notification must not restart a completed sweep. */
@@ -591,7 +1089,10 @@ esp_err_t cerberus_ieee802154_scanner_init(void)
         return ESP_ERR_NO_MEM;
     }
 
-    ESP_LOGI(TAG, "energy, beacon, and passive activity scanners ready");
+    /* Boot discriminator only; no eternal uniqueness across power cycles. */
+    mesh_epoch=((uint64_t)esp_random()<<32U)|esp_random();
+    if(!mesh_epoch||mesh_epoch==UINT64_MAX)mesh_epoch=UINT64_MAX/2U;
+    ESP_LOGI(TAG, "energy, beacon, passive activity and mesh scanners ready");
     return ESP_OK;
 }
 
@@ -613,7 +1114,8 @@ esp_err_t cerberus_ieee802154_scanner_start(void)
     }
 
     xSemaphoreTake(scanner_mutex, portMAX_DELAY);
-    if (scan_status.state == CERBERUS_IEEE802154_ENERGY_SCAN_RUNNING ||
+    if (locate_context != NULL || mesh_context != NULL ||
+        scan_status.state == CERBERUS_IEEE802154_ENERGY_SCAN_RUNNING ||
         beacon_status.state == CERBERUS_IEEE802154_BEACON_SCAN_RUNNING ||
         activity_status.state == CERBERUS_IEEE802154_ACTIVITY_SCAN_RUNNING) {
         xSemaphoreGive(scanner_mutex);
@@ -637,7 +1139,8 @@ bool cerberus_ieee802154_scanner_is_running(void)
         return false;
     }
     xSemaphoreTake(scanner_mutex, portMAX_DELAY);
-    bool running = scan_status.state == CERBERUS_IEEE802154_ENERGY_SCAN_RUNNING ||
+    bool running = locate_context != NULL || mesh_context != NULL ||
+        scan_status.state == CERBERUS_IEEE802154_ENERGY_SCAN_RUNNING ||
         beacon_status.state == CERBERUS_IEEE802154_BEACON_SCAN_RUNNING ||
         activity_status.state == CERBERUS_IEEE802154_ACTIVITY_SCAN_RUNNING;
     xSemaphoreGive(scanner_mutex);
@@ -703,7 +1206,8 @@ esp_err_t cerberus_ieee802154_beacon_scanner_start(void)
     }
 
     xSemaphoreTake(scanner_mutex, portMAX_DELAY);
-    if (scan_status.state == CERBERUS_IEEE802154_ENERGY_SCAN_RUNNING ||
+    if (locate_context != NULL || mesh_context != NULL ||
+        scan_status.state == CERBERUS_IEEE802154_ENERGY_SCAN_RUNNING ||
         beacon_status.state == CERBERUS_IEEE802154_BEACON_SCAN_RUNNING ||
         activity_status.state == CERBERUS_IEEE802154_ACTIVITY_SCAN_RUNNING) {
         xSemaphoreGive(scanner_mutex);
@@ -781,7 +1285,8 @@ esp_err_t cerberus_ieee802154_activity_scanner_start(void)
     }
 
     xSemaphoreTake(scanner_mutex, portMAX_DELAY);
-    if (scan_status.state == CERBERUS_IEEE802154_ENERGY_SCAN_RUNNING ||
+    if (locate_context != NULL || mesh_context != NULL ||
+        scan_status.state == CERBERUS_IEEE802154_ENERGY_SCAN_RUNNING ||
         beacon_status.state == CERBERUS_IEEE802154_BEACON_SCAN_RUNNING ||
         activity_status.state == CERBERUS_IEEE802154_ACTIVITY_SCAN_RUNNING) {
         xSemaphoreGive(scanner_mutex);

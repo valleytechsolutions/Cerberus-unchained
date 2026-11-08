@@ -37,7 +37,7 @@ subprocess.run([sys.executable, "-m", "ziglang", "cc", "-std=c11", "-O1", "-Wall
     "-I", str(out), "-I", str(root / "tools/host_checks/stubs"),
     "-I", str(root / "s3_main/main"), "-I", str(root / "shared"),
     str(root / "tools/host_checks/s3_findmy_monitor_ui_check.c"),
-    str(root / "s3_main/main/privacy.c"), "-o", str(exe)], check=True)
+    str(root / "s3_main/main/privacy.c"), str(root / "s3_main/main/s3_ble_discovery_session.c"), "-o", str(exe)], check=True)
 subprocess.run([str(exe), str(out / "findmy")], check=True)
 def chunk(kind, data):
     return struct.pack(">I",len(data))+kind+data+struct.pack(">I",zlib.crc32(kind+data))

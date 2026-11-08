@@ -41,7 +41,8 @@ typedef struct {
     uint32_t snooze_since_ms, snooze_duration_ms;
 } sentinel_watch_device_policy_t;
 
-/* Volatile session only. No addresses/names are written to storage. Rotating
+/* This classified-hint history is volatile. The optional Recon recorder stores
+ * separate completed-sweep observations when explicitly started. Rotating
  * addresses are different broadcast identities, not a count of physical devices. */
 typedef struct {
     sentinel_watch_entry_t history[SENTINEL_WATCH_HISTORY_CAPACITY];

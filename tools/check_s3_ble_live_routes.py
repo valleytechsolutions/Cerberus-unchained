@@ -1,4 +1,4 @@
-"""Run the actual BLE/live tap dispatch and scan-start context gate on the host."""
+"""Run actual BLE/live tap dispatch and passive scheduler delegation on the host."""
 from pathlib import Path
 import subprocess
 import sys
@@ -6,15 +6,22 @@ root=Path(__file__).resolve().parents[1]
 out=root/'artifacts/ble-live-route-checks';out.mkdir(parents=True,exist_ok=True)
 live=(root/'s3_main/main/sentinel_live_ui.h').read_text()
 ui=(root/'s3_main/main/ui.c').read_text()
+discovery=(root/'s3_main/main/s3_ble_discovery_live_ui.h').read_text()
 def section(s,a,b): return s[s.index(a):s.index(b,s.index(a))]
-parts=section(live,'static bool live_is_view(', 'static void live_status(')
+map_end=live.index('} live_wifi_paint_map_t;')+len('} live_wifi_paint_map_t;')
+(out/'ble_live_wifi_map_type.h').write_text(live[live.rindex('typedef struct',0,map_end):map_end])
+parts=section(discovery,'static bool ble_discovery_unified(', 'static bool ble_discovery_keeps_awake(')
+parts+=section(live,'static bool live_is_view(', 'static void live_status(')
+parts+=section(live,'static bool live_wifi_paint_map_current(', 'static esp_err_t live_paint(')
 parts+=section(live,'static uint32_t live_ble_recent_mask(', 'static void live_make_view(')
 make_start=live.index('static void live_make_view(')
 ble_start=live.index('    if (tool == SENTINEL_SCAN_BLE) {',make_start)
 ble_end=live.index('    if(tool==SENTINEL_SCAN_WIFI)',ble_start)
 parts+='static void live_make_view(void) {\n' \
     'sentinel_scan_tool_t tool=SENTINEL_SCAN_BLE;\n' \
-    'live_test_record_t *record=&live_records[tool];\n'+live[ble_start:ble_end]+'}\n'
+    'live_test_record_t *record=&live_records[tool];\n' \
+    +section(live,'    const bool unified_ble =', '    if (ble_discovery_presenting()) {') \
+    +live[ble_start:ble_end]+'}\n'
 parts+=section(live,'static void handle_live_scan_tap(', 'static esp_err_t live_connect_selected_wifi(')
 parts+=section(ui,'static void handle_ble_tap(', '    if (ble_mode == UI_BLE_MODE_ANALYZER)')+'}\n'
 start=live.index('    case SENTINEL_SCAN_BLE:',live.index('static esp_err_t live_execute('))

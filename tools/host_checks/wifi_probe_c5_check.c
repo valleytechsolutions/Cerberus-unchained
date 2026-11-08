@@ -1,3 +1,4 @@
+#include "wardrive_foreign_boundary.h"
 /* Reuse the normal scan platform fixture. All receive/worker/start/stop/getter
  * bodies below are extracted production code; only SDK/task/lock stubs remain. */
 #define main observation_fixture_main

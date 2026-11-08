@@ -1,5 +1,6 @@
 #include "usb_console.h"
 #include "battery.h"
+#include "dual_ble_diagnostics.h"
 
 #include "c5_spi_link.h"
 #include "csi_link.h"
@@ -12,7 +13,12 @@
 #include "recovery.h"
 #include "storage.h"
 #include "recon_store.h"
+#include "recon_recorder.h"
+#include "ble_archive_io.h"
 #include "remote_id_diagnostics.h"
+#include "wifi_readout_diagnostics.h"
+#include "dual_wifi_diagnostics.h"
+#include "wifi_packet_count_diagnostics.h"
 #include "wifi_multissid_session.h"
 #include "wifi_pinescan_session.h"
 #include "ble_test.h"
@@ -24,6 +30,10 @@
 #include "usb_mass_storage.h"
 #include "system_health.h"
 #include "wardrive_service.h"
+#include "gps_recorder.h"
+#include "wardrive_gps_uart.h"
+#include "wardrive_upload_settings.h"
+#include "wardrive_log_manager.h"
 
 #include "driver/usb_serial_jtag.h"
 #include "driver/usb_serial_jtag_vfs.h"
@@ -53,8 +63,44 @@
 static const char *TAG = "usb_console";
 static TaskHandle_t console_task_handle;
 static usb_phy_handle_t console_phy;
+/* Only the console task formats into this buffer. Lifecycle calls are
+ * serialized by the UI; stop retains it until the task publishes quiescence.
+ * Keep large output off both the task stack and scarce internal RAM. */
+static char *console_output;
 static atomic_bool console_stop_requested;
 static atomic_bool console_task_stopped = true;
+
+/* Keep command-local snapshots out of the permanent console task frame.
+ * With size optimization, otherwise even an unrelated command inherits the
+ * largest inlined snapshot and can exhaust the 4096-byte task stack. */
+static __attribute__((noinline)) void print_help(void);
+static __attribute__((noinline)) void print_info(void);
+static __attribute__((noinline)) void print_builds(void);
+static __attribute__((noinline)) void print_health(void);
+static __attribute__((noinline)) void print_memory(void);
+static __attribute__((noinline)) void print_c5(void);
+static __attribute__((noinline)) void print_storage(void);
+static __attribute__((noinline)) void print_resources(void);
+static __attribute__((noinline)) void print_capture(void);
+static __attribute__((noinline)) void print_usb(void);
+static __attribute__((noinline)) void print_network(void);
+static __attribute__((noinline)) void print_wifi_seen(void);
+static __attribute__((noinline)) void print_wifi_readout(void);
+static __attribute__((noinline)) void print_wifi_dual(void);
+static __attribute__((noinline)) void print_packet_count(void);
+static __attribute__((noinline)) void print_recon_record(void);
+static __attribute__((noinline)) void print_ble_archive(void);
+static __attribute__((noinline)) void print_remote_id(void);
+static __attribute__((noinline)) void print_stations(void);
+static __attribute__((noinline)) void print_reports(void);
+static __attribute__((noinline)) void print_radio(void);
+static __attribute__((noinline)) void print_gps(void);
+static __attribute__((noinline)) void print_upload_profile(void);
+static __attribute__((noinline)) void print_upload_status(void);
+static __attribute__((noinline)) void print_wardrive_logs(void);
+static __attribute__((noinline)) void print_dual_ble(void);
+static __attribute__((noinline)) void print_ble_memory(void);
+static __attribute__((noinline)) void print_battery(void);
 
 static void console_write(const char *text)
 {
@@ -80,15 +126,18 @@ static void console_write(const char *text)
 
 static void console_printf(const char *format, ...)
 {
-    char output[USB_CONSOLE_OUTPUT_CAPACITY];
+    char *output = console_output;
+    if (output == NULL) {
+        return;
+    }
     va_list arguments;
     va_start(arguments, format);
-    int length = vsnprintf(output, sizeof(output), format, arguments);
+    int length = vsnprintf(output, USB_CONSOLE_OUTPUT_CAPACITY, format, arguments);
     va_end(arguments);
     if (length <= 0) {
         return;
     }
-    output[sizeof(output) - 1U] = '\0';
+    output[USB_CONSOLE_OUTPUT_CAPACITY - 1U] = '\0';
     console_write(output);
 }
 
@@ -105,19 +154,31 @@ static void print_help(void)
     console_write(
         "help     Show this command list\r\n"
         "info     Show firmware and protocol information\r\n"
+        "builds   Read S3/C5 app, SDK, partition and ELF build fingerprints\r\n"
         "health   Show reset, memory, stack, and crash status\r\n"
         "memory   Show S3 internal/PSRAM capacity and C5 heap headroom\r\n"
         "c5       Show onboard C5 link health and capabilities\r\n"
         "storage  Show microSD health and capacity\r\n"
         "resources Verify SD Recon database and SHA-256\r\n"
+        "recon_record Read SD Recon recording state and counters\r\n"
+        "ble_archive Read saved BLE snapshot worker state\r\n"
         "capture   Read passive capture, MultiSSID and PineScan state\r\n"
         "usb      Show USB storage handover status\r\n"
         "network  Show onboard C5 network scan status\r\n"
         "wifi_seen Read completed Wi-Fi source-age coverage without scanning\r\n"
+        "wifi_readout Read local UI AP transfer metrics without SPI or scanning\r\n"
+        "wifi_dual Read UI-published split Wi-Fi state without SPI or scanning\r\n"
+        "packet_count Read copied Count setup/progress without radio access\r\n"
         "remote_id Read published Remote ID session counts without scanning\r\n"
         "stations Read passive station capture without renewing its lease\r\n"
         "reports  Read the first 32 SD log names and network CSVs\r\n"
         "radio    Show C5, S3 BLE/Wi-Fi and Wardriving status without renewing leases\r\n"
+        "gps      Show receiver, baud and fix health without coordinates\r\n"
+        "upload_profile Show saved upload readiness without credentials\r\n"
+        "upload_status Show log operation and numeric transfer diagnostics\r\n"
+        "ward_logs    List finalized wardrive filenames and sizes, read-only\r\n"
+        "dual_ble Read cached two-receiver BLE/Fox state without SPI or scanning\r\n"
+        "ble_memory Read cached S3 BLE lifecycle heap samples without heap walks\r\n"
         "battery  Show cached onboard battery gauge status\r\n"
         "All commands are read-only and accept no arguments.\r\n");
 }
@@ -154,6 +215,50 @@ static void print_info(void)
         cerberus_display_buffering_enabled() ? "yes" : "no");
 }
 
+static void print_build_identity(const char *chip, const cerberus_device_identity_t *id, esp_err_t error)
+{
+    console_printf("%s_build_error=%ld\r\n", chip, (long)error);
+    if (error != ESP_OK) return;
+    console_printf("%s_build_project=%s\r\n%s_build_version=%s\r\n%s_build_idf=%s\r\n"
+        "%s_build_date=%s %s\r\n%s_build_chip_model=%u\r\n%s_build_cores=%u\r\n"
+        "%s_build_partition=%s\r\n%s_build_partition_address=%lu\r\n%s_build_partition_bytes=%lu\r\n"
+        "%s_build_flash_bytes=%lu\r\n%s_build_c5_api=%lu\r\n%s_build_fields=0x%02x\r\n",
+        chip, id->project, chip, id->version, chip, id->idf, chip, id->date, id->time,
+        chip, id->chip_model, chip, id->cores, chip, id->partition_label,
+        chip, (unsigned long)id->partition_address, chip, (unsigned long)id->partition_bytes,
+        chip, (unsigned long)id->flash_bytes, chip, (unsigned long)id->capability_version, chip, id->flags);
+    char hash[65];
+    for (unsigned i = 0; i < 32U; ++i) snprintf(hash + i * 2U, sizeof(hash) - i * 2U, "%02x", id->elf_sha256[i]);
+    console_printf("%s_build_elf_sha256=%s\r\n", chip, hash);
+}
+
+static void print_builds(void)
+{
+    cerberus_device_identity_t *id = heap_caps_calloc(1, sizeof(*id), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    cerberus_device_identity_reader_t *reader = heap_caps_calloc(1, sizeof(*reader), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!id || !reader) {
+        console_printf("builds_error=%ld\r\n", (long)ESP_ERR_NO_MEM);
+        heap_caps_free(id); heap_caps_free(reader);
+        return;
+    }
+    cerberus_device_identity_collect(id, CERBERUS_C5_FIRMWARE_VERSION);
+    print_build_identity("s3", id, cerberus_device_identity_valid(id) ? ESP_OK : ESP_ERR_INVALID_RESPONSE);
+    int64_t now = esp_timer_get_time();
+    esp_err_t error = ESP_ERR_INVALID_STATE;
+    bool complete = false;
+    if (now >= 0) {
+        c5_spi_link_device_identity_begin(reader, (uint32_t)((uint64_t)now / 1000U) + 5000U);
+        do {
+            if (atomic_load(&console_stop_requested)) { error = ESP_ERR_NOT_FINISHED; break; }
+            error = c5_spi_link_device_identity_step(reader, id, &complete);
+            if (error != ESP_OK || complete) break;
+            vTaskDelay(pdMS_TO_TICKS(1));
+        } while (true);
+    }
+    print_build_identity("c5", id, error);
+    heap_caps_free(reader); heap_caps_free(id);
+}
+
 static void print_memory(void)
 {
     const uint32_t caps[]={MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT};
@@ -166,6 +271,10 @@ static void print_memory(void)
             (unsigned)heap_caps_get_largest_free_block(caps[i]));
     }
     console_printf("s3_task_count=%u\r\n",(unsigned)uxTaskGetNumberOfTasks());
+    /* ESP-IDF reports this minimum remaining task stack in bytes. Query this
+     * command again after a diagnostic sequence to include its exercised paths. */
+    console_printf("usb_console_stack_low_water_bytes=%u\r\n",
+        (unsigned)uxTaskGetStackHighWaterMark(NULL));
     cerberus_c5_status_t status;
     esp_err_t err=c5_spi_link_get_status(&status);
     console_printf("memory=C5_INTERNAL\r\ntransport=%s\r\n",esp_err_to_name(err));
@@ -485,6 +594,81 @@ static void print_battery(void)
         (unsigned)status.version, status.last_read_ms);
 }
 
+static void print_dual_ble(void)
+{
+    cerberus_dual_ble_diagnostics_t d;
+    cerberus_dual_ble_diagnostics_get(&d);
+    console_printf("dual_ble_available=%u\r\ndual_ble_version=%u\r\ndual_ble_sequence=%" PRIu64
+        "\r\ndual_ble_sequence_saturated=%u\r\ndual_ble_published_ms=%" PRIu64
+        "\r\ndual_ble_clock_valid=%u\r\ndual_ble_time_scope=S3_UI_publication_not_RF_time\r\n",
+        d.available, d.version, d.sequence, d.sequence_saturated, d.published_ms, d.clock_valid);
+    if (!d.available) return;
+    console_printf("dual_ble_mode=%d\r\ndual_ble_awake=%u\r\ndual_ble_allocated=%u\r\n"
+        "dual_ble_enabled=%u\r\ndual_ble_attached=%u\r\ndual_ble_receiving=%u\r\n"
+        "dual_ble_reading=%u\r\ndual_ble_stopping=%u\r\ndual_ble_released=%u\r\n"
+        "dual_ble_c5_phase=%u\r\ndual_ble_c5_state=%u\r\ndual_ble_c5_generation=%u\r\n"
+        "dual_ble_c5_sweeps=%" PRIu32 "\r\ndual_ble_c5_rows=%u\r\ndual_ble_c5_read_index=%u\r\n"
+        "dual_ble_c5_extended_configured=%u\r\ndual_ble_c5_error=%" PRId32 "\r\n",
+        d.requested_mode, d.awake, d.allocated, d.enabled, d.attached, d.receiving,
+        d.reading, d.stopping, d.released, d.c5_phase, d.c5_state, d.c5_generation,
+        d.c5_sweeps, d.c5_rows, d.c5_read_index, d.extended_configured, d.c5_error);
+    console_printf("dual_ble_requested_family=%u\r\ndual_ble_c5_requested_family=%u\r\n"
+        "dual_ble_c5_published_family=%u\r\n"
+        "dual_ble_family_scope=UI_desired_controller_request_and_retained_bank_not_RF_identity\r\n",
+        d.requested_family, d.c5_requested_family, d.c5_published_family);
+    console_printf("dual_ble_c5_live_updates=%u\r\ndual_ble_c5_snapshots=%" PRIu32
+        "\r\ndual_ble_c5_has_first_result=%u\r\ndual_ble_c5_first_result_ms=%" PRIu32 "\r\n"
+        "dual_ble_snapshot_scope=coherent_bank_publications_in_current_discovery_not_RF_sweeps\r\n"
+        "dual_ble_sweeps_scope=completed_RF_sweeps_in_current_public_receiver_run\r\n"
+        "dual_ble_first_result_scope=reader_latency_to_first_new_nonempty_bank_not_RF_time\r\n",
+        (unsigned)d.c5_live_updates, d.c5_snapshots, (unsigned)d.c5_has_first_result, d.c5_first_result_ms);
+    console_printf("dual_ble_c5_inventory_known=%u\r\ndual_ble_c5_inventory_replacement_enabled=%u\r\n"
+        "dual_ble_c5_inventory_replaced=%" PRIu32 "\r\ndual_ble_c5_inventory_dropped=%" PRIu32 "\r\n"
+        "dual_ble_c5_inventory_scope=last_published_bank_not_unique_devices_or_RF_loss\r\n",
+        (unsigned)d.c5_inventory_known, (unsigned)d.c5_inventory_replacement_enabled,
+        d.c5_inventory_replaced, d.c5_inventory_dropped);
+    console_printf("dual_ble_s3_initialized=%u\r\ndual_ble_s3_synced=%u\r\ndual_ble_s3_owner=%u\r\n"
+        "dual_ble_s3_scan_cached=%u\r\ndual_ble_s3_state=%u\r\n"
+        "dual_ble_s3_scan_error=%" PRId32 "\r\ndual_ble_s3_discovery_enabled=%u\r\n"
+        "dual_ble_s3_discovery_attached=%u\r\ndual_ble_s3_discovery_owned=%u\r\n"
+        "dual_ble_fox_open=%u\r\ndual_ble_fox_pending=%u\r\ndual_ble_fox_stopping=%u\r\n"
+        "dual_ble_fox_error=%" PRId32 "\r\ndual_ble_s3_track_error=%" PRId32 "\r\n",
+        d.s3_initialized, d.s3_synced, d.s3_owner, d.s3_scan_cached, d.s3_state,
+        d.s3_scan_error, d.s3_discovery_enabled, d.s3_discovery_attached, d.s3_discovery_owned,
+        d.fox_open, d.fox_pending, d.fox_stopping, d.fox_error, d.s3_track_error);
+    console_printf("dual_ble_s3_target_matches=%u\r\ndual_ble_s3_seen=%u\r\ndual_ble_s3_fresh=%u\r\n"
+        "dual_ble_s3_rssi=%d\r\ndual_ble_s3_age_ms=%" PRIu32 "\r\ndual_ble_s3_reports=%" PRIu32 "\r\n"
+        "dual_ble_c5_target_matches=%u\r\ndual_ble_c5_seen=%u\r\ndual_ble_c5_fresh=%u\r\n"
+        "dual_ble_c5_rssi=%d\r\ndual_ble_c5_age_upper_ms=%" PRIu32 "\r\ndual_ble_c5_reports=%" PRIu32 "\r\n"
+        "dual_ble_count_scope=independent_received_reports_not_unique_packets_or_devices\r\n"
+        "dual_ble_c5_reports_scope=last_sampled_C5_sweep\r\n",
+        d.s3.target_matches, d.s3.seen, d.s3.fresh, d.s3.rssi, d.s3.age_ms, d.s3.reports,
+        d.c5.target_matches, d.c5.seen, d.c5.fresh, d.c5.rssi, d.c5.age_ms, d.c5.reports);
+}
+
+static void print_ble_memory(void)
+{
+    cerberus_s3_ble_memory_diagnostics_t snapshot = {0};
+    cerberus_s3_ble_host_memory_diagnostics(&snapshot);
+    static const char *const phases[CERBERUS_S3_BLE_MEMORY_STAGE_COUNT] = {
+        "before_init", "after_init", "after_sync", "released", "refused"
+    };
+    console_printf("ble_memory_scope=cached_process_wide_phase_samples_not_ble_allocation_totals\r\n");
+    for (unsigned i = 0U; i < CERBERUS_S3_BLE_MEMORY_STAGE_COUNT; ++i) {
+        const cerberus_s3_ble_memory_sample_t *sample = &snapshot.samples[i];
+        console_printf(
+            "ble_memory_phase=%s valid=%u sequence=%" PRIu32 " receipt_us=%" PRId64
+            " requested_owner=%u initialized=%u synced=%u error=%" PRId32
+            " internal_free=%" PRIu32 " internal_minimum=%" PRIu32
+            " psram_free=%" PRIu32 " psram_minimum=%" PRIu32 "\r\n",
+            phases[i], sample->valid ? 1U : 0U, sample->sequence, sample->receipt_us,
+            (unsigned)sample->requested_owner, sample->initialized ? 1U : 0U,
+            sample->synced ? 1U : 0U, (int32_t)sample->error,
+            sample->internal_free, sample->internal_minimum,
+            sample->psram_free, sample->psram_minimum);
+    }
+}
+
 static void print_resources(void)
 {
     uint8_t digest[32];
@@ -507,6 +691,43 @@ static void print_usb(void)
     cerberus_usb_mass_storage_get_status(&status);
     console_printf("msc_active=%u\r\nhost_attached=%u\r\nsafe_to_release=%u\r\nlast_error=%s\r\n",
         status.active, status.host_attached, status.safe_to_release, esp_err_to_name(status.last_error));
+}
+
+static void print_wardrive_logs(void)
+{
+    /* Use the same catalog and exclusive SD lease as the touchscreen. No CSV
+     * contents, network connection, deletion, or receipt mutation is allowed. */
+    const size_t capacity = CERBERUS_WARD_LOG_CAPACITY;
+    cerberus_ward_log_entry_t *entries = heap_caps_calloc(capacity, sizeof(*entries),
+        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    uint64_t lease = 0;
+    size_t count = 0;
+    cerberus_ward_log_catalog_info_t info = {0};
+    esp_err_t error = entries ? cerberus_ward_log_storage_begin(&lease) : ESP_ERR_NO_MEM;
+    if (error == ESP_OK) error = cerberus_ward_log_storage_list_info(lease, entries, capacity, &count, &info);
+    esp_err_t release = ESP_OK;
+    if (lease) {
+        do {
+            release = cerberus_ward_log_storage_end(lease);
+            if (release == ESP_ERR_TIMEOUT) vTaskDelay(pdMS_TO_TICKS(20));
+        } while (release == ESP_ERR_TIMEOUT);
+        if (error == ESP_OK) error = release;
+    }
+    console_printf("ward_logs_error=%d\r\nward_logs_release_error=%d\r\nward_logs_count=%u\r\n",
+        error, release, (unsigned)count);
+    console_printf("ward_logs_directory_present=%u\r\nward_logs_directory_entries=%lu\r\nward_logs_csv_entries=%lu\r\nward_logs_temporary_entries=%lu\r\nward_logs_unrecognized_csv=%lu\r\n",
+        info.directory_present,(unsigned long)info.entries,(unsigned long)info.csv_entries,
+        (unsigned long)info.temporary_entries,(unsigned long)info.unrecognized_csv);
+    if(error==ESP_OK&&info.first_unrecognized_csv[0]){
+        /* A bounded, hex-encoded basename cannot inject console fields. */
+        char encoded[CERBERUS_WARD_LOG_NAME_CAPACITY*2U]={0};
+        for(size_t i=0;info.first_unrecognized_csv[i];++i)
+            snprintf(encoded+i*2U,sizeof(encoded)-i*2U,"%02x",(unsigned char)info.first_unrecognized_csv[i]);
+        console_printf("ward_logs_first_unrecognized_hex=%s\r\n",encoded);
+    }
+    for (size_t i = 0; error == ESP_OK && i < count && !atomic_load(&console_stop_requested); ++i)
+        console_printf("ward_log=%s bytes=%" PRIu64 "\r\n", entries[i].name, entries[i].bytes);
+    heap_caps_free(entries);
 }
 
 static void print_reports(void)
@@ -570,6 +791,240 @@ static void print_network(void)
         esp_err_to_name(err), status.job_id, status.state, status.tested, status.total,
         status.open, status.closed, status.filtered, status.result_count,
         (unsigned long)status.elapsed_ms, (long)status.error_code);
+}
+
+static void print_wifi_readout(void)
+{
+    cerberus_wifi_readout_diagnostics_t snapshot;
+    cerberus_wifi_readout_diagnostics_get(&snapshot);
+    console_printf("wifi_readout_scope=s3_ap_readout_excludes_rf_scan_display_touch\r\n"
+        "wifi_readout_state=%u\r\nwifi_readout_phase=%u\r\n"
+        "wifi_readout_rows_total=%u\r\nwifi_readout_rows_copied=%u\r\n"
+        "wifi_readout_attempts=%" PRIu32 "\r\nwifi_readout_completed=%" PRIu32 "\r\n"
+        "wifi_readout_failed=%" PRIu32 "\r\nwifi_readout_cancelled=%" PRIu32 "\r\n"
+        "wifi_readout_step_calls=%" PRIu32 "\r\nwifi_readout_error=%" PRId32 "\r\n"
+        "wifi_readout_cancel_reason=%u\r\nwifi_readout_timing_valid=%u\r\n"
+        "wifi_readout_counters_saturated=%u\r\nwifi_readout_sampled_us=%" PRIu64 "\r\n"
+        "wifi_readout_elapsed_us=%" PRIu64 "\r\nwifi_readout_max_step_us=%" PRIu64 "\r\n"
+        "wifi_readout_max_tick_gap_us=%" PRIu64 "\r\n",
+        (unsigned)snapshot.state, (unsigned)snapshot.phase,
+        (unsigned)snapshot.rows_total, (unsigned)snapshot.rows_copied,
+        snapshot.attempts, snapshot.completed, snapshot.failed, snapshot.cancelled,
+        snapshot.step_calls, snapshot.error, (unsigned)snapshot.cancel_reason,
+        snapshot.timing_valid ? 1U : 0U, snapshot.counters_saturated ? 1U : 0U,
+        snapshot.sampled_us, snapshot.elapsed_us, snapshot.max_step_us, snapshot.max_tick_gap_us);
+}
+
+static void print_wifi_dual(void)
+{
+    cerberus_dual_wifi_diagnostics_t snapshot;
+    cerberus_dual_wifi_diagnostics_get(&snapshot);
+    const cerberus_dual_wifi_diagnostic_values_t *v = &snapshot.value;
+    console_printf("wifi_dual_scope=ui_published_aggregates_no_spi\r\n"
+        "wifi_dual_available=%u\r\nwifi_dual_publication_sequence=%" PRIu64 "\r\n"
+        "wifi_dual_published_us=%" PRIu64 "\r\nwifi_dual_time_valid=%u\r\n"
+        "wifi_dual_sequence_saturated=%u\r\n",
+        snapshot.available ? 1U : 0U, snapshot.publication_sequence,
+        snapshot.published_us, snapshot.time_valid ? 1U : 0U,
+        snapshot.sequence_saturated ? 1U : 0U);
+    console_printf("wifi_dual_state=%u\r\nwifi_dual_phase=%u\r\n"
+        "wifi_dual_generation=%" PRIu32 "\r\nwifi_dual_retained=%u\r\n"
+        "wifi_dual_split=%u\r\nwifi_dual_fallback=%u\r\n"
+        "wifi_dual_elapsed_ms=%" PRIu32 "\r\nwifi_dual_cleanup_pending=%u\r\n"
+        "wifi_dual_rebinding=%u\r\nwifi_dual_rebind_ready=%u\r\n",
+        (unsigned)v->state, (unsigned)v->phase, v->generation, (unsigned)v->count,
+        v->split ? 1U : 0U, v->fallback ? 1U : 0U, v->elapsed_ms,
+        v->cleanup_pending ? 1U : 0U, v->rebinding ? 1U : 0U, v->rebind_ready ? 1U : 0U);
+    console_printf("wifi_dual_rebind_cached=%u\r\n", v->rebind_cached ? 1U : 0U);
+    console_printf("wifi_dual_rebind_source=%u\r\n", (unsigned)v->rebind_source);
+    console_printf("wifi_dual_s3_count=%u\r\nwifi_dual_s3_total=%u\r\n"
+        "wifi_dual_c5_count=%u\r\nwifi_dual_c5_total=%u\r\n"
+        "wifi_dual_error=%" PRId32 "\r\nwifi_dual_ui_error=%" PRId32 "\r\n"
+        "wifi_dual_s3_error=%" PRId32 "\r\nwifi_dual_c5_error=%" PRId32 "\r\n",
+        (unsigned)v->s3_count, (unsigned)v->s3_total, (unsigned)v->c5_count, (unsigned)v->c5_total,
+        v->error, v->ui_error, v->s3_error, v->c5_error);
+    console_printf("wifi_dual_s3_status_valid=%u\r\nwifi_dual_s3_job=%" PRIu32 "\r\n"
+        "wifi_dual_scan_s3_job=%" PRIu32 "\r\nwifi_dual_s3_state=%u\r\n"
+        "wifi_dual_s3_wifi_owner=%u\r\nwifi_dual_s3_radio_owned=%u\r\n"
+        "wifi_dual_scan_s3_owned=%u\r\nwifi_dual_s3_cleanup_error=%" PRId32 "\r\n"
+        "wifi_dual_c5_may_own=%u\r\n",
+        v->s3_status_valid ? 1U : 0U, v->s3_job, v->scan_s3_job, (unsigned)v->s3_state,
+        (unsigned)v->s3_wifi_owner, v->s3_radio_owned ? 1U : 0U,
+        v->scan_s3_owned ? 1U : 0U, v->s3_cleanup_error, v->c5_may_own ? 1U : 0U);
+}
+
+static void print_packet_count(void)
+{
+    wifi_packet_count_diagnostics_t snapshot;
+    wifi_packet_count_diagnostics_get(&snapshot);
+    console_printf("packet_count_scope=ui_published_scalars_no_radio\r\n"
+        "packet_count_available=%u\r\npacket_count_allocated=%u\r\n"
+        "packet_count_publication_sequence=%" PRIu64 "\r\npacket_count_published_ms=%" PRIu64 "\r\n"
+        "packet_count_time_valid=%u\r\npacket_count_sequence_saturated=%u\r\n",
+        snapshot.available ? 1U : 0U, snapshot.allocated ? 1U : 0U,
+        snapshot.publication_sequence, snapshot.published_ms,
+        snapshot.time_valid ? 1U : 0U, snapshot.sequence_saturated ? 1U : 0U);
+    if (!snapshot.available || !snapshot.allocated) return;
+    console_printf("packet_count_last_tick_ms=%" PRIu64 "\r\npacket_count_start_pending=%u\r\n"
+        "packet_count_requested=%u\r\npacket_count_closing=%u\r\npacket_count_retuning=%u\r\n"
+        "packet_count_frozen=%u\r\npacket_count_fallback=%u\r\npacket_count_recording=%u\r\n"
+        "packet_count_targets=%u\r\npacket_count_dwell_ms=%u\r\npacket_count_channel_mask=%016" PRIx64 "\r\n",
+        snapshot.last_tick_ms, snapshot.start_pending ? 1U : 0U, snapshot.requested ? 1U : 0U,
+        snapshot.closing ? 1U : 0U, snapshot.retuning ? 1U : 0U, snapshot.frozen ? 1U : 0U,
+        snapshot.fallback ? 1U : 0U, snapshot.recording ? 1U : 0U,
+        (unsigned)snapshot.target_count, (unsigned)snapshot.dwell_ms, snapshot.channel_mask);
+    console_printf("packet_count_segments=%" PRIu32 "\r\npacket_count_interruptions=%" PRIu32 "\r\n"
+        "packet_count_tick_gap_valid=%u\r\npacket_count_tick_gap_ms=%" PRIu64 "\r\n"
+        "packet_count_max_tick_gap_ms=%" PRIu64 "\r\n"
+        "packet_count_ui_error=%" PRId32 "\r\npacket_count_error=%" PRId32 "\r\n"
+        "packet_count_s3_admission_error=%" PRId32 "\r\npacket_count_job=%" PRIu64 "\r\n"
+        "packet_count_record_valid=%u\r\n",
+        snapshot.segments, snapshot.interruptions, snapshot.tick_gap_valid ? 1U : 0U,
+        snapshot.tick_gap_ms, snapshot.max_tick_gap_ms, snapshot.ui_error, snapshot.error,
+        snapshot.s3_admission_error, snapshot.job, snapshot.record_valid ? 1U : 0U);
+    if (snapshot.record_valid)
+        console_printf("packet_count_record_busy=%u\r\npacket_count_record_ready=%u\r\n"
+            "packet_count_record_finishing=%u\r\npacket_count_record_error=%" PRId32 "\r\n",
+            snapshot.record_busy ? 1U : 0U, snapshot.record_ready ? 1U : 0U,
+            snapshot.record_finishing ? 1U : 0U, snapshot.record_error);
+    else console_printf("packet_count_record_state=unknown\r\n");
+    static const char *const phases[] = {
+        "idle", "info", "begin", "targets", "start", "poll", "peek", "read", "final_poll", "release"};
+    for (unsigned i = 0; i < WIFI_PACKET_COUNT_SOURCES; ++i) {
+        const char *name = i == WIFI_PACKET_COUNT_SOURCE_S3 ? "s3" : "c5";
+        const wifi_packet_count_source_diagnostics_t *s = &snapshot.source[i];
+        console_printf("packet_count_%s_phase=%u:%s\r\npacket_count_%s_requested_session=%016" PRIx64 "\r\n"
+            "packet_count_%s_accepted_session=%016" PRIx64 "\r\npacket_count_%s_channel_mask=%016" PRIx64 "\r\n"
+            "packet_count_%s_attempted=%u\r\npacket_count_%s_accepted=%u\r\npacket_count_%s_start_attempted=%u\r\n"
+            "packet_count_%s_control_valid=%u\r\n",
+            name, (unsigned)s->phase, s->phase < sizeof(phases)/sizeof(phases[0]) ? phases[s->phase] : "unknown",
+            name, s->requested_session, name, s->accepted_session, name, s->channel_mask,
+            name, s->attempted ? 1U : 0U, name, s->accepted ? 1U : 0U,
+            name, s->start_attempted ? 1U : 0U, name, s->control_valid ? 1U : 0U);
+        if (s->control_valid)
+            console_printf("packet_count_%s_state=%u\r\npacket_count_%s_flags=%02X\r\n"
+                "packet_count_%s_rx_active=%u\r\npacket_count_%s_channel=%u\r\n"
+                "packet_count_%s_configured=%04X\r\npacket_count_%s_remote_error=%" PRId32 "\r\n",
+                name, (unsigned)s->state, name, (unsigned)s->flags,
+                name, (s->flags & CERBERUS_PACKET_COUNT_RX_ACTIVE) ? 1U : 0U,
+                name, (unsigned)s->channel, name, (unsigned)s->configured, name, s->remote_error);
+        else console_printf("packet_count_%s_control=unknown\r\n", name);
+        console_printf("packet_count_%s_last_status_ms=%" PRIu64 "\r\npacket_count_%s_next_action_ms=%" PRIu64 "\r\n"
+            "packet_count_%s_last_progress_ms=%" PRIu64 "\r\npacket_count_%s_progress_time_valid=%u\r\n"
+            "packet_count_%s_pin=%08" PRIx32 "\r\npacket_count_%s_part=%u\r\npacket_count_%s_kind=%u\r\n"
+            "packet_count_%s_index=%u\r\npacket_count_%s_upload_index=%u\r\npacket_count_%s_targets=%u\r\n"
+            "packet_count_%s_revision_floor=%" PRIu32 "\r\npacket_count_%s_error=%" PRId32 "\r\n",
+            name, s->last_status_ms, name, s->next_action_ms, name, s->last_progress_ms,
+            name, s->progress_time_valid ? 1U : 0U, name, s->pin, name, (unsigned)s->part,
+            name, (unsigned)s->kind, name, (unsigned)s->index, name, (unsigned)s->upload_index,
+            name, (unsigned)s->target_count, name, s->revision_floor, name, s->error);
+        console_printf("packet_count_%s_stop=%u\r\npacket_count_%s_close=%u\r\npacket_count_%s_faulted=%u\r\n"
+            "packet_count_%s_clock_invalid=%u\r\npacket_count_%s_record_bound=%u\r\n"
+            "packet_count_%s_published_valid=%u\r\n",
+            name, s->stop ? 1U : 0U, name, s->close ? 1U : 0U, name, s->faulted ? 1U : 0U,
+            name, s->clock_invalid ? 1U : 0U, name, s->record_bound ? 1U : 0U, name, s->published_valid ? 1U : 0U);
+        if (s->published_valid) {
+            console_printf("packet_count_%s_published_session=%016" PRIx64 "\r\npacket_count_%s_published_revision=%" PRIu32 "\r\n"
+                "packet_count_%s_published_frozen=%u\r\npacket_count_%s_callbacks=%" PRIu32 "\r\n"
+                "packet_count_%s_matched=%" PRIu32 "\r\npacket_count_%s_invalid_metadata=%" PRIu32 "\r\n"
+                "packet_count_%s_raw_dropped_full=%" PRIu32 "\r\npacket_count_%s_raw_dropped_other=%" PRIu32 "\r\n"
+                "packet_count_%s_published_error=%" PRId32 "\r\n",
+                name, s->published_session, name, s->published_revision, name, s->published_frozen ? 1U : 0U,
+                name, s->callbacks, name, s->matched, name, s->invalid_metadata,
+                name, s->raw_dropped_full, name, s->raw_dropped_other, name, s->published_error);
+            console_printf("packet_count_%s_valid_frames=%" PRIu32 "\r\n"
+                "packet_count_%s_malformed_frames=%" PRIu32 "\r\n"
+                "packet_count_%s_unsupported_frames=%" PRIu32 "\r\n"
+                "packet_count_%s_outside_window_frames=%" PRIu32 "\r\n"
+                "packet_count_%s_clock_dropped_frames=%" PRIu32 "\r\n",
+                name, s->valid_frames, name, s->malformed_frames, name, s->unsupported_frames,
+                name, s->outside_window_frames, name, s->clock_dropped_frames);
+        }
+        else console_printf("packet_count_%s_counters=unknown\r\n", name);
+        if (snapshot.record_valid)
+            console_printf("packet_count_%s_record_session=%016" PRIx64 "\r\npacket_count_%s_written=%" PRIu32 "\r\n"
+                "packet_count_%s_discarded=%" PRIu32 "\r\npacket_count_%s_transport_errors=%" PRIu32 "\r\n"
+                "packet_count_%s_recorder_bound=%u\r\npacket_count_%s_recorder_draining=%u\r\n"
+                "packet_count_%s_recorder_drained=%u\r\npacket_count_%s_record_loss_unknown=%u\r\n"
+                "packet_count_%s_record_error=%" PRId32 "\r\n",
+                name, s->record_session, name, s->written, name, s->discarded, name, s->transport_errors,
+                name, s->recorder_bound ? 1U : 0U, name, s->recorder_draining ? 1U : 0U,
+                name, s->recorder_drained ? 1U : 0U, name, s->record_loss_unknown ? 1U : 0U, name, s->record_error);
+    }
+}
+
+static void print_ble_archive(void)
+{
+    cerberus_ble_archive_io_status_t snapshot;
+    cerberus_ble_archive_io_get_status(&snapshot);
+    console_printf("ble_archive_state=%s\r\nble_archive_active=%u\r\n"
+        "ble_archive_error=%" PRId32 "\r\nble_archive_job_id=%" PRIu64 "\r\n"
+        "ble_archive_operation=%u\r\nble_archive_cancel_requested=%u\r\n"
+        "ble_archive_result_ready=%u\r\nble_archive_bytes=%" PRIu32 "\r\n"
+        "ble_archive_rows=%u\r\n",
+        cerberus_ble_archive_io_state_name(snapshot.state), snapshot.worker_active ? 1U : 0U,
+        (int32_t)snapshot.error, snapshot.job_id, (unsigned)snapshot.operation,
+        snapshot.cancel_requested ? 1U : 0U, snapshot.result_ready ? 1U : 0U,
+        snapshot.bytes, (unsigned)snapshot.count);
+    const char *format = snapshot.format == CERBERUS_BLE_ARCHIVE_IO_FORMAT_BLE ? "BLE" :
+        snapshot.format == CERBERUS_BLE_ARCHIVE_IO_FORMAT_AIRTAG_JSON ? "AIRTAG_JSON" :
+        snapshot.format == CERBERUS_BLE_ARCHIVE_IO_FORMAT_WIFI ? "WIFI_NATIVE" :
+        snapshot.format == CERBERUS_BLE_ARCHIVE_IO_FORMAT_AP_JSON ? "AP_JSON" :
+        snapshot.format == CERBERUS_BLE_ARCHIVE_IO_FORMAT_SSID_TEXT ? "SSID_TEXT" :
+        snapshot.format == CERBERUS_BLE_ARCHIVE_IO_FORMAT_PROBE_REPORT ? "PROBE_REPORT" :
+        snapshot.format == CERBERUS_BLE_ARCHIVE_IO_FORMAT_MESH_REPORT ? "MESH_REPORT" :
+        snapshot.format == CERBERUS_BLE_ARCHIVE_IO_FORMAT_MESH_LOCATE_REPORT ? "MESH_LOCATE_REPORT" :
+        snapshot.format == CERBERUS_BLE_ARCHIVE_IO_FORMAT_MESH_ARCHIVE ? "MESH_ARCHIVE" : "UNKNOWN";
+    console_printf("ble_archive_format=%s\r\n", format);
+    /* The union belongs to the captured format. Never interpret a different
+     * operation's counters as Wi-Fi conversion evidence. */
+    if (snapshot.format == CERBERUS_BLE_ARCHIVE_IO_FORMAT_AP_JSON ||
+        snapshot.format == CERBERUS_BLE_ARCHIVE_IO_FORMAT_SSID_TEXT) {
+        console_printf("ble_archive_wifi_codec_result=%u\r\n"
+            "ble_archive_wifi_loss_flags=%" PRIu32 "\r\n"
+            "ble_archive_wifi_records=%u\r\nble_archive_wifi_security_unmapped=%u\r\n"
+            "ble_archive_wifi_rssi_omitted=%u\r\nble_archive_wifi_names_absent=%u\r\n",
+            (unsigned)snapshot.wifi_result, snapshot.wifi_export_stats.loss_flags,
+            (unsigned)snapshot.wifi_export_stats.records,
+            (unsigned)snapshot.wifi_export_stats.security_unmapped,
+            (unsigned)snapshot.wifi_export_stats.rssi_omitted,
+            (unsigned)snapshot.wifi_export_stats.names_absent);
+    } else if (snapshot.format == CERBERUS_BLE_ARCHIVE_IO_FORMAT_AIRTAG_JSON) {
+        console_printf("ble_archive_json_eligible=%u\r\nble_archive_json_filtered=%u\r\n"
+            "ble_archive_json_incomplete=%u\r\n", (unsigned)snapshot.export_stats.eligible,
+            (unsigned)snapshot.export_stats.filtered, (unsigned)snapshot.export_stats.incomplete);
+    }
+    /* Each bounded path fits the unchanged formatter capacity independently;
+     * their combined maximum plus scalar fields would truncate one call. */
+    console_printf("ble_archive_path=%s\r\n", snapshot.relative_path);
+    console_printf("ble_archive_file=%s\r\n", snapshot.file_name);
+}
+
+static void print_recon_record(void)
+{
+    cerberus_recon_recorder_status_t snapshot;
+    cerberus_recon_recorder_get_status(&snapshot);
+    console_printf("recon_record_state=%s\r\nrecon_record_active=%u\r\n"
+        "recon_record_error=%" PRId32 "\r\nrecon_record_session=%s\r\n"
+        "recon_record_session_id=%" PRIu64 "\r\nrecon_record_started_us=%" PRIu64 "\r\n"
+        "recon_record_ended_us=%" PRIu64 "\r\nrecon_record_queued=%u\r\n"
+        "recon_record_accepted=%" PRIu32 "\r\nrecon_record_written=%" PRIu32 "\r\n"
+        "recon_record_dropped=%" PRIu32 "\r\nrecon_record_invalid=%" PRIu32 "\r\n"
+        "recon_record_abandoned=%" PRIu32 "\r\n"
+        "recon_record_accepted_wifi_rows=%" PRIu32 "\r\n"
+        "recon_record_accepted_ble_rows=%" PRIu32 "\r\n"
+        "recon_record_accepted_ibeacon_rows=%" PRIu32 "\r\n"
+        "recon_record_written_wifi_rows=%" PRIu32 "\r\n"
+        "recon_record_written_ble_rows=%" PRIu32 "\r\n"
+        "recon_record_written_ibeacon_rows=%" PRIu32 "\r\n",
+        cerberus_recon_recorder_state_name(snapshot.state), snapshot.worker_active ? 1U : 0U,
+        (int32_t)snapshot.error, snapshot.session_name, snapshot.session_id,
+        snapshot.started_us, snapshot.ended_us, (unsigned)snapshot.queued,
+        snapshot.counters.accepted, snapshot.counters.written, snapshot.counters.dropped,
+        snapshot.counters.invalid, snapshot.counters.abandoned,
+        snapshot.counters.accepted_wifi_rows, snapshot.counters.accepted_ble_rows,
+        snapshot.counters.accepted_ibeacon_rows, snapshot.counters.written_wifi_rows,
+        snapshot.counters.written_ble_rows, snapshot.counters.written_ibeacon_rows);
 }
 
 static void print_wifi_seen_error(const char *stage, esp_err_t error)
@@ -999,8 +1454,78 @@ static void print_wardrive_relations(const cerberus_wardrive_status_t *status)
 }
 /* END WIFI RELATION DIAGNOSTICS. */
 
+static void print_upload_status(void)
+{
+    cerberus_log_manager_status_t s;cerberus_log_manager_status(&s);
+    console_printf("upload_active=%u\r\nupload_busy=%u\r\nupload_closing=%u\r\nupload_action=%u\r\nupload_service=%u\r\nupload_error=%d\r\nupload_stage=%s\r\nupload_profile_saved=%u\r\n",
+        (unsigned)s.active,(unsigned)s.busy,(unsigned)s.closing,(unsigned)s.action,s.service,
+        (int)s.error,s.stage,(unsigned)s.profile_saved);
+    console_printf("upload_attempted=%u\r\nupload_transport_error=%d\r\nupload_http_status=%u\r\nupload_response_bytes=%lu\r\nupload_response_complete=%u\r\n",
+        (unsigned)s.transfer.attempted,(int)s.transfer.error,s.transfer.http_status,
+        (unsigned long)s.transfer.response_bytes,(unsigned)s.transfer.response_complete);
+    console_printf("upload_socket_errno=%d\r\nupload_tls_error=%d\r\nupload_tls_code=%d\r\nupload_tls_flags=%d\r\n",
+        s.transfer.socket_errno,(int)s.transfer.tls_error,s.transfer.tls_code,s.transfer.tls_flags);
+    console_printf("upload_log_name=%s\r\n",s.name);
+    for(unsigned i=0;i<3;++i)console_printf("upload_destination_%u_result=%u\r\nupload_destination_%u_complete=%u\r\n",
+        i,(unsigned)s.destination[i].result,i,(unsigned)s.destination_complete[i]);
+}
+
+static void print_upload_profile(void)
+{
+    cerberus_upload_config_t config={0};
+    esp_err_t error=cerberus_upload_settings_load(&config);
+    console_printf("upload_profile_error=%d\r\nupload_profile_home_ready=%u\r\nupload_profile_wigle_ready=%u\r\nupload_profile_wdgwars_ready=%u\r\nupload_profile_wardrift_ready=%u\r\nupload_profile_destinations=0x%02x\r\n",
+        (int)error,(unsigned)(error==ESP_OK&&cerberus_upload_config_wifi_ready(&config)),
+        (unsigned)(error==ESP_OK&&cerberus_upload_config_service_ready(&config,CERBERUS_UPLOAD_WIGLE)),
+        (unsigned)(error==ESP_OK&&cerberus_upload_config_service_ready(&config,CERBERUS_UPLOAD_WDGWARS)),
+        (unsigned)(error==ESP_OK&&cerberus_upload_config_service_ready(&config,CERBERUS_UPLOAD_WARDRIFT)),
+        (unsigned)(error==ESP_OK?config.destinations:0));
+    cerberus_upload_config_clear(&config,sizeof(config));
+}
+
+static void print_gps(void)
+{
+    cerberus_wardrive_gps_uart_state_t state={0};
+    esp_err_t error=cerberus_wardrive_gps_uart_get_state(&state);
+    console_printf("processor=GPS\r\nread_error=%ld\r\nprofile=%u\r\nrx_gpio=%u\r\ntx_assignment=%d\r\npps_assignment=%d\r\n"
+        "baud=%lu\r\ndetecting=%u\r\nreader=%u\r\nbytes=%lu\r\nstate=%u\r\nsatellites=%u\r\nfix_age_ms=%lu\r\n"
+        "valid_sentences=%lu\r\nbad_checksums=%lu\r\nutc_valid=%u\r\nerror=%ld\r\n",
+        (long)error,state.config.profile,state.config.rx_gpio,state.config.tx_gpio,state.config.pps_gpio,
+        (unsigned long)state.active_baud,state.detecting_baud,state.reader_running,(unsigned long)state.received_bytes,
+        state.gps.state,state.gps.satellites,(unsigned long)state.gps.fix_age_ms,(unsigned long)state.gps.valid_sentences,
+        (unsigned long)state.gps.bad_checksums,state.gps.utc_valid,(long)state.error);
+}
+
+
+/* Compact read-only view: never place the ten-row bank on the console stack. */
+__attribute__((noinline))
+static void print_wardrive_recent(void)
+{
+    cerberus_wardrive_recent_status_t recent;
+    cerberus_wardrive_get_recent_status(&recent);
+    console_printf("processor=WARDRIVE_RECENT\r\nstate=%u\r\nworker_active=%u\r\n"
+        "available=%u\r\nerror=%ld\r\nview_error=%ld\r\n"
+        "session_id=%" PRIu64 "\r\nrevision=%" PRIu64 "\r\nevents=%" PRIu64 "\r\n"
+        "rows=%u\r\nretained_events=%u\r\nclock_faults=%" PRIu32 "\r\n"
+        "receipt_scope=S3_processing_uptime_not_RF_time\r\n"
+        "append_scope=API_accepted_not_SD_durability\r\n",
+        (unsigned)recent.state, recent.worker_active ? 1U : 0U,
+        recent.available ? 1U : 0U, (long)recent.error, (long)recent.view_error,
+        recent.session_id, recent.revision, recent.events,
+        (unsigned)recent.count, (unsigned)recent.retained_events, recent.clock_faults);
+}
+
 static void print_radio(void)
 {
+    cerberus_gps_recorder_status_t gps_log;
+    cerberus_gps_recorder_status(&gps_log);
+    console_printf("processor=GPS_LOG\r\nstate=%u\r\nactive=%u\r\nmode=%u\r\njob=%llu\r\n"
+        "fix_ready=%u\r\nwritten=%lu\r\nqueued=%lu\r\nrejected=%lu\r\ndiscarded=%lu\r\n"
+        "segments=%lu\r\nbytes=%llu\r\nfile_saved=%u\r\nerror=%ld\r\n",
+        (unsigned)gps_log.state,gps_log.busy,(unsigned)gps_log.mode,(unsigned long long)gps_log.job,
+        gps_log.fix_ready,(unsigned long)gps_log.written,(unsigned long)gps_log.queued,
+        (unsigned long)gps_log.rejected,(unsigned long)gps_log.discarded,(unsigned long)gps_log.track.segments,
+        (unsigned long long)gps_log.bytes,gps_log.file_name[0]!=0,(long)gps_log.error);
     print_wifi_relations();
     print_ble_discovery_live();
     print_mac_monitor();
@@ -1065,6 +1590,25 @@ static void print_radio(void)
         (unsigned long)wardrive.geotagged_rows,
         (unsigned long)wardrive.unlocated_rows,
         (unsigned long)wardrive.gps_fallback_rows);
+    console_printf("csv_rows=%lu\r\ncsv_devices=%lu\r\ncompacted_rows=%lu\r\ncompacting=%u\r\n",
+        (unsigned long)wardrive.csv_rows, (unsigned long)wardrive.csv_devices,
+        (unsigned long)wardrive.compacted_rows, wardrive.compacting ? 1U : 0U);
+    console_printf("rssi_filtered=%lu\r\nrssi_filter_enabled=%u\r\n",
+        (unsigned long)wardrive.rssi_filtered, wardrive.rssi_filter_enabled ? 1U : 0U);
+    console_printf("compact_save_ms=%lu\r\ncompact_passes=%lu\r\n"
+        "compact_index_read_bytes=%llu\r\ncompact_index_write_bytes=%llu\r\n",
+        (unsigned long)wardrive.compact_ms, (unsigned long)wardrive.compact_passes,
+        (unsigned long long)wardrive.compact_index_read_bytes,
+        (unsigned long long)wardrive.compact_index_write_bytes);
+    console_printf("geofences_enabled=%u\r\ngeofence_state=%u\r\ngeofence_phase=%u\r\n"
+        "geofence_slot=%u\r\ngeofence_pauses=%lu\r\ngeofence_skipped=%lu\r\n",
+        wardrive.geofences_enabled ? 1U : 0U, (unsigned)wardrive.geofence.state,
+        (unsigned)wardrive.geofence_phase, (unsigned)wardrive.geofence.slot,
+        (unsigned long)wardrive.geofence_pauses, (unsigned long)wardrive.geofence_skipped);
+    console_printf("skipped_no_fix=%lu\r\nskipped_time=%lu\r\nskipped_format=%lu\r\n",
+        (unsigned long)wardrive.skipped_no_fix,
+        (unsigned long)wardrive.skipped_time,
+        (unsigned long)wardrive.skipped_format);
     console_printf("ble_hint_scope=processed_typed_rows_per_sweep_not_unique_devices\r\n"
         "ble_flock_observations=%lu\r\nble_flock_clue=%lu\r\n"
         "ble_flock_signature=%lu\r\nble_flock_corroborated=%lu\r\n",
@@ -1083,6 +1627,17 @@ static void print_radio(void)
         (unsigned long)wardrive.c5_probe_dropped,
         (unsigned long)wardrive.c5_probe_unavailable_sweeps);
     print_wardrive_relations(&wardrive);
+    console_printf("wardrive_mode=%u\r\nstream_s3_wifi=%lu\r\nstream_s3_ble=%lu\r\nstream_c5_wifi=%lu\r\nstream_c5_ble=%lu\r\n"
+        "stream_s3_pending=%u\r\nstream_c5_pending=%u\r\nstream_s3_drops=%lu\r\nstream_c5_drops=%lu\r\n"
+        "stream_s3_channel=%u\r\nstream_c5_channel=%u\r\nstream_s3_channels=%u\r\nstream_c5_channels=%u\r\n"
+        "stream_s3_held=%u\r\nstream_c5_held=%u\r\nstream_s3_error=%ld\r\nstream_c5_error=%ld\r\n",
+        wardrive.mode,(unsigned long)wardrive.s3_stream.wifi_reports,(unsigned long)wardrive.s3_stream.ble_reports,
+        (unsigned long)wardrive.c5_stream.wifi_reports,(unsigned long)wardrive.c5_stream.ble_reports,
+        wardrive.s3_stream.pending,wardrive.c5_stream.pending,(unsigned long)wardrive.s3_stream.dropped,
+        (unsigned long)wardrive.c5_stream.dropped,wardrive.s3_stream.channel,wardrive.c5_stream.channel,
+        wardrive.s3_stream.valid_channels,wardrive.c5_stream.valid_channels,wardrive.s3_stream.held,wardrive.c5_stream.held,
+        (long)wardrive.s3_stream.error,(long)wardrive.c5_stream.error);
+    print_wardrive_recent();
 }
 
 static void print_pinescan(void)
@@ -1210,6 +1765,8 @@ static void execute_command(char *line)
         print_help();
     } else if (strcmp(start, "info") == 0) {
         print_info();
+    } else if (strcmp(start, "builds") == 0) {
+        print_builds();
     } else if (strcmp(start, "health") == 0) {
         print_health();
     } else if (strcmp(start, "memory") == 0) {
@@ -1228,14 +1785,36 @@ static void execute_command(char *line)
         print_network();
     } else if (strcmp(start, "wifi_seen") == 0) {
         print_wifi_seen();
+    } else if (strcmp(start, "wifi_readout") == 0) {
+        print_wifi_readout();
+    } else if (strcmp(start, "wifi_dual") == 0) {
+        print_wifi_dual();
+    } else if (strcmp(start, "packet_count") == 0) {
+        print_packet_count();
+    } else if (strcmp(start, "recon_record") == 0) {
+        print_recon_record();
+    } else if (strcmp(start, "ble_archive") == 0) {
+        print_ble_archive();
     } else if (strcmp(start, "remote_id") == 0) {
         print_remote_id();
     } else if (strcmp(start, "stations") == 0) {
         print_stations();
     } else if (strcmp(start, "reports") == 0) {
         print_reports();
+    } else if (strcmp(start, "dual_ble") == 0) {
+        print_dual_ble();
+    } else if (strcmp(start, "ble_memory") == 0) {
+        print_ble_memory();
     } else if (strcmp(start, "radio") == 0) {
         print_radio();
+    } else if (strcmp(start, "gps") == 0) {
+        print_gps();
+    } else if (strcmp(start, "upload_profile") == 0) {
+        print_upload_profile();
+    } else if (strcmp(start, "upload_status") == 0) {
+        print_upload_status();
+    } else if (strcmp(start, "ward_logs") == 0) {
+        print_wardrive_logs();
     } else if (strcmp(start, "battery") == 0) {
         print_battery();
     } else {
@@ -1326,6 +1905,18 @@ esp_err_t cerberus_usb_console_start(void)
     }
     console_task_handle = NULL;
 
+    /* No internal-RAM or automatic-array fallback: insufficient PSRAM leaves
+     * the optional diagnostic console unavailable without taxing radio memory.
+     * A completed task after a prior stop timeout may still own this allocation;
+     * its published quiescence makes reuse safe. */
+    if (console_output == NULL) {
+        console_output = heap_caps_malloc(USB_CONSOLE_OUTPUT_CAPACITY,
+            MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (console_output == NULL) {
+            return ESP_ERR_NO_MEM;
+        }
+    }
+
     /* TinyUSB leaves the internal PHY routed to OTG after uninstall. Own a
      * native PHY handle while the console is active, releasing it on stop so
      * subsequent USB SD sessions can acquire the same physical USB pads. */
@@ -1336,6 +1927,8 @@ esp_err_t cerberus_usb_console_start(void)
         };
         esp_err_t err = usb_new_phy(&phy_config, &console_phy);
         if (err != ESP_OK) {
+            heap_caps_free(console_output);
+            console_output = NULL;
             return err;
         }
     }
@@ -1349,6 +1942,8 @@ esp_err_t cerberus_usb_console_start(void)
         if (err != ESP_OK) {
             (void)usb_del_phy(console_phy);
             console_phy = NULL;
+            heap_caps_free(console_output);
+            console_output = NULL;
             return err;
         }
     }
@@ -1386,6 +1981,14 @@ esp_err_t cerberus_usb_console_stop(void)
             vTaskDelay(pdMS_TO_TICKS(10));
         }
         console_task_handle = NULL;
+    }
+
+    /* A timed-out stop returns above, preserving the active writer's buffer.
+     * Once quiescent, neither the task nor the USB driver borrows these bytes:
+     * write_bytes copies them into the driver's TX ring before returning. */
+    if (console_output != NULL) {
+        heap_caps_free(console_output);
+        console_output = NULL;
     }
 
     /* Secondary ESP-IDF logging also uses this VFS. Detach it before freeing

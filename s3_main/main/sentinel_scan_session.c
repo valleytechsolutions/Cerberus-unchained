@@ -188,3 +188,16 @@ bool sentinel_scan_session_ack(sentinel_scan_session_t *session, sentinel_scan_c
     }
     return true;
 }
+
+bool sentinel_scan_session_ack_local(sentinel_scan_session_t *session,
+    sentinel_scan_command_t completed, sentinel_scan_result_t result, uint32_t now_ms)
+{
+    if (!sentinel_scan_session_ack(session, completed, result, now_ms)) return false;
+    if (completed.kind == SENTINEL_SCAN_COMMAND_START && result != SENTINEL_SCAN_ACCEPTED) {
+        session->active = SENTINEL_SCAN_NONE;
+        session->active_arm_generation = 0U;
+        session->stop_requested = false;
+        session->command_failed = false;
+    }
+    return true;
+}

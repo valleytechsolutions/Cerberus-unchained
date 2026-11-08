@@ -28,39 +28,45 @@ static void worker(void *unused)
 {
     (void)unused;
     xSemaphoreTake(mutex,portMAX_DELAY);cerberus_radio_test_config_t c=config;xSemaphoreGive(mutex);
-    esp_err_t err=cerberus_s3_ble_host_claim(CERBERUS_S3_BLE_OWNER_ADVERTISER);
+    cerberus_s3_ble_host_lease_t lease={0};
+    esp_err_t err=cerberus_s3_ble_host_claim(CERBERUS_S3_BLE_OWNER_ADVERTISER,&lease);
     bool claimed=err==ESP_OK;
     bool was_cancelled=cancelled(),advertising=false;
+    if(err==ESP_OK&&!was_cancelled&&!cerberus_s3_ble_host_lease_valid(&lease))err=ESP_ERR_INVALID_STATE;
     if(err==ESP_OK&&!was_cancelled){
         uint8_t data[31],address_type;
         size_t length=cerberus_radio_test_ble(&c,data,sizeof(data));
         int rc=ble_hs_id_infer_auto(0,&address_type);
+        if(rc==0&&!cerberus_s3_ble_host_lease_valid(&lease))rc=ESP_ERR_INVALID_STATE;
         if(rc==0)rc=ble_gap_adv_set_data(data,(int)length);
         struct ble_gap_adv_params params={.conn_mode=BLE_GAP_CONN_MODE_NON,.disc_mode=BLE_GAP_DISC_MODE_GEN,
             .itvl_min=160,.itvl_max=160}; /* 100 ms, one named advertiser. */
+        if(rc==0&&!cerberus_s3_ble_host_lease_valid(&lease))rc=ESP_ERR_INVALID_STATE;
         if(rc==0)rc=ble_gap_adv_start(address_type,NULL,(int32_t)c.seconds*1000,&params,gap_event,NULL);
         if(rc!=0)err=ESP_FAIL;else advertising=true;
     }
     uint32_t advert_started=now_ms();
     while(err==ESP_OK&&advertising&&(uint32_t)(now_ms()-advert_started)<(uint32_t)c.seconds*1000U){
         if(cancelled()){was_cancelled=true;break;}
-        if(!cerberus_s3_ble_host_synced()){err=ESP_FAIL;break;}
+        if(!cerberus_s3_ble_host_lease_valid(&lease)||!cerberus_s3_ble_host_synced()){err=ESP_FAIL;break;}
         xSemaphoreTake(mutex,portMAX_DELAY);
         uint32_t free_kib=heap_caps_get_free_size(MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT)/1024U;
         if(free_kib<status.minimum_heap_kib)status.minimum_heap_kib=(uint16_t)free_kib;
         xSemaphoreGive(mutex);vTaskDelay(pdMS_TO_TICKS(50));
     }
-    if(advertising){
+    if(advertising&&cerberus_s3_ble_host_lease_valid(&lease)){
         int rc=ble_gap_adv_stop();
         /* A failed STOP is not proof that the radio stopped. Keep ownership
          * and retry until the host reports inactive (the duration is also finite). */
-        while(rc!=0&&rc!=BLE_HS_EALREADY&&ble_gap_adv_active()){
+        while(cerberus_s3_ble_host_lease_valid(&lease)&&rc!=0&&rc!=BLE_HS_EALREADY&&ble_gap_adv_active()){
             err=ESP_FAIL;
             xSemaphoreTake(mutex,portMAX_DELAY);status.state=CERBERUS_TEST_STOPPING;status.error_code=err;xSemaphoreGive(mutex);
-            vTaskDelay(pdMS_TO_TICKS(50));rc=ble_gap_adv_stop();
+            vTaskDelay(pdMS_TO_TICKS(50));
+            if(!cerberus_s3_ble_host_lease_valid(&lease)){err=ESP_ERR_INVALID_STATE;break;}
+            rc=ble_gap_adv_stop();
         }
     }
-    if(claimed&&cerberus_s3_ble_host_release(CERBERUS_S3_BLE_OWNER_ADVERTISER)!=ESP_OK)err=ESP_FAIL;
+    if(claimed&&cerberus_s3_ble_host_release(&lease)!=ESP_OK)err=ESP_FAIL;
     xSemaphoreTake(mutex,portMAX_DELAY);
     status.state=err!=ESP_OK?CERBERUS_TEST_ERROR:was_cancelled?CERBERUS_TEST_CANCELLED:CERBERUS_TEST_COMPLETE;
     status.error_code=err;status.elapsed_ms=now_ms()-started_ms;running=false;

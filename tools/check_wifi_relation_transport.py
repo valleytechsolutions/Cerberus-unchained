@@ -8,7 +8,7 @@ root = Path(__file__).resolve().parents[1]
 out = root / "artifacts/wifi-relation-transport-checks"
 out.mkdir(parents=True, exist_ok=True)
 source = (root / "s3_main/main/c5_spi_link.c").read_text()
-start = source.index("static esp_err_t get_status_v2_locked(")
+start = source.index("static esp_err_t decode_status_v2_response(")
 end = source.index("static esp_err_t exchange_v2_locked(", start)
 (out / "relation_peer_impl.h").write_text(source[start:end])
 console = (root / "s3_main/main/usb_console.c").read_text()

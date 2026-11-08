@@ -24,9 +24,14 @@ static void check_sae_commit(void)
     memcpy(frame+4,client,6);memcpy(frame+10,ap,6);
     frame[28]=76U; /* anti-clogging-token required: retain the received reply */
     assert(cerberus_wifi_capture_filter_match(mode,true,ap,frame,sizeof(frame)));
-    for(size_t n=0;n<32U;++n)
+    for(size_t n=0;n<30U;++n)
         assert(!cerberus_wifi_capture_filter_match(mode,false,NULL,frame,n));
-    /* Complete group field is the parser boundary, not cryptographic proof. */
+    /* The fixed header can report a failure without any group/body. Short
+     * commit bodies are retained for the S3's explicit structural report. */
+    frame[28]=1U;
+    assert(cerberus_wifi_capture_filter_match(mode,false,NULL,frame,30U));
+    frame[28]=0U;
+    assert(cerberus_wifi_capture_filter_match(mode,false,NULL,frame,31U));
     assert(cerberus_wifi_capture_filter_match(mode,false,NULL,frame,32U));
     frame[25]=1U;
     assert(!cerberus_wifi_capture_filter_match(mode,false,NULL,frame,sizeof(frame)));
@@ -92,6 +97,19 @@ int main(void)
 {
     check_sae_commit();
     check_beacon();
+    uint8_t addresses[40]={0};
+    assert(!cerberus_wifi_capture_filter_bssid(NULL,sizeof(addresses)));
+    for(size_t length=0;length<24;++length)
+        assert(!cerberus_wifi_capture_filter_bssid(addresses,length));
+    assert(cerberus_wifi_capture_filter_bssid(addresses,24)==addresses+16);
+    addresses[0]=0x08;
+    for(unsigned ds=0;ds<4;++ds){
+        addresses[1]=(uint8_t)ds;
+        const uint8_t *expected=ds==0?addresses+16:ds==1?addresses+4:ds==2?addresses+10:NULL;
+        assert(cerberus_wifi_capture_filter_bssid(addresses,sizeof(addresses))==expected);
+    }
+    addresses[0]=0xd4;
+    assert(!cerberus_wifi_capture_filter_bssid(addresses,sizeof(addresses)));
     const uint8_t ap[6]={1,2,3,4,5,6};
     uint8_t frame[64]={0};
     assert(!cerberus_wifi_capture_filter_match(CERBERUS_WIFI_CAPTURE_MODE_RAW,false,ap,frame,1));

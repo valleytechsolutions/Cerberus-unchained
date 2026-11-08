@@ -28,6 +28,7 @@ bool cerberus_wifi_capture_ring_start(cerberus_wifi_capture_ring_t *ring,uint32_
            atomic_load_explicit(&ring->tail,memory_order_acquire)||
        generation<=atomic_load_explicit(&ring->generation,memory_order_relaxed))return false;
     atomic_store_explicit(&ring->generation,generation,memory_order_relaxed);
+    atomic_store_explicit(&ring->next_sequence,0U,memory_order_relaxed);
     atomic_store_explicit(&ring->accepted,0,memory_order_relaxed);
     atomic_store_explicit(&ring->dropped_stopped,0,memory_order_relaxed);
     atomic_store_explicit(&ring->dropped_stale,0,memory_order_relaxed);
@@ -89,12 +90,16 @@ cerberus_wifi_capture_push_result_t cerberus_wifi_capture_ring_push(
     }else{
         unsigned head=atomic_load_explicit(&ring->head,memory_order_relaxed);
         unsigned tail=atomic_load_explicit(&ring->tail,memory_order_acquire);
-        if(head-tail>=CERBERUS_WIFI_CAPTURE_RING_SLOTS){
+        if(atomic_load_explicit(&ring->next_sequence,memory_order_relaxed)==UINT32_MAX){
+            /* Never reuse a frame identity, even while the last record is
+             * pinned. The owner will stop RF and drain the existing slots. */
+            atomic_store_explicit(&ring->active,false,memory_order_release);
+            result=CERBERUS_WIFI_CAPTURE_DROP_EXHAUSTED;
+        }else if(head-tail>=CERBERUS_WIFI_CAPTURE_RING_SLOTS){
             result=CERBERUS_WIFI_CAPTURE_DROP_FULL;drop=&ring->dropped_full;
         }else{
             cerberus_wifi_capture_record_t *slot=&ring->slots[head%CERBERUS_WIFI_CAPTURE_RING_SLOTS];
             unsigned sequence=atomic_load_explicit(&ring->next_sequence,memory_order_relaxed)+1U;
-            if(!sequence)sequence=1U;
             atomic_store_explicit(&ring->next_sequence,sequence,memory_order_relaxed);
             slot->sequence=sequence;
             slot->generation=generation;

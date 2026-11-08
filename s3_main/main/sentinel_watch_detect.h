@@ -23,6 +23,8 @@ typedef enum {
     SENTINEL_WATCH_FINDMY,
     SENTINEL_WATCH_TRACKER,
     SENTINEL_WATCH_CAMERA,
+    /* Historical category number; live use is an existing Meta identifier
+     * evidence projection, never confirmation of glasses or a model. */
     SENTINEL_WATCH_SMART_GLASSES,
     SENTINEL_WATCH_FLIPPER,
     SENTINEL_WATCH_MESHTASTIC,

@@ -1,5 +1,251 @@
 # BLE receive-list parity audit
 
+The current installed checkpoint is [rev111](DUAL_RADIO_REV111.md), with paired
+boot verified and physical response/receive-list acceptance still pending.
+Earlier sections below preserve their revision-specific scope.
+
+## Rev110 source checkpoint: C5 matched scan responses
+
+Opt-in response requests use active 1M and passive coded reception. Both receivers retain their independent observations. C5 now supports all-six response-only family admission, source-labelled ADV/RSP details and v6 SD retention with historical response ages. Passive is still the default. Rev109 remains installed; see [rev110](DUAL_RADIO_REV110.md) for local verification and physical limits.
+
+## Rev109 source checkpoint: saved full-original C5 family evidence
+
+The v5 archive and offline C5 HINTS view preserve rev108's frozen decoded family
+record alongside its raw preview, receive metadata and source identity.
+Historical files keep absent proof explicit, and offline viewing does not
+activate either receiver. Rev109 is installed with paired boot verified; see
+[rev109](DUAL_RADIO_REV109.md) for local validation and pending physical feature checks.
+The earlier sections retain their revision-specific scope.
+
+## Rev105 source checkpoint: saved-report source filters
+
+The offline report viewer adds ALL/S3/C5/LEGACY receiver filtering and stable
+file/name/signal sorting over the existing immutable document. Saved ages,
+source provenance and response/receive evidence remain historical. This
+complements rev104's live list without changing radio scheduling or the v4
+archive format. Both are local checkpoints; rev103 remains installed. See
+[rev105](DUAL_RADIO_REV105.md) for validation and remaining physical acceptance.
+
+## Rev104 source checkpoint: unified ordinary discovery
+
+Ordinary ALL-device discovery now presents both committed receiver banks in
+one list with ALL/S3/C5 source filtering and frozen source-specific selection.
+This is a local source milestone; rev103 remains installed. Family admission,
+RF scheduling, protocol revision and v4 archives are unchanged. Saved-report
+source filters, C5 scan responses, full payloads and complete upstream parity
+remain open. See [the rev104 checkpoint](DUAL_RADIO_REV104.md) for exact scope
+and validation limits. Earlier sections retain their revision-specific scope.
+
+## Rev102 checkpoint: C5 receive metadata in saved reports
+
+The v4 archive retains the frozen C5 receive envelope alongside the
+same original ADV, RSSI semantics, age bound and full-width boot/epoch
+provenance. Its eight bytes describe callback source, delivered length,
+properties, SID, primary/secondary PHY, controller status and independent
+full AD-layout validity. Saving never fetches a replacement row or borrows
+metadata from a later scan. Selected saves use the painted/selected copy;
+SAVE BOTH uses only each receiver's committed evidence. Normal receiver
+cleanup precedes submission to the existing immutable file worker.
+
+The existing `.BLE` browser opens v4 files and v1/v2/v3 predecessors. Old
+files retain canonical UNKNOWN receive metadata; v1's receiver stays LEGACY,
+and v3 S3 response evidence remains intact. V4 uses a 32-byte header and
+216-byte rows, with at most 64 source observations, 32 per receiver, and
+**13,856 encoded bytes**. Known C5 metadata must match its saved raw prefix;
+S3 and LEGACY receive envelopes remain UNKNOWN. Full AD-layout validity is
+independent of prefix truncation/parser flags, and a controller COMPLETE
+report does not imply full payload retention.
+
+Saved C5 details offer **ADVERTISEMENT / RECEIVE INFO** in the same offline
+viewer. Receive information is explicitly historical, has no field-pagination
+controls, and provides no scan-response bytes or live actions. S3 retains its
+separate ADVERTISEMENT / RESPONSE view and independent response timing. The
+live and offline receive panes share one bounded renderer; neither reads
+current radio state to fill missing fields.
+
+Focused host validation passes **1,881 offline UI**, **924 controller**,
+**297,359 actual-storage**, and **15,021 worker/lifecycle** checks. The tests
+include full-size mixed reports, immutable receive bytes after later bank
+replacement, staging isolation, pending-release cancellation, pinned concurrent
+copies and failed-I/O preservation. Host and native layouts agree at **15,376 bytes
+per document**, **32,304 bytes for the UI store**, and **30,000 bytes for the
+worker context**. Embedded documents are included in the store totals; these
+are measured type sizes, not runtime heap or stack acceptance. Combined optional
+UI/worker requests grow 2,088 bytes; fixed internal data/BSS are unchanged.
+
+[The rev102 checkpoint](DUAL_RADIO_REV102.md) records all 120 host suites and five
+native targets passing, matched installation and idle boot. Physical
+save/reopen/reboot and receive-pane acceptance remain
+pending, as do controlled extended/coded reception and sustained transitions.
+Full payload retention, C5 scan-response evidence, broader history, source
+filters and full upstream family/option parity remain incomplete. See the
+[SD workflow](BLE_SD_SNAPSHOTS.md) and [wire format](BLE_ARCHIVE_FORMAT.md).
+Earlier sections below retain their revision-specific scope and exclusions.
+
+## Rev101 source milestone: same-original C5 receive metadata
+
+The implementation preserves callback source, delivered length, SID/PHY, properties,
+controller status and full AD-layout validity in a bounded eight-byte envelope.
+It follows the same original raw/RSSI/time through a frozen snapshot and selected
+row; receiver capability never substitutes for a row's callback source. A
+firmware-gated 110-byte read still takes eleven chunks, and old 102-byte readers
+retain their layout. Unsupported optional reads fall back on the same frozen
+handle with metadata UNKNOWN. The existing detail page gains RAW ADV / RECEIVE
+INFO tabs. V3 archives do not gain this envelope, full payloads remain bounded,
+and C5 partial reports/scan responses remain excluded. This does not establish
+physical extended/coded reception, latency, full family parity or active-action
+eligibility. [The rev101 checkpoint](DUAL_RADIO_REV101.md) owns its validation
+and installation evidence; rev100 is the preceding installed checkpoint.
+
+## Rev100 source candidate: matched-response archives and bounded C5 retention
+
+Rev99 remains the preceding installed checkpoint. This section records source
+and host preparation; [the rev100 checkpoint](DUAL_RADIO_REV100.md) owns current
+build/installation evidence and outstanding physical acceptance. The Marauder
+`develop` baseline was rechecked unchanged at
+`79cc6bcba1db6679baee1dab2b0c1ad5010e6363` on 2026-11-01.
+
+S3 retains an admitted matching scan response separately from the original
+advertisement through frozen discovery/history/selection and the existing SD
+save workflow. The selected full-width scan epoch is preserved. V3 archives
+keep up to 31 response bytes from a delivered source of up to 255 bytes, with
+independent original/response source times, ordered source sequences, event,
+truncation and SID when valid. Exact raw-original sequence matching prevents
+newer hints from attaching to older raw bytes, including equal-millisecond
+invalid replacements. Original bytes, RSSI and timestamps are not refreshed
+by a response or by saving.
+
+Response availability is UNKNOWN, NONE or PRESENT. NONE means no admitted
+matched response for the proven original at capture, not proof that no
+response was sent. Old v1/v2 files and C5/LEGACY records remain UNKNOWN; no
+missing raw bytes or provenance are reconstructed. V3 remains bounded to
+64 source observations and 13,344 bytes. Host documents are 14,864 bytes;
+those are host type sizes, not measured native peak memory. See
+[SD workflow](BLE_SD_SNAPSHOTS.md) and [wire format](BLE_ARCHIVE_FORMAT.md).
+
+C5 replacement is limited to protocol-v2 passive **DISCOVERY**. At a full
+32-slot bank, a new independently valid complete original can replace the
+slot with the oldest qualifying callback rank; stable slot order breaks ties.
+The callback clock must be nonnegative and monotonic, and an exhausted sequence
+fails closed. Replacement clears the entire victim before storing the new
+typed observation. Malformed/partial reports cannot trigger replacement;
+existing-row and nonfull-bank admission retain their prior behavior. Scan
+responses, invalid typed addresses and stale callbacks are excluded before
+this policy. TRACK, v1 companion and other C5 scan owners retain their previous
+capacity behavior. This does not change RF scan timing or add a radio task.
+
+Firmware 63 adds optional frozen **replaced/dropped** counters to the immutable
+snapshot. They freeze with rows at the first successful BEGIN and remain
+unchanged on retries; S3 validates the handle/count and mandatory final fence
+before publication. The live pane and cached diagnostics label them as bank
+counters. They describe that RF sweep as of its snapshot, not cumulative
+session totals, unique devices or all RF loss. Dropped counts delivered typed
+original callbacks for unretained addresses rejected at a full bank; malformed
+originals can contribute to this rejection count. Counters saturate. Older
+firmware or a failed optional read reports unavailable, while the validated
+row bank can still publish. The ordinary eight-second RF sweep and live
+snapshot transport remain; there is no new latency guarantee.
+
+S3 native extended reception remains disabled. C5 extended/coded reception,
+dense real-device retention, response-only discovery, dual Fox Hunt and
+physical save/reopen/repeated owner transitions remain pending. C5 passive
+discovery still has no raw scan-response evidence or borrowed S3 family/action
+eligibility. Full payloads, history, family behavior and upstream option parity
+remain incomplete. The following revision sections preserve their historical
+scope and exclusions; they do not override this candidate's bounded additions.
+
+## Rev99 source milestone: one SD report from both receivers
+
+The candidate adds **SAVE BOTH RECEIVERS** to the existing BLE SD snapshots
+workflow and **SAVE SD** to a selected C5 observation. One v2 report can retain
+64 source observations, at most 32 per receiver. The same typed address heard
+by S3 and C5 remains two source-labelled observations. The existing browser
+also reads v1 files as `LEGACY` source, without inventing a receiver label.
+
+S3 evidence retains sweep-peak RSSI and exact historical age at save. C5
+evidence retains latest-original-ADV RSSI, committed full-width boot/epoch
+provenance and an optional conservative age upper bound. C5 exact S3 source
+times remain absent. Published-bank metadata and painted/selected metadata
+are copied together, so a later sweep or peer restart cannot rebind saved
+rows to newer provenance. Neither source supplies raw scan-response bytes.
+
+Save freezes the existing evidence, lets normal radio-owner cleanup finish,
+then submits the existing immutable PSRAM file worker. A pending save can be
+canceled before submission; an in-flight filesystem save reports its actual
+outcome. Completed-document copies now hold a bounded reader pin and perform
+the large memcpy outside the interrupt-disabled lock. Host measurements are
+10,768 bytes per document and 20,784 bytes per worker context; these are not
+native peak-memory or hardware-performance claims.
+
+See [BLE SD snapshots](BLE_SD_SNAPSHOTS.md), [format details](BLE_ARCHIVE_FORMAT.md)
+and [the rev99 checkpoint](DUAL_RADIO_REV99.md) for source/host evidence and
+current build/installation status. Physical save/reopen, old-file compatibility
+on-device and repeated owner transitions remain acceptance work. Source
+filtering, longer history/session recording, full raw/scan-response evidence,
+family behavior and extended/coded reception still prevent a full-parity claim.
+The following revision sections retain their historical limitations; in
+particular, rev97's exclusion of C5 archive rows predates this candidate.
+
+## Rev97 source milestone: C5 list controls
+
+Ordinary BLE discovery now uses S3 and C5 concurrently, with separate source
+banks. The rev94 companion implementation retains up to 32 C5 typed addresses,
+latest original-ADV RSSI, conservative timing and a 31-byte raw preview. Its
+results publish after completed eight-second sweeps; these controls do not
+change that latency or the S3 live-discovery workflow.
+
+Rev97 adds `SIGNAL`, `NAME A-Z` and `SCAN ORDER` controls to the C5 pane, with
+signal ordering and all ages selected initially. A bounded 32-entry index map
+sorts valid signal values before unavailable values and compares sanitized,
+bounded display names case-insensitively. Equal keys preserve scan order;
+unnamed peers remain separate typed observations. Source packets, timestamps,
+addresses and address types are never reordered in place or merged.
+
+`WITHIN 30S` accepts a row only when its conservative C5 age upper bound is
+known and at most 30,000 ms. The normal view shows the rounded-up age bound,
+`RECENCY?` when the bound cannot establish recency, or `AGE UNKNOWN` when no
+usable bound exists. A bound above 30 seconds does not prove the report is
+actually older than 30 seconds. An empty recent view says
+`NO CONFIRMED RECENT C5 RESULTS`; it does not claim nearby devices are absent.
+Age expiry is checked on each paint, even without a new sweep. Controls reset
+pagination, and a smaller replacement bank clamps it. Taps copy the frozen
+painted row, so sorting or publication cannot silently change the selected
+typed identity.
+
+The C5 pane remains a complementary source view. It does not borrow S3 family
+classifications, scan-response evidence, SD archive eligibility or per-source
+packet counts. Selecting `FOX THIS ADDRESS` uses the existing release barriers
+and exact typed target to obtain separate S3/C5 RSSI readings. Two receivers
+on one handheld do not establish direction, distance or triangulation.
+
+The pure helper is `s3_main/main/dual_ble_list.h`; the actual drawing/tap paths
+are in `dual_ble_ui.h`. The pinned Python 3.14.2 / Zig 0.14.1 run of
+`tools/check_dual_ble_ui.py` passes, including the production Find My Monitor
+fixture. Tests cover mixed signal validity, bounded/nonprintable names,
+typed-address collisions, stable ties, inclusive age boundaries, unknown or
+rewound clocks, expiration, publication between paint and tap, privacy and
+pagination shrinkage. Rendered normal, sorted, uncertain-age and empty-filter
+views were inspected. Sorting/filtering calls no SPI or scanner operations.
+The change adds no heap allocation or task. The complete rev97 checkpoint
+also passes 120 host suites and five native targets, and the matched firmware
+is installed with both applications booting. Physical control acceptance is
+still pending; see the [rev97 evidence](DUAL_RADIO_REV97.md).
+
+S3 native extended advertisement reception remains disabled. The C5 has an
+extended 1M/coded receive path, but controlled extended-advertiser acceptance
+is still pending. Raw saved S3 ADV remains capped at 31 bytes, raw scan-response
+payloads are not archived, and C5 observations are not included in that archive.
+Full BLE parity, physical dual Fox Hunt, prolonged coexistence and the rev96
+SD file/log/script-list acceptance are not completed by this milestone. See
+[dual-radio scanning](DUAL_RADIO_SCANNING.md) for the cached C5-origin Wi-Fi
+handoff and the separately scoped warm-transition evidence.
+
+## Rev93 source contribution
+
+The contribution adds independent Find My/Flipper Analyzer facts, completed-sweep Recon recording and inventory, and saved BLE snapshots with an offline viewer. Raw saved ADV is capped at 31 bytes; scan-response payloads are not retained. S3 native extended reception remains disabled. See [BLE snapshots](BLE_SD_SNAPSHOTS.md), [Recon inventory](RECON_INVENTORY.md) and [the native gap](BLE_EXTENDED_RECEIVE_GAP.md).
+
+See [CONTRIBUTION_REV93.md](CONTRIBUTION_REV93.md) for validation boundaries and [the coverage ledger](MARAUDER_COVERAGE_LEDGER.md) for remaining work. The following sections retain the earlier contribution history.
+
 ## Installed rev79: focused live ordinary discovery
 
 The ordinary Bluetooth list uses a dedicated S3 discovery attachment. It
@@ -121,7 +367,9 @@ and older acceptance scopes remain unchanged.
 
 Baseline: Marauder `develop` commit
 [`79cc6bcba1db6679baee1dab2b0c1ad5010e6363`](https://github.com/justcallmekoko/ESP32Marauder/tree/79cc6bcba1db6679baee1dab2b0c1ad5010e6363),
-rechecked against the remote on 2026-10-30. The local reference is
+rechecked against the remote on 2026-10-30 and again on 2026-11-01 without a
+branch change. The clean local reference has tree
+`8b5d8ede62ce3e4e78941ca5b10abfb97896ec60` and is
 `../integration/marauder-develop-2026-10-29`. This audit concerns receive-side
 inventory and selection; no transmitter or sound/GATT write paths changed.
 

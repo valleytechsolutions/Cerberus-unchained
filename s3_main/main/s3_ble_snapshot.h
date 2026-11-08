@@ -37,6 +37,20 @@ enum {
     CERBERUS_S3_BLE_EVIDENCE_SID_INVALID = 1U << 5,
 };
 
+/* Only a complete AD-valid response admitted by the existing source matcher
+ * enters this bounded copy. original_length describes the received source;
+ * length describes the retained prefix. This is separate from raw ADV. */
+typedef struct {
+    uint8_t data[CERBERUS_BLE_ADVERTISEMENT_MAX_LENGTH];
+    uint8_t length, original_length, event_type, flags;
+} cerberus_s3_ble_scan_response_t;
+
+typedef enum {
+    CERBERUS_S3_BLE_RESPONSE_UNKNOWN = 0,
+    CERBERUS_S3_BLE_RESPONSE_NONE,
+    CERBERUS_S3_BLE_RESPONSE_PRESENT,
+} cerberus_s3_ble_response_state_t;
+
 /* Current original report plus its latest complete, valid, matched response.
  * Source identity/time is separate from the bounded raw ADV copy. A newer
  * incomplete/malformed original clears hints even when raw ADV/time stay old.
@@ -46,6 +60,9 @@ enum {
 typedef struct {
     uint32_t advertisement_sequence, advertisement_observed_ms;
     uint32_t scan_response_sequence, scan_response_observed_ms;
+    /* Retained with raw ADV, even if a newer incomplete original invalidates
+     * current hints. Equal millisecond timestamps cannot rebind old bytes. */
+    uint32_t raw_advertisement_sequence;
     uint8_t address[6], address_type, generation;
     cerberus_ble_findmy_hints_t findmy_advertisement, findmy_scan_response;
     cerberus_ble_flipper_hints_t flipper_advertisement, flipper_scan_response;
@@ -53,7 +70,38 @@ typedef struct {
     cerberus_ble_flock_hints_t flock_advertisement, flock_scan_response;
     uint8_t sid, flags;
     uint8_t hc_advertisement, hc_scan_response; /* Exact current-source HC name codes, not identity. */
+    cerberus_s3_ble_scan_response_t scan_response;
 } cerberus_s3_ble_discovery_evidence_t;
+
+/* Structural validation shared by producer copies and history ingestion.
+ * Invalid newer originals may keep older raw ADV, but never response bytes. */
+static inline bool cerberus_s3_ble_response_storage_valid(
+    const cerberus_s3_ble_discovery_evidence_t *source)
+{
+    if (!source) return false;
+    const cerberus_s3_ble_scan_response_t *raw = &source->scan_response;
+    if (!(source->flags & CERBERUS_S3_BLE_EVIDENCE_RESPONSE_VALID)) {
+        if (source->scan_response_sequence || source->scan_response_observed_ms ||
+            raw->length || raw->original_length || raw->event_type || raw->flags) return false;
+        for (size_t i = 0; i < sizeof(raw->data); ++i)
+            if (raw->data[i]) return false;
+        return true;
+    }
+    const uint8_t length = raw->original_length < sizeof(raw->data) ?
+        raw->original_length : (uint8_t)sizeof(raw->data);
+    if (!length || raw->length != length ||
+        raw->flags != (raw->original_length > sizeof(raw->data) ?
+            CERBERUS_BLE_ADVERTISEMENT_TRUNCATED : 0U) ||
+        !source->advertisement_sequence ||
+        source->raw_advertisement_sequence != source->advertisement_sequence ||
+        source->scan_response_sequence <= source->advertisement_sequence ||
+        (uint32_t)(source->scan_response_observed_ms - source->advertisement_observed_ms) > 2000U ||
+        ((source->flags & CERBERUS_S3_BLE_EVIDENCE_SID_VALID) ?
+            (raw->event_type != 0U && raw->event_type != 3U) : raw->event_type != 4U)) return false;
+    for (size_t i = length; i < sizeof(raw->data); ++i)
+        if (raw->data[i]) return false;
+    return true;
+}
 
 typedef struct {
     /* Complete packets add evidence; matched responses may add name/ID hints.

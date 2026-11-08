@@ -1,4 +1,8 @@
-"""Exercise the Wardriving GPS opt-in helpers with an unwired receiver fixture."""
+"""Check GPS helper ownership with and without an acquired service reference.
+
+Admission and the always-on Wardriving preview are tested by the service and
+production UI fixtures; these helpers also handle cleanup before acquisition.
+"""
 from pathlib import Path
 import importlib.util
 import os
@@ -8,7 +12,6 @@ import sys
 
 root = Path(__file__).resolve().parents[1]
 service = (root / "s3_main/main/wardrive_service.c").read_text(encoding="utf-8")
-ui = (root / "s3_main/main/ui.c").read_text(encoding="utf-8")
 helpers = service[service.index("static esp_err_t start_optional_gps(bool enabled)"):
     service.index("static uint32_t plus_one(uint32_t value)")]
 assert "bool gps_enabled = wardrive_status.gps_requested;" in service
@@ -16,8 +19,6 @@ assert "gps_error = start_optional_gps(gps_enabled);" in service
 assert "gps_error = stop_optional_gps(gps_enabled);" in service
 assert "snapshot_optional_gps(wardrive_status.gps_requested, &gps, NULL);" in service
 assert "wardrive_status.gps_requested = enable_gps;" in service
-assert "wardrive_gps_enabled = false;" in ui
-assert "cerberus_wardrive_start(wardrive_include_expansions," in ui
 
 fixture = r'''
 #undef NDEBUG
@@ -49,6 +50,8 @@ int main(void)
     cerberus_wardrive_gps_snapshot_t gps = {
         .state = CERBERUS_WARDRIVE_GPS_FRESH,
         .coordinates_valid = true,
+        .satellites_valid = true, .hdop_valid = true,
+        .satellites = 12, .hdop = 0.5f, .gga_age_ms = 123,
     };
     esp_err_t error = 99;
     start_result = 77;
@@ -59,6 +62,9 @@ int main(void)
     assert(gps.state == CERBERUS_WARDRIVE_GPS_ABSENT);
     assert(!gps.coordinates_valid && gps.sentence_age_ms == UINT32_MAX);
     assert(gps.fix_age_ms == UINT32_MAX && error == ESP_OK);
+    assert(gps.utc_age_ms == UINT32_MAX && gps.gga_age_ms == UINT32_MAX);
+    assert(!gps.satellites_valid && !gps.hdop_valid && !gps.utc_valid);
+    assert(gps.satellites == 0 && gps.hdop == 0.0f);
     assert(stop_optional_gps(false) == ESP_OK);
     assert(starts == 0U && stops == 0U && snapshots == 0U);
 
@@ -87,4 +93,4 @@ subprocess.run(compiler + ["-std=c11", "-O1", "-Wall", "-Wextra", "-Werror",
     "-I", str(root / "s3_main/main"), str(source_path), "-o", str(exe)],
     check=True, env=environment)
 subprocess.run([str(exe)], check=True, env=environment)
-print("wardrive GPS OFF avoids UART; ON preserves reader lifecycle: pass")
+print("wardrive GPS helper ownership: unacquired cleanup avoids UART; acquired reference preserves reader lifecycle: pass")

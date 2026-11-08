@@ -102,6 +102,8 @@ bool cerberus_ble_analyzer_observe(cerberus_ble_analyzer_t *analyzer,
     memset(analyzer->last_name, 0, sizeof(analyzer->last_name));
     memset(&analyzer->last_meta, 0, sizeof(analyzer->last_meta));
     memset(&analyzer->last_flock, 0, sizeof(analyzer->last_flock));
+    memset(&analyzer->last_findmy, 0, sizeof(analyzer->last_findmy));
+    memset(&analyzer->last_flipper, 0, sizeof(analyzer->last_flipper));
     analyzer->last_flock_oui_clue = false;
     analyzer->last_hc_name = CERBERUS_BLE_HC_NONE;
     memset(&analyzer->last_ibeacon, 0, sizeof(analyzer->last_ibeacon));
@@ -127,8 +129,9 @@ bool cerberus_ble_analyzer_observe(cerberus_ble_analyzer_t *analyzer,
     memcpy(analyzer->last_name, parsed.name, parsed.name_length);
     analyzer->last_meta = parsed.meta;
     analyzer->last_report_valid = true;
-    /* Watch keeps its existing whole-report 31-byte contract. The independent
-     * iBeacon/Meta/HC parsers inspect the complete validated extended source. */
+    /* Watch keeps its existing whole-report 31-byte contract. Independent
+     * parsers inspect the complete bounded input, including longer host
+     * fixtures; this does not enable native extended reception. */
     if (report->advertisement_length <= SENTINEL_WATCH_MAX_AD_LENGTH) {
         sentinel_watch_ble_observation_t observation = {
             .name = parsed.name,
@@ -192,6 +195,30 @@ bool cerberus_ble_analyzer_observe(cerberus_ble_analyzer_t *analyzer,
             }
         }
     }
+    if (cerberus_ble_findmy_hints_parse(report->advertisement,
+            report->advertisement_length, &analyzer->last_findmy) &&
+            analyzer->last_findmy.bits) {
+        analyzer->findmy_hint_events = plus_one(analyzer->findmy_hint_events);
+    }
+    if (cerberus_ble_flipper_hints_parse(report->advertisement,
+            report->advertisement_length, &analyzer->last_flipper) &&
+            analyzer->last_flipper.bits) {
+        analyzer->flipper_hint_events = plus_one(analyzer->flipper_hint_events);
+    }
+    /* Preserve all existing headline priorities. New independent facts remain
+     * available even when another family supplies the headline. A response is
+     * classified by its own bytes; no original/response association is made. */
+    if (analyzer->evidence_kind == CERBERUS_BLE_ANALYZER_EVIDENCE_NONE) {
+        if (analyzer->last_findmy.bits) {
+            use_evidence(analyzer, CERBERUS_BLE_ANALYZER_EVIDENCE_FINDMY_HINT,
+                SENTINEL_WATCH_CONFIDENCE_MEDIUM, "Find My format hint",
+                "One complete event has a Find My hint; identity unknown");
+        } else if (analyzer->last_flipper.bits) {
+            use_evidence(analyzer, CERBERUS_BLE_ANALYZER_EVIDENCE_FLIPPER_HINT,
+                SENTINEL_WATCH_CONFIDENCE_MEDIUM, "Flipper service hint",
+                "One complete event has a Flipper hint; identity unknown");
+        }
+    }
     return true;
 }
 
@@ -213,6 +240,8 @@ void cerberus_ble_analyzer_snapshot(cerberus_ble_analyzer_t *analyzer,
     out->meta_hint_events = analyzer->meta_hint_events;
     out->hc_name_hint_events = analyzer->hc_name_hint_events;
     out->flock_hint_events = analyzer->flock_hint_events;
+    out->findmy_hint_events = analyzer->findmy_hint_events;
+    out->flipper_hint_events = analyzer->flipper_hint_events;
     for (unsigned age = 0U; age < analyzer->history_count; ++age) {
         unsigned index = (analyzer->next_history +
             CERBERUS_BLE_ANALYZER_HISTORY - 1U - age) %
@@ -230,6 +259,8 @@ void cerberus_ble_analyzer_snapshot(cerberus_ble_analyzer_t *analyzer,
     out->last_name_length = analyzer->last_name_length;
     out->last_meta = analyzer->last_meta;
     out->last_flock = analyzer->last_flock;
+    out->last_findmy = analyzer->last_findmy;
+    out->last_flipper = analyzer->last_flipper;
     out->last_flock_oui_clue = analyzer->last_flock_oui_clue;
     out->last_hc_name = analyzer->last_hc_name;
     out->last_scan_response = analyzer->last_scan_response;

@@ -3,19 +3,29 @@
 #include "scan_display_store.h"
 #include "s3_ble_list.h"
 #include "s3_ble_recent.h"
+#include "s3_wifi_list.h"
 #include "s3_ble_discovery_inventory.h"
 #include "s3_ble_discovery_session.h"
+#include "ble_discovery_list.h"
 #include "sentinel_scan_view.h"
 #include "sentinel_scan_session.h"
+#include "ble_live_wifi_map_type.h"
 #include <assert.h>
 #include <stdio.h>
 #define ESP_ERROR_CHECK(x) assert((x)==ESP_OK)
 enum {UI_PAGE_WIFI,UI_PAGE_BLE,UI_PAGE_IEEE802154,UI_PAGE_WATCH};
 enum {UI_WIFI_MODE_LIST,UI_WIFI_MODE_TARGET,UI_WIFI_MODE_MENU};
-enum {UI_BLE_MODE_LIST,UI_BLE_MODE_FINDMY_MONITOR,UI_BLE_MODE_MENU,UI_BLE_MODE_ANALYZER};
+enum {UI_BLE_MODE_LIST,UI_BLE_MODE_FINDMY_MONITOR,UI_BLE_MODE_MENU,UI_BLE_MODE_ANALYZER,UI_BLE_MODE_C5};
 enum {UI_IEEE802154_MODE_ENERGY,UI_IEEE802154_MODE_BEACONS,UI_IEEE802154_MODE_ACTIVITY,UI_IEEE802154_MODE_MENU};
 static unsigned current_page=UI_PAGE_BLE,ble_mode=UI_BLE_MODE_LIST,wifi_mode,ieee802154_mode;
 static bool wifi_attack_selecting,wifi_selection_valid,ble_attack_selecting;
+static bool sae_ui_selecting, eapol_ui_selecting, frame_ui_selecting;
+static void frame_ui_selection_done(void)
+{assert(!"Frame selection reached in BLE-only fixture");}
+static void eapol_ui_selection_done(void)
+{assert(!"EAPOL selection reached in BLE-only fixture");}
+static void sae_ui_selection_done(void)
+{assert(!"SAE selection reached in BLE-only fixture");}
 static unsigned wifi_target_count,wifi_selected_index,wifi_analysis_generation;
 static esp_err_t wifi_analysis_error,wifi_trust_error,wifi_connection_error;
 static cerberus_c5_wifi_result_t wifi_selected_result;
@@ -23,8 +33,11 @@ static cerberus_scan_display_store_t store,*live_store=&store;
 static cerberus_findmy_monitor_record_t evidence[32],*live_ble_evidence=evidence,selected;
 static uint8_t live_ble_indexes[32];static size_t live_ble_filtered_count;
 static bool live_wifi_recent_only;
-static uint8_t live_wifi_indexes[32];
-static size_t live_wifi_filtered_count;
+static cerberus_s3_wifi_sort_t live_wifi_sort;
+static cerberus_s3_wifi_band_t live_wifi_band;
+static live_wifi_paint_map_t live_wifi_built,live_wifi_painted;
+static uint64_t wifi_relation_publication;
+static uint8_t wifi_relation_generation;
 static cerberus_c5_status_t c5_status;
 static uint16_t live_page[SENTINEL_SCAN_TOOL_COUNT];
 typedef struct {bool captured;uint16_t count;uint8_t saved_generation;} live_scan_record_t;
@@ -48,7 +61,6 @@ static const char *ble_filter_name(cerberus_s3_ble_filter_t f){(void)f;return "F
 static sentinel_scan_session_t session;
 static sentinel_view_action_t action;
 static unsigned monitor_opened,monitor_tapped,selected_count,active_starts,passive_starts,stop_count;
-static cerberus_ble_scan_status_payload_t ble_scan_status;
 static sentinel_scan_tool_t live_page_tool(void) {return SENTINEL_SCAN_BLE;}
 static void live_make_view(void);
 static sentinel_scan_session_t *live_session_for(sentinel_scan_tool_t t){(void)t;return &session;}
@@ -57,6 +69,10 @@ void sentinel_scan_session_pause(sentinel_scan_session_t *s,bool p){s->paused=p;
 sentinel_view_action_t sentinel_scan_view_hit_test(const sentinel_scan_view_t*v,uint16_t x,uint16_t y){(void)v;(void)x;(void)y;return action;}
 esp_err_t sentinel_scan_view_update(const sentinel_scan_view_t*v,uint32_t f){(void)v;(void)f;return ESP_OK;}
 static esp_err_t draw_current_page(void){return ESP_OK;}
+static esp_err_t draw_ble(void){return ESP_OK;}
+static esp_err_t draw_detail_page(void){assert(!"C5 detail in legacy BLE route");return ESP_FAIL;}
+static void dual_ble_ui_open(bool reset_detail){(void)reset_detail;assert(!"C5 open in legacy BLE route");}
+static void dual_ble_live_tap(uint16_t x,uint16_t y){(void)x;(void)y;assert(!"C5 view in legacy BLE route");}
 static void ble_findmy_monitor_open(void){++monitor_opened;ble_mode=UI_BLE_MODE_FINDMY_MONITOR;}
 static void ble_findmy_monitor_tap(uint16_t x,uint16_t y){(void)x;(void)y;++monitor_tapped;}
 static bool ble_connection_is_active(void){return false;}
@@ -68,19 +84,28 @@ static void wifi_relation_bind_selection(bool ordinary)
 #define wifi_target_toggle_selection(...) true
 #define wifi_target_finish_selection() ((void)0)
 #define c5_spi_link_get_wifi_connection_status(...) ESP_OK
-static esp_err_t cerberus_s3_ble_scanner_start_active(cerberus_ble_scan_status_payload_t*s){(void)s;++active_starts;return ESP_OK;}
-static esp_err_t cerberus_s3_ble_scanner_start(cerberus_ble_scan_status_payload_t*s){(void)s;++passive_starts;return ESP_OK;}
-static esp_err_t cerberus_s3_ble_scanner_stop(cerberus_ble_scan_status_payload_t*s){(void)s;++stop_count;return ESP_OK;}
-/* This fixture exercises the retained completed-bank route. The separate
- * discovery-live suite compiles the actual active controller and adapter. */
-static struct {
+/* Legacy scheduler acquisition now delegates to the exact passive lease.
+ * Ordinary active discovery is owned/tested by its separate live controller. */
+static esp_err_t live_ble_execute(bool start){if(start)++passive_starts;else ++stop_count;return ESP_OK;}
+/* This fixture exercises only the legacy retained completed-bank route, with
+ * the ordinary discovery facade disabled. It does not model S3 store OOM:
+ * discovery-live covers that empty shell, both receivers and global ticks.
+ * Compile the actual unified gate and keep receiver boundaries fail-fast. */
+typedef struct {
     cerberus_s3_ble_discovery_inventory_t inventory;
     cerberus_ble_discovery_session_t session;
     bool selection_pending;
     uint8_t destination;
-} *ble_discovery_live;
+    cerberus_ble_discovery_list_source_t source_filter;
+} ble_discovery_live_store_t;
+static ble_discovery_live_store_t *ble_discovery_live;
 static bool ble_discovery_presenting(void){return false;}
 static bool ble_discovery_page(void){return false;}
+static bool ble_discovery_ordinary_page(void){return false;}
+static void ble_discovery_cancel_navigation(void){assert(!"ordinary navigation in legacy fixture");}
+static void ble_discovery_request_destination(uint8_t destination)
+{(void)destination;assert(!"ordinary destination in legacy fixture");}
+static size_t ble_discovery_combined_order(void){assert(!"combined ordering in legacy fixture");return 0U;}
 static uint32_t ble_discovery_visible_mask(uint64_t now){(void)now;assert(!"live mask in legacy fixture");return 0U;}
 static void ble_discovery_toggle(void){assert(!"live toggle in legacy fixture");}
 static void ble_discovery_select_painted(unsigned row){(void)row;assert(!"live selection in legacy fixture");}
@@ -88,8 +113,19 @@ static esp_err_t live_paint(bool full){(void)full;return sentinel_scan_view_upda
 #include "ble_live_route_impl.h"
 int main(void)
 {
+    /* Shared dispatch must not mutate ordinary Wi-Fi presentation state while
+     * this fixture exercises BLE-only routes. Compile the actual map guard;
+     * full Wi-Fi rendering and binding live in the discovery UI fixture. */
+    live_wifi_sort=CERBERUS_S3_WIFI_SORT_NAME_ASC;
+    live_wifi_band=CERBERUS_S3_WIFI_BAND_5_GHZ;
+    wifi_relation_publication=UINT64_C(0x1234567800000042);wifi_relation_generation=9;
+    live_wifi_built=(live_wifi_paint_map_t){.publication=wifi_relation_publication,
+        .token=17,.generation=9,.bank_count=3,.count=2,.indexes={2,0},.valid=true};
+    live_wifi_painted=live_wifi_built;
+    live_wifi_painted.token=16;
+    live_wifi_paint_map_t wifi_built_before=live_wifi_built,wifi_painted_before=live_wifi_painted;
     assert(live_is_view());
-    for(unsigned i=0;i<CERBERUS_S3_BLE_FILTER_COUNT;++i){handle_ble_tap(100,60);assert(ble_filter==(i+1)%CERBERUS_S3_BLE_FILTER_COUNT);}
+    for(unsigned i=0;i<CERBERUS_S3_BLE_FILTER_COUNT;++i){handle_ble_tap(100,60);assert(ble_filter==(i+1)%CERBERUS_S3_BLE_FILTER_COUNT);assert(!ble_discovery_unified());}
     ble_filter=CERBERUS_S3_BLE_FILTER_FIND_MY;action=SENTINEL_VIEW_TOOLS;handle_ble_tap(250,380);
     assert(monitor_opened==1 && !live_is_view());handle_ble_tap(20,90);assert(monitor_tapped==1);
     ble_mode=UI_BLE_MODE_LIST;live_ble_filtered_count=2;live_ble_indexes[0]=9;live_ble_indexes[1]=2;
@@ -125,8 +161,23 @@ int main(void)
     live_ble_focus_bits[0]=CERBERUS_S3_BLE_FOCUS_FIND_MY;live_ble_focus_bits[2]=CERBERUS_S3_BLE_FOCUS_FIND_MY;
     ble_filter=CERBERUS_S3_BLE_FILTER_FIND_MY;live_make_view();
     assert(live_ble_filtered_count==2&&live_ble_indexes[0]==0&&live_ble_indexes[1]==2);
-    assert(actual_ble_start(true)==ESP_OK && active_starts==1);
-    current_page=UI_PAGE_WATCH;assert(actual_ble_start(true)==ESP_OK && passive_starts==1);
+    /* AGE is still the retained-bank recency control, not the unified source
+     * selector. Its new branch must not dereference the absent live store. */
+    assert(!ble_discovery_live && !ble_discovery_unified());
+    action=SENTINEL_VIEW_AGE;handle_ble_tap(250,85);
+    assert(live_ble_recent_only&&!strcmp(live_view.age_label,"WITHIN 30S >"));
+    handle_ble_tap(250,85);
+    assert(!live_ble_recent_only&&!strcmp(live_view.age_label,"ALL AGES >"));
+    assert(live_ble_filtered_count==2&&ble_mode==UI_BLE_MODE_LIST);
+    live_view.state=SENTINEL_VIEW_LIVE;action=SENTINEL_VIEW_PAUSE;handle_ble_tap(250,380);
+    assert(session.paused&&session.desired==SENTINEL_SCAN_BLE);
+    assert(active_starts==0&&passive_starts==0&&stop_count==0);
+    assert(actual_ble_start(true)==ESP_OK && passive_starts==1 && active_starts==0);
+    current_page=UI_PAGE_WATCH;assert(actual_ble_start(true)==ESP_OK && passive_starts==2);
     assert(actual_ble_start(false)==ESP_OK && stop_count==1);
-    puts("Actual BLE live dispatch: filters, Monitor entry, mapped frozen selection, pagination, sorted/focused original indexes, original timestamp, active-list/passive-Watch scan gate passed");
+    assert(live_wifi_sort==CERBERUS_S3_WIFI_SORT_NAME_ASC && live_wifi_band==CERBERUS_S3_WIFI_BAND_5_GHZ);
+    assert(wifi_relation_publication==UINT64_C(0x1234567800000042) && wifi_relation_generation==9);
+    assert(!memcmp(&wifi_built_before,&live_wifi_built,sizeof(live_wifi_built)));
+    assert(!memcmp(&wifi_painted_before,&live_wifi_painted,sizeof(live_wifi_painted)));
+    puts("Actual BLE live dispatch: filters, Monitor entry, mapped frozen selection, pagination, sorted/focused original indexes, original timestamp, exact passive-lease scheduler delegation passed");
 }

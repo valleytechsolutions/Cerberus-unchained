@@ -17,7 +17,8 @@ static const cerberus_ui_widget_theme_t theme={0x0042,0x08A4,0x3F1B,0xE77F,0x7CB
 #define UI_WIDGET_THEME (&theme)
 enum {UI_WIFI_MODE_LIST,UI_WIFI_MODE_TARGET,UI_WIFI_MODE_CONNECTION,UI_WIFI_MODE_PASSWORD,
     UI_WIFI_MODE_NETWORK_SCAN,UI_WIFI_MODE_STATIONS,UI_WIFI_MODE_DETAIL,UI_WIFI_MODE_CAPTURE,
-    UI_WIFI_MODE_PACKET_MONITOR,UI_WIFI_MODE_CSI,UI_WIFI_MODE_OBSERVED_CLIENTS,UI_PAGE_FIELD_MENU};
+    UI_WIFI_MODE_PACKET_MONITOR,UI_WIFI_MODE_CSI,UI_WIFI_MODE_OBSERVED_CLIENTS,UI_PAGE_FIELD_MENU,
+    UI_WIFI_MODE_DUAL};
 static uint8_t wifi_selected_index;
 static unsigned wifi_mode=UI_WIFI_MODE_TARGET,current_page;
 static cerberus_c5_wifi_result_t wifi_selected_result,wifi_connection_target;
@@ -31,11 +32,25 @@ static cerberus_keyboard_t wifi_keyboard;
 static char wifi_connection_password[64];
 static unsigned connects,passwords,net_entries,station_entries,capture_entries;
 static uint8_t packet_monitor_channel;
-static bool packet_monitor_from_target,packet_monitor_attempted;
-static uint32_t packet_monitor_last_poll;
+static bool packet_monitor_from_target;
 static unsigned monitor_entries;
 static unsigned csi_entries;
 static unsigned relation_entries;
+static unsigned fox_entries;
+static uint8_t fox_target[6],fox_channel,fox_label[32],fox_length;
+static esp_err_t fox_error;
+static bool wifi_fox_hunt_supported(void)
+{return c5_online&&c5_status.firmware_version>=CERBERUS_WIFI_FOX_HUNT_MIN_FIRMWARE;}
+static esp_err_t wifi_fox_hunt_open(const uint8_t target[6],uint8_t channel,const uint8_t *label,size_t length,uint8_t origin)
+{assert(origin==UI_WIFI_MODE_TARGET&&length<=32);++fox_entries;memcpy(fox_target,target,6);
+ fox_channel=channel;fox_length=(uint8_t)length;memcpy(fox_label,label,length);return fox_error;}
+static bool dual_wifi_return_to_view;
+static unsigned dual_reopens;
+static void dual_wifi_live_open(bool start_scan)
+{
+    assert(!start_scan); /* Returning to the retained list never starts RF. */
+    ++dual_reopens;dual_wifi_return_to_view=false;wifi_mode=UI_WIFI_MODE_DUAL;
+}
 static esp_err_t csi_open_error;
 static const char *esp_err_to_name(esp_err_t error){return error==ESP_ERR_NO_MEM?"ESP_ERR_NO_MEM":"ERROR";}
 static esp_err_t csi_open_selected(void)
@@ -120,24 +135,51 @@ int main(int argc,char **argv)
     c5_online=true;wifi_mode=UI_WIFI_MODE_TARGET;
     save(argv[1],"observed-clients");
     wifi_target_handle_tap(30,320);assert(wifi_mode==UI_WIFI_MODE_DETAIL);
-    c5_status.firmware_version=CERBERUS_WIFI_PACKET_MONITOR_MIN_FIRMWARE;
+    wifi_mode=UI_WIFI_MODE_TARGET;
+    c5_status.firmware_version=CERBERUS_WIFI_FOX_HUNT_MIN_FIRMWARE-1U;
+    wifi_target_handle_tap(164,296);assert(!fox_entries);
+    c5_status.firmware_version=CERBERUS_WIFI_FOX_HUNT_MIN_FIRMWARE;
+    wifi_target_handle_tap(156,296);wifi_target_handle_tap(163,296);
+    wifi_target_handle_tap(308,296);wifi_target_handle_tap(164,326);assert(!fox_entries);
+    wifi_target_handle_tap(164,296);assert(fox_entries==1&&fox_channel==wifi_selected_result.channel&&
+        !memcmp(fox_target,wifi_selected_result.bssid,6)&&fox_length==strlen(wifi_selected_result.ssid)&&
+        !memcmp(fox_label,wifi_selected_result.ssid,fox_length));
+    fox_error=ESP_ERR_NO_MEM;wifi_target_handle_tap(307,325);
+    assert(fox_entries==2&&strstr(wifi_target_message,"FOX HUNT: ESP_ERR_NO_MEM"));
+    fox_error=ESP_OK;wifi_target_message[0]=0;save(argv[1],"fox-ready");
+    c5_status.firmware_version=CERBERUS_WIFI_PACKET_MONITOR_SESSION_MIN_FIRMWARE-1U;
+    v=wifi_target_view(id,metadata);assert(!v.can_packet_monitor);
+    c5_status.firmware_version=CERBERUS_WIFI_PACKET_MONITOR_SESSION_MIN_FIRMWARE;
     wifi_target_handle_tap(30,345);
     assert(wifi_mode==UI_WIFI_MODE_PACKET_MONITOR&&monitor_entries==1&&
         packet_monitor_channel==36U&&packet_monitor_from_target);
     wifi_mode=UI_WIFI_MODE_TARGET;
+    c5_status.firmware_version=CERBERUS_CSI_MIN_FIRMWARE-1U;
     wifi_target_handle_tap(200,345);assert(!csi_entries); /* Older peer: no CSI entry. */
     c5_status.firmware_version=CERBERUS_CSI_MIN_FIRMWARE;
     wifi_target_handle_tap(200,345);assert(csi_entries==1&&wifi_mode==UI_WIFI_MODE_CSI);
     wifi_mode=UI_WIFI_MODE_TARGET;csi_open_error=ESP_ERR_NO_MEM;
     wifi_target_handle_tap(200,345);assert(csi_entries==2&&wifi_mode==UI_WIFI_MODE_TARGET&&strstr(wifi_target_message,"CSI:"));
     csi_open_error=0;wifi_target_message[0]=0;
+    c5_status.firmware_version=CERBERUS_WIFI_PACKET_MONITOR_SESSION_MIN_FIRMWARE;
     for(unsigned channel=169;channel<=177;channel+=4){
         wifi_selected_result.channel=(uint8_t)channel;v=wifi_target_view(id,metadata);
         assert(v.can_csi&&!v.can_packet_monitor);
     }
     wifi_selected_result.channel=36;
     save(argv[1],"csi-ready");
-    wifi_target_handle_tap(30,365);assert(wifi_mode==UI_WIFI_MODE_LIST);
+    wifi_target_handle_tap(30,365);assert(wifi_mode==UI_WIFI_MODE_LIST&&!dual_reopens);
+    /* Exercise the complete private action handler, not only the widget's
+     * action enum. Combined-list origin must survive through this control. */
+    wifi_mode=UI_WIFI_MODE_TARGET;dual_wifi_return_to_view=true;
+    strcpy(wifi_target_message,"PRIOR TARGET MESSAGE");
+    wifi_target_handle_tap(30,365);
+    assert(wifi_mode==UI_WIFI_MODE_DUAL&&dual_reopens==1&&!dual_wifi_return_to_view&&
+        !wifi_target_message[0]);
+    wifi_mode=UI_WIFI_MODE_TARGET;wifi_attack_selecting=true;
+    wifi_target_handle_tap(30,365);
+    assert(wifi_mode==UI_WIFI_MODE_LIST&&dual_reopens==1&&wifi_attack_selecting);
+    wifi_attack_selecting=false;
     strcpy(wifi_selected_result.ssid,"01234567890123456789012345678901");save(argv[1],"long-name");
     wifi_connection_status.state=CERBERUS_WIFI_CONNECTION_IDLE;
     wifi_selected_result.ssid[0]=0;v=wifi_target_view(id,metadata);assert(!v.can_connect);save(argv[1],"hidden");

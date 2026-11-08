@@ -32,7 +32,7 @@ def sha256(path: Path) -> str:
 def source_snapshot() -> dict:
     """Capture build inputs, including uncommitted files and component locks."""
     paths = set()
-    for directory in ("shared", "boards", "s3_main", "c5_firmware/main"):
+    for directory in ("shared", "boards", "s3_main", "c5_firmware/main", "third_party"):
         for path in (ROOT / directory).rglob("*"):
             if path.is_file() and not any(p in {".pio", "managed_components", "__pycache__"} for p in path.parts):
                 paths.add(path)
@@ -156,8 +156,70 @@ def inspect_target(name: str) -> dict:
             "flash_settings": metadata["flash_settings"], "partitions": partitions, "images": images}
 
 
+def validate_console_proof(receipt: dict) -> dict:
+    """Require the exact final S3 ELF and checker covered by the matched build."""
+    proof = receipt.get("native_console_stack")
+    if not isinstance(proof, dict) or proof.get("status") != "passed" or proof.get("hardware_validated") is not False:
+        raise ValueError("Missing native console proof. Rebuild the matched Unchained set")
+    identities = {
+        "sha256": ROOT / ".pio/build/s3-main/firmware.elf",
+        "source_sha256": ROOT / "s3_main/main/usb_console.c",
+        "checker_sha256": ROOT / "tools/build_unified.py",
+    }
+    for key, path in identities.items():
+        if proof.get(key) != sha256(path):
+            raise ValueError(f"Native console proof is stale: {key}; rebuild the matched set")
+    frames = proof.get("frames_bytes", {})
+    known = proof.get("known_frame_bytes", -1)
+    if (proof.get("allocated_stack_bytes") != 4096 or proof.get("task_frame_limit_bytes") != 192
+            or not 0 < frames.get("usb_console_task", 0) <= 192
+            or proof.get("formatter_frame_limit_bytes") != 128
+            or not 0 < frames.get("console_printf", 0) <= 128
+            or type(known) is not int or not 0 < known <= 3072
+            or proof.get("remaining_after_known_frames_bytes") != 4096 - known
+            or proof.get("minimum_remaining_after_known_frames_bytes") != 1024):
+        raise ValueError("Native console frame budget is missing or invalid")
+    expected = {"artifacts/integration/s3-console-stack.json",
+                "artifacts/integration/s3-console-stack.txt"}
+    evidence = receipt.get("native_console_evidence", {})
+    if set(evidence) != expected:
+        raise ValueError("Native console debugger evidence is missing")
+    for name, digest in evidence.items():
+        if sha256(ROOT / name) != digest:
+            raise ValueError("Native console evidence changed; rebuild the matched set")
+    if json.loads((ROOT / "artifacts/integration/s3-console-stack.json").read_text(encoding="utf-8")) != proof:
+        raise ValueError("Native console JSON differs from the matched receipt")
+    return proof
+
+
+def validate_locate_proof(receipt: dict) -> dict:
+    """Bind the callback placement gate to the final linked C5 and its sources."""
+    proof = receipt.get("native_mesh_locate_iram")
+    if not isinstance(proof, dict) or proof.get("status") != "passed" or proof.get("hardware_validated") is not False:
+        raise ValueError("Missing native Mesh Locate proof; rebuild the matched set")
+    if (proof.get("elf_sha256") != sha256(ROOT / "c5_firmware/.pio/build/c5-onboard/firmware.elf") or
+        proof.get("checker_sha256") != sha256(ROOT / "tools/check_mesh_locate_iram.py")):
+        raise ValueError("Native Mesh Locate proof is stale; rebuild the matched set")
+    expected_sources = {"shared/mesh_mac.c", "shared/mesh_mac.h", "shared/mesh_locate_protocol.h",
+        "c5_firmware/main/ieee802154_locate_impl.h", "c5_firmware/main/ieee802154_scanner.c",
+        "c5_firmware/main/CMakeLists.txt"}
+    sources = proof.get("source_hashes", {})
+    if set(sources) != expected_sources or any(sha256(ROOT / name) != digest for name,digest in sources.items()):
+        raise ValueError("Native Mesh Locate source proof is stale")
+    expected_evidence = {"artifacts/integration/c5-mesh-locate-iram.json",
+        "artifacts/integration/c5-mesh-locate-iram.txt"}
+    evidence = receipt.get("native_mesh_locate_evidence", {})
+    if set(evidence) != expected_evidence or any(sha256(ROOT / name) != digest for name,digest in evidence.items()):
+        raise ValueError("Native Mesh Locate evidence changed or is missing")
+    if json.loads((ROOT / "artifacts/integration/c5-mesh-locate-iram.json").read_text(encoding="utf-8")) != proof:
+        raise ValueError("Native Mesh Locate JSON differs from the matched receipt")
+    return proof
+
+
 def package(output: Path | None = None, *, release: bool = False, accepted_on: str | None = None) -> Path:
     receipt = json.loads(RECEIPT.read_text())
+    console_proof = validate_console_proof(receipt)
+    locate_proof = validate_locate_proof(receipt)
     current_source = source_snapshot()
     if current_source != receipt["source"]:
         raise ValueError("Build inputs changed. Run tools/build_unchained.py --target all again")
@@ -203,12 +265,30 @@ def package(output: Path | None = None, *, release: bool = False, accepted_on: s
     manifest = {"format": 1, "product": "Cerberus Unchained", "status": status,
                 "hardware_validation": validation,
                 "built_utc": receipt["built_utc"], "packaged_utc": timestamp,
-                "platformio": receipt["platformio"], "source": current_source, "targets": targets}
+                "platformio": receipt["platformio"], "source": current_source, "targets": targets,
+                "native_console_stack": console_proof,
+                "native_console_evidence": {"native-validation/" + Path(name).name: digest
+                    for name, digest in receipt["native_console_evidence"].items()},
+                "native_mesh_locate_iram": locate_proof,
+                "native_mesh_locate_evidence": {"native-validation/" + Path(name).name: digest
+                    for name, digest in receipt["native_mesh_locate_evidence"].items()}}
+    proof_directory = destination / "native-validation"
+    proof_directory.mkdir()
+    for name, digest in {**receipt["native_console_evidence"], **receipt["native_mesh_locate_evidence"]}.items():
+        copy = proof_directory / Path(name).name
+        shutil.copy2(ROOT / name, copy)
+        if sha256(copy) != digest:
+            raise ValueError("Native build evidence changed while packaging")
+    validate_console_proof(receipt)
+    validate_locate_proof(receipt)
     (destination / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     shutil.copy2(ROOT / "docs" / "UNCHAINED_BUILD.md", destination / "BUILD_AND_RECOVERY.md")
     # Keep protocol provenance and redistribution notices with binary builds.
-    for name in ("WATCH_SIGNATURES.md", "WATCH_THIRD_PARTY_NOTICES.md"):
+    for name in ("WATCH_SIGNATURES.md", "WATCH_THIRD_PARTY_NOTICES.md",
+                 "MARAUDER_ATTRIBUTION.md", "GPS_RECORDING.md", "WARDRIVE_DATA_QUALITY.md",
+                 "SPI_COMMAND_ROUTING.md"):
         shutil.copy2(ROOT / "docs" / name, destination / name)
+    shutil.copytree(ROOT / "LICENSES", destination / "LICENSES")
     (destination / "README.txt").write_text(
         f"CERBERUS UNCHAINED {version} — {status.upper()}\n\n"
         "Production N16R2 S3 + onboard C5 (2 MB flash budget).\n"
@@ -218,6 +298,7 @@ def package(output: Path | None = None, *, release: bool = False, accepted_on: s
         "flash_args.txt describes each target's actual image offsets; it is NOT a one-step installer.\n"
         "Use the source project's documented USB bridge workflow for the onboard C5.\n"
         "The current partition maps have a single factory application and no OTA rollback slot.\n"
+        "Retain LICENSES/ and WATCH_THIRD_PARTY_NOTICES.md with this package; their separate notices remain applicable.\n"
         "No hardware has been flashed by creating this package.\n", encoding="utf-8")
     checksums = "".join(f"{sha256(path)}  {path.relative_to(destination).as_posix()}\n"
                         for path in sorted(destination.rglob("*")) if path.is_file())

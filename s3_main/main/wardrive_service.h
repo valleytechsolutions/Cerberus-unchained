@@ -2,6 +2,9 @@
 
 #include "esp_err.h"
 #include "wardrive_gps_core.h"
+#include "wardrive_recent.h"
+#include "wardrive_stream.h"
+#include "wardrive_geofence.h"
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -30,11 +33,19 @@ typedef enum {
 
 typedef struct {
     cerberus_wardrive_state_t state;
+    uint8_t mode;
+    cerberus_wd_status_t s3_stream,c5_stream;
+    uint32_t s3_wifi_logged,c5_ble_logged;
     bool gps_requested; /* UART2 is used only when explicitly enabled. */
     bool gps_present; /* Checksum-valid NMEA was received recently. */
     cerberus_wardrive_gps_snapshot_t gps;
     esp_err_t gps_error; /* Optional UART failure does not stop radio logging. */
     bool expansions_requested;
+    bool geofences_enabled;
+    cerberus_geofence_result_t geofence;
+    uint8_t geofence_phase; /* OPEN, PAUSING, PAUSED or RESUMING below. */
+    char geofence_name[CERBERUS_GEOFENCE_NAME_BYTES + 1U];
+    uint32_t geofence_skipped, geofence_pauses;
     uint32_t elapsed_ms;
     uint32_t c5_wifi_sweeps, c5_wifi_observations, c5_wifi_logged;
     uint32_t c5_wifi_scan_dropped;
@@ -64,23 +75,69 @@ typedef struct {
     uint8_t expansion_present_mask;
     uint32_t duplicate_sightings, invalid_sightings, dedupe_evicted;
     uint32_t sd_rows, files_saved;
+    uint32_t csv_rows, csv_devices, compacted_rows;
+    uint32_t compact_ms, compact_passes;
+    uint64_t compact_index_read_bytes, compact_index_write_bytes;
+    uint32_t rssi_filtered; /* Valid rows already inside accepted RSSI extrema. */
+    bool rssi_filter_enabled; /* This session obtained the optional PSRAM cache. */
+    bool compacting;
     uint32_t geotagged_rows, unlocated_rows, gps_fallback_rows;
+    uint32_t skipped_no_fix, skipped_time, skipped_format;
     uint64_t sd_bytes;
     esp_err_t c5_error, s3_ble_error, expansion_error, sd_error;
     esp_err_t error_code;
     char last_file_name[24];
 } cerberus_wardrive_status_t;
 
+enum { CERBERUS_WARDRIVE_AREA_OPEN=0, CERBERUS_WARDRIVE_AREA_PAUSING,
+       CERBERUS_WARDRIVE_AREA_PAUSED, CERBERUS_WARDRIVE_AREA_RESUMING };
+
+/* A bounded, value-only view of processed AP/BLE results. Receipt is processing
+ * uptime, not RF time. APPENDED outcomes do not establish SD durability. The
+ * history survives worker cleanup; allocation failure affects only this view. */
+typedef struct {
+    uint64_t session_id, revision, events;
+    uint32_t clock_faults;
+    uint8_t count, retained_events;
+    bool available, worker_active;
+    cerberus_wardrive_state_t state;
+    esp_err_t error, view_error;
+} cerberus_wardrive_recent_status_t;
+
+typedef struct {
+    uint64_t session_id, revision;
+    uint8_t count, retained_events;
+    bool available, worker_active;
+    cerberus_wardrive_state_t state;
+    esp_err_t error, view_error;
+    cerberus_wardrive_recent_row_t rows[CERBERUS_WARDRIVE_RECENT_VISIBLE];
+} cerberus_wardrive_recent_snapshot_t;
+
+/* Both getters perform only bounded copies under the service lock. They do
+ * not allocate, read SD/GPS, poll radios, or return producer-owned pointers. */
+void cerberus_wardrive_copy_recent(cerberus_wardrive_recent_snapshot_t *out);
+void cerberus_wardrive_get_recent_status(cerberus_wardrive_recent_status_t *out);
+/* Fails while a Start is admitted or its worker is active. IDs are not reused
+ * after Clear. This frees only retained history, never worker-owned memory. */
+esp_err_t cerberus_wardrive_clear_recent(void);
+
 /* Start requires exclusive access to the onboard C5 scan and S3 BLE scanner.
  * The UI must suspend/drain Recon before calling. R1-R6 are opt-in; enabling
- * them does not imply that expansion radios are installed. GPS is opt-in;
- * without a wired receiver, leave enable_gps false. Scans and unlocated CSV
- * continue with no GPS reader or UART driver. With GPS enabled, fresh GPS/RMC
- * results enter WiGLE; other valid observations enter an unlocated sidecar. */
+ * them does not imply that expansion radios are installed. A running GPS
+ * receiver with a fresh fix and RMC UTC is required before admission. No RF,
+ * storage lease or capture task is started while the fix is unavailable.
+ * After admission, each observation still passes the GPS/time/format checks. */
 esp_err_t cerberus_wardrive_start(bool include_expansions, bool enable_gps);
+/* Value-only check. NOT_FINISHED means GPS is off or is not ready to record. */
+esp_err_t cerberus_wardrive_start_check(bool enable_gps);
+/* Idle-only mode selection. Applies to the next integrated session. */
+esp_err_t cerberus_wardrive_set_mode(uint8_t mode);
 /* Stop is asynchronous. Both terminal states mean the worker has closed its
  * SD file. STOPPED confirms release of all started scans; ERROR reports a
  * radio or storage fault, including an expansion STOP that remains uncertain.
+ * A held or uncertain accepted S3 BLE attachment keeps the worker and its
+ * streams in STOPPING, including after a cleanup timeout is reported. Only
+ * exact release or authoritative absence permits terminal cleanup.
  * A USB route may wait for either terminal state before handoff. */
 void cerberus_wardrive_request_stop(void);
 esp_err_t cerberus_wardrive_wait_stopped(uint32_t timeout_ms);
