@@ -29,18 +29,18 @@ reference revisions and the distinction between adapted code and independently
 implemented workflows. This acknowledgment does not change any license or
 imply upstream endorsement of Cerberus Unchained.
 
-**Local development checkpoint:** `0.1.0-dev.rev157` is installed on the
-development board with onboard C5 capability 80. **Tools → System health →
-DEVICE INFO** now reports each processor's application build, SDK, partition
-and memory/status information. All 171 host suites and five firmware targets
-passed. Both live build fingerprints match the package; the owner confirmed
-the S3/C5 tabs, Refresh and Back. The post-navigation heap and task counts
-returned to their idle baseline. See [Device Info](docs/DEVICE_INFO.md).
+**Local development checkpoint:** `0.1.0-dev.rev158` is installed on the
+development board with onboard C5 capability 81. The existing Channels page
+now has List/Graph views and calculates frame rates from measured C5 receive
+time. All 171 host suites and five firmware targets passed; both live build
+fingerprints match the package. Paired idle captures showed stable memory,
+mounted SD and no increase in the listed SPI error counters. The new graph's
+physical 2.4/5 GHz and navigation checks remain pending. See
+[Channel activity](docs/CHANNEL_ACTIVITY.md).
 
-Rev158 development adds a [channel-activity graph](docs/CHANNEL_ACTIVITY.md)
-to the existing Channels page and calculates frame rates from the actual C5
-receive time. Its focused host checks pass; paired build and physical
-acceptance are still pending at this source checkpoint.
+**Tools → System health → DEVICE INFO** reports each processor's application
+build, SDK, partition and memory/status information. The owner confirmed
+the S3/C5 tabs, Refresh and Back on rev157. See [Device Info](docs/DEVICE_INFO.md).
 
 The included Wardriving changes continue across private journal segments,
 reduce redundant SD writes and keep one final CSV with strongest/weakest RSSI

@@ -70,7 +70,27 @@ changes, legacy peers, tab hitboxes and display bounds. Production-rendered
 previews use synthetic traffic and include pending, zero, unavailable,
 saturated and retained rows. These checks passed during development.
 
-At this source checkpoint, rev158 still requires the full host/native matrix,
-matched packaging and installation, followed by physical 2.4/5 GHz graph,
-Stop/Back and subsequent Wi-Fi scan checks. Rev157 remains the last installed
-and owner-confirmed checkpoint; see [Device Info](DEVICE_INFO.md).
+## Installed checkpoint
+
+Rev158 is installed from source `b17f62c8f5c0fc0f6e515ee7e0f7ad38414aa5d5`,
+tagged `checkpoint/rev158-channel-activity`. Package:
+`cerberus-unchained-0.1.0-dev.rev158-20261108T061813Z`.
+Manifest SHA-256:
+`43a784da92a597d2ffd91695e7f0d644f52b947e257c6ea5f0c8ce58dbe796c3`.
+
+All 171 host suites and five native targets passed on unchanged inputs. Fresh
+S3/C5 recovery backups matched the installed rev157 baseline. All nine image
+writes were verified, and both processors' live application descriptors match
+the packaged versions, SDK, compile time and full ELF fingerprints.
+
+Two idle captures 49.5 seconds apart showed advancing uptimes, mounted SD,
+ten S3 tasks, stable heap and no additional listed SPI errors. Four initial
+READY timeouts/fallbacks were present in both captures; mutex, READY-fall,
+READY-high and driver errors were zero. S3 free internal memory was 134,244
+bytes, its largest block 94,208 bytes, and free PSRAM 1,426,140 bytes in both.
+The saved upload profile loads; no upload or home-network connection was made.
+
+Physical 2.4/5 GHz graph, Stop/Back, subsequent Wi-Fi scan and sustained-use
+checks remain pending. This is a local checkpoint, not a published release or
+complete upstream parity. The owner-confirmed Device Info check remains
+documented separately under [rev157](DEVICE_INFO.md).
