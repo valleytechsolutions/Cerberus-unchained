@@ -12,7 +12,7 @@ typedef int esp_err_t;
 typedef unsigned wifi_promiscuous_pkt_type_t;
 typedef struct { unsigned rx_state,sig_len,channel; int rssi,noise_floor; } wifi_pkt_rx_ctrl_t;
 typedef struct { wifi_pkt_rx_ctrl_t rx_ctrl; uint8_t payload[2400]; } wifi_promiscuous_pkt_t;
-static atomic_uint mac_admission_token;
+static atomic_uint mac_admission_token, wifi_fox_hunt_admission_token;
 static void mac_receive(const wifi_promiscuous_pkt_t *p,wifi_promiscuous_pkt_type_t type,int64_t entered,uint32_t token)
 { (void)p;(void)type;(void)entered;(void)token; }
 enum { WIFI_PKT_MGMT,WIFI_PKT_CTRL,WIFI_PKT_DATA,WIFI_PKT_MISC };
@@ -51,6 +51,10 @@ static void scan_observation_receive(const wifi_promiscuous_pkt_t *p,unsigned t)
     }
 }
 static void channel_survey_receive(const wifi_promiscuous_pkt_t *p,unsigned t){(void)p;(void)t;}
+/* Fox Hunt is inactive in this receiver-specific SDK fixture. */
+static void wifi_fox_hunt_receive(const wifi_promiscuous_pkt_t *p,
+    wifi_promiscuous_pkt_type_t type, int64_t entered, uint32_t token)
+{ (void)p; (void)type; (void)entered; (void)token; }
 static void packet_monitor_receive(const wifi_promiscuous_pkt_t *p,unsigned t){(void)p;(void)t;}
 static bool cerberus_wifi_capture_service_active(void){return false;}
 static void cerberus_wifi_capture_service_receive(const uint8_t *p,unsigned n,unsigned c,int r,uint64_t t)

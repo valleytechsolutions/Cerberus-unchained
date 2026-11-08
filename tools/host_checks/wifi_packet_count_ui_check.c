@@ -91,6 +91,10 @@ typedef struct {uint8_t station[6],bssid[6],channel;} cerberus_wifi_relation_row
 typedef struct {struct {struct {cerberus_wifi_relation_row_t rows[1];} bank;bool valid;uint8_t count;} selected;
     uint64_t selected_publication;uint8_t detail_index;bool detail;char message[49];} wifi_relation_ui_store_t;
 static wifi_relation_ui_store_t relation_store;
+static bool wifi_fox_hunt_supported(void){return false;}
+static esp_err_t wifi_fox_hunt_open(const uint8_t *target,uint8_t channel,
+    const uint8_t *label,size_t length,uint8_t origin)
+{(void)target;(void)channel;(void)label;(void)length;(void)origin;CHECK(false);return ESP_ERR_NOT_SUPPORTED;}
 #include "count_routes.h"
 static void ui_ticks(unsigned n,bool visible)
 {while(n--){fake.clock+=20000;fake.calls=0;wifi_packet_count_tick((uint64_t)fake.clock/1000U,visible,false);CHECK(fake.calls<=4U);}}

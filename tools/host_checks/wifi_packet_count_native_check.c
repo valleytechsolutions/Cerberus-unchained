@@ -47,7 +47,7 @@ static void *scanner_mutex=&mutex,*scanner_task_handle=&task;
 static bool locked,critical,scanner_ready=true,station_reserved,foreign_radio;
 static atomic_bool probe_sniff_radio_reserved,channel_survey_radio_reserved,mac_radio_reserved,csi_radio_reserved,
     capture_radio_reserved,remote_id_radio_reserved,packet_monitor_radio_reserved,relation_receiving;
-static atomic_uint mac_admission_token;
+static atomic_uint mac_admission_token, wifi_fox_hunt_admission_token;
 static cerberus_wifi_scan_status_payload_t scan_status;
 static cerberus_wifi_defense_status_payload_t defense_status;
 static cerberus_wifi_channel_survey_status_payload_t channel_survey_status;
@@ -119,6 +119,10 @@ typedef struct{unsigned kind;}sentinel_watch_protocol_record_t;
 static void mac_receive(const wifi_promiscuous_pkt_t*p,unsigned type,int64_t time,uint32_t token){(void)p;(void)type;(void)time;(void)token;}
 static void scan_observation_receive(const wifi_promiscuous_pkt_t*p,unsigned type){(void)p;(void)type;}
 static void channel_survey_receive(const wifi_promiscuous_pkt_t*p,unsigned type){(void)p;(void)type;}
+/* Fox Hunt is inactive in this receiver-specific SDK fixture. */
+static void wifi_fox_hunt_receive(const wifi_promiscuous_pkt_t *p,
+    wifi_promiscuous_pkt_type_t type, int64_t entered, uint32_t token)
+{ (void)p; (void)type; (void)entered; (void)token; }
 static void packet_monitor_receive(const wifi_promiscuous_pkt_t*p,unsigned type){(void)p;(void)type;}
 static bool cerberus_wifi_capture_service_active(void){return false;}
 static void cerberus_wifi_capture_service_receive(const uint8_t*p,unsigned n,unsigned ch,int rssi,uint64_t time){(void)p;(void)n;(void)ch;(void)rssi;(void)time;CHECK(false);}

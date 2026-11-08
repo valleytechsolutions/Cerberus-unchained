@@ -63,7 +63,7 @@ static uint8_t watch_capture_channel;
 static atomic_bool remote_id_radio_reserved;
 static atomic_bool csi_radio_reserved;
 static atomic_bool mac_radio_reserved;
-static atomic_uint mac_admission_token;
+static atomic_uint mac_admission_token, wifi_fox_hunt_admission_token;
 static void mac_worker_tick(void) { CHECK(false); }
 static void mac_receive(const wifi_promiscuous_pkt_t *p,wifi_promiscuous_pkt_type_t type,int64_t entered,uint32_t token)
 { (void)p;(void)type;(void)entered;(void)token; }
@@ -135,6 +135,10 @@ static void wifi_capture_worker_tick(void) { CHECK(false); }
 static void remote_id_worker_tick(void) { CHECK(false); }
 static bool station_run(void) { return false; }
 static void channel_survey_receive(const wifi_promiscuous_pkt_t *p,unsigned type) {(void)p;(void)type;}
+/* Fox Hunt is inactive in this receiver-specific SDK fixture. */
+static void wifi_fox_hunt_receive(const wifi_promiscuous_pkt_t *p,
+    wifi_promiscuous_pkt_type_t type, int64_t entered, uint32_t token)
+{ (void)p; (void)type; (void)entered; (void)token; }
 static void packet_monitor_receive(const wifi_promiscuous_pkt_t *p,unsigned type) {(void)p;(void)type;}
 static bool cerberus_wifi_capture_service_active(void) { return false; }
 static void cerberus_wifi_capture_service_receive(const uint8_t *p,unsigned length,unsigned channel,int rssi,uint64_t time)
