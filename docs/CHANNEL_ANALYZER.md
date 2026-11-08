@@ -77,3 +77,40 @@ field throughput remain pending. The coverage ledger therefore records this
 workflow as **partial**, not complete upstream parity. Automatic hopping is
 not claimed: the audited upstream Analyzer dispatch does not call its hop
 handler.
+
+## Installed checkpoint
+
+Rev161 is installed from source `1cc9b24180e15219e38e53819de5e6b664fcca98`,
+tagged `checkpoint/rev161-channel-analyzer`. Package:
+`cerberus-unchained-0.1.0-dev.rev161-20261108T080518Z`.
+Manifest SHA-256:
+`ee5ee90e6b31b1a0ae62a04c6cbaa9804f693b092f76a326c9c8fbb14a5bf43b`.
+
+All 175 registered host suites and five native targets passed on unchanged
+inputs. The separate 21-test CI shard-verification suite also passed. The
+new host checks include the complete C5 dispatcher → S3 wire adapter → model
+path, as well as production UI routes and font rendering. The optional UI
+workspace is 6,664 bytes of PSRAM. The C5 history union adds four bytes to
+the previous Monitor history under the host ABI; native runtime measurements
+below include the complete firmware, not just that type.
+
+Fresh S3/C5 recovery backups matched the installed rev160 images and verified
+against flash. All nine bridge/C5/S3 image writes passed verification. Both
+live application descriptors match the packaged version, project, SDK,
+compile time and full ELF hash. The private installer also binds the matched
+package to the complete build-image metadata and rechecks the frozen host,
+native and package reports before each update stage.
+
+Two idle captures 43.0 seconds apart showed advancing processor uptimes,
+mounted SD and stable memory. S3 reported 134,244 internal free bytes,
+a 94,208-byte largest internal block, 1,426,140 free PSRAM bytes and ten tasks.
+C5 reported 53,140 free bytes and one boot. The four initial READY
+timeouts/fallbacks were unchanged between captures; mutex, READY-fall,
+READY-high and driver errors stayed zero. Saved home Wi-Fi, WiGLE and WDGWars
+profile readiness remains set. No connection or upload was requested.
+
+This verifies the paired installation and sampled idle state. The Analyzer
+was not operated over RF during this unattended update. Both-band reception,
+retuning, Stop/Restart/Back, sleep/wake, following Wi-Fi/BLE scans and loaded
+memory/stack headroom still require physical acceptance. No expansion board
+or live upload-service acceptance is inferred from these results.

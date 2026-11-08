@@ -29,30 +29,28 @@ reference revisions and the distinction between adapted code and independently
 implemented workflows. This acknowledgment does not change any license or
 imply upstream endorsement of Cerberus Unchained.
 
-**Local development checkpoint:** `0.1.0-dev.rev160` is installed on the
-development board with onboard C5 capability 81. It includes the
-[Channel Activity graph and measured receive windows](docs/CHANNEL_ACTIVITY.md),
-rejects estimated or contradictory GPS fixes before Wardriving starts or
-writes a row, and lets the existing S3 scan worker retry failed cleanup,
-including recovery when Wi-Fi startup fails before the driver starts.
-All 171 host suites and five firmware targets passed; both live build
-fingerprints match the package. Two idle captures 58.3 seconds apart showed
-mounted SD, unchanged free memory and no increase in the listed SPI error
-counters. The saved upload profile loads. Physical graph/navigation, GPS
-recording and repeated radio-transition checks remain pending. See
-[startup recovery and installation evidence](docs/SCAN_STARTUP_RECOVERY.md),
-with the earlier [GPS qualification and retry changes](docs/GPS_AND_RADIO_RECOVERY.md).
+**Local development checkpoint:** `0.1.0-dev.rev161` is installed on the
+development board with onboard C5 capability 82. **Scan → Wi-Fi → Channel
+Analyzer** now provides fixed-channel total-traffic receive windows, S3
+history and measured rates, channel controls and recent beacon hints. It
+shares the existing C5 worker and uses optional S3 PSRAM for the display.
+[Analyzer behavior and installation evidence](docs/CHANNEL_ANALYZER.md)
+
+All 175 host suites and five firmware targets passed on unchanged inputs.
+Both live build fingerprints match the package. Two idle captures 43 seconds
+apart showed mounted SD, stable free memory and unchanged monitored SPI error
+counters. The saved upload profile loads. Physical Analyzer reception,
+touchscreen navigation and sustained-use checks remain pending.
+
+The pair also includes the [Channel Activity graph](docs/CHANNEL_ACTIVITY.md),
+[GPS qualification and radio cleanup retries](docs/GPS_AND_RADIO_RECOVERY.md),
+and [recovery after early S3 Wi-Fi startup failures](docs/SCAN_STARTUP_RECOVERY.md).
+These are specific implemented improvements; complete Marauder parity remains
+open in the coverage ledger.
 
 **Tools → System health → DEVICE INFO** reports each processor's application
 build, SDK, partition and memory/status information. The owner confirmed
 the S3/C5 tabs, Refresh and Back on rev157. See [Device Info](docs/DEVICE_INFO.md).
-
-The rev161 source candidate adds **Scan → Wi-Fi → Channel Analyzer** with
-C5 total-traffic receive windows and S3 history, measured rates, channel
-markers and recent beacon hints. Its direct menu entry, Stop/Restart and
-WI-FI MENU controls share the existing radio cleanup path. Full validation
-and installation are tracked separately from physical acceptance in the
-[Analyzer notes](docs/CHANNEL_ANALYZER.md).
 
 The included Wardriving changes continue across private journal segments,
 reduce redundant SD writes and keep one final CSV with strongest/weakest RSSI

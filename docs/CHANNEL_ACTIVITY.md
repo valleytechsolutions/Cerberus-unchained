@@ -58,8 +58,9 @@ The upstream reference is JustCallMeKoko and the ESP32 Marauder contributors'
 The live `develop` ref was checked on November 8, 2026 and matched that commit.
 Cerberus implements its own scoped C5 sampling, SPI validation and S3 graph.
 Marauder's period-wide channel counts and Cerberus's latest-window rates are
-different measurements. The separate fixed-channel Channel Analyzer timeline
-and complete upstream option parity remain open.
+different measurements. Rev161 implements the separate fixed-channel
+[Channel Analyzer](CHANNEL_ANALYZER.md); physical acceptance and complete
+upstream option parity remain open.
 
 `check_channel_survey.py` checks the production rate helper, duration limits,
 saturation and unchanged output on invalid input.

@@ -61,6 +61,6 @@ requested.
 This establishes the tested startup-cleanup logic and paired idle installation.
 It does not inject a real SDK startup failure on the board or establish
 sustained RF/GUI behavior. Repeated Wi-Fi/Bluetooth transitions and earlier
-Channel Activity/GPS field checks remain pending. The distinct
-[Channel Analyzer workflow](CHANNEL_ANALYZER_PLAN.md) is also still pending;
-the source audit records its requirements without adding a placeholder menu.
+Channel Activity/GPS field checks remain pending. At rev160 the distinct
+Analyzer was still pending; [rev161 implements that workflow](CHANNEL_ANALYZER.md)
+with software and installation evidence separate from physical acceptance.
