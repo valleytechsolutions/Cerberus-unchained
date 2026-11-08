@@ -62,6 +62,9 @@ enum { UI_IEEE802154_MODE_ENERGY, UI_IEEE802154_MODE_BEACONS, UI_IEEE802154_MODE
 static struct { bool attack; } field_menu;
 static unsigned wifi_mode,ieee802154_mode,wifi_target_count,wifi_selected_index,wifi_analysis_generation;
 static bool wifi_attack_selecting,wifi_selection_valid,c5_online=true,live_radio_busy;
+static bool sae_ui_selecting;
+static void sae_ui_selection_done(void)
+{assert(!"SAE selection reached in discovery fixture");}
 static bool live_owned_wifi_observation;
 static esp_err_t wifi_analysis_error,wifi_trust_error,wifi_connection_error;
 static cerberus_c5_wifi_result_t wifi_selected_result;

@@ -19,6 +19,9 @@ enum {UI_BLE_MODE_LIST,UI_BLE_MODE_FINDMY_MONITOR,UI_BLE_MODE_MENU,UI_BLE_MODE_A
 enum {UI_IEEE802154_MODE_ENERGY,UI_IEEE802154_MODE_BEACONS,UI_IEEE802154_MODE_ACTIVITY,UI_IEEE802154_MODE_MENU};
 static unsigned current_page=UI_PAGE_BLE,ble_mode=UI_BLE_MODE_LIST,wifi_mode,ieee802154_mode;
 static bool wifi_attack_selecting,wifi_selection_valid,ble_attack_selecting;
+static bool sae_ui_selecting;
+static void sae_ui_selection_done(void)
+{assert(!"SAE selection reached in BLE-only fixture");}
 static unsigned wifi_target_count,wifi_selected_index,wifi_analysis_generation;
 static esp_err_t wifi_analysis_error,wifi_trust_error,wifi_connection_error;
 static cerberus_c5_wifi_result_t wifi_selected_result;
