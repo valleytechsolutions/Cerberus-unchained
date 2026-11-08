@@ -564,7 +564,7 @@ static void previews(const char *prefix)
     wifi_channel_survey_rows[3].rate_per_sec=0;
     for(unsigned view=0;view<2;++view){wifi_channel_survey_graph=view;preview(prefix,"limits");}
     CHECK(strstr(drawn,">=65535")&&strstr(drawn,"65535MS")&&strstr(drawn,"N/A")&&strstr(drawn,"PENDING"));
-    CHECK(strstr(drawn,"RECEIVER NOT LIVE"));
+    CHECK(strstr(drawn,"RETAINED VALUES / CHECK STATUS ABOVE"));
     wifi_mode=UI_WIFI_MODE_CHANNELS_5;wifi_channel_survey_page=wifi_channel_survey_metrics_page=4;
     wifi_channel_survey_status.result_count=25;wifi_channel_survey_rows_valid=1;
     wifi_channel_survey_rows[0].channel=165;

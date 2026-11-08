@@ -2448,7 +2448,7 @@ static esp_err_t draw_wifi_channel_survey_graph(void)
     snprintf(line, sizeof(line), "SCALE %s%u FRAMES/S / LAST WINDOWS", peak == UINT16_MAX ? ">=" : "", peak);
     ESP_RETURN_ON_ERROR(cerberus_display_draw_text(14, 128, line, UI_TEXT, UI_PANEL, 1), TAG, "channel graph scale");
     ESP_RETURN_ON_ERROR(cerberus_display_draw_text(14, 143,
-        current ? "SAMPLED TRAFFIC / NOT AIRTIME UTILIZATION" : "RETAINED VALUES / RECEIVER NOT LIVE",
+        current ? "SAMPLED TRAFFIC / NOT AIRTIME UTILIZATION" : "RETAINED VALUES / CHECK STATUS ABOVE",
         UI_MUTED, UI_PANEL, 1), TAG, "channel graph scope");
     ESP_RETURN_ON_ERROR(cerberus_display_fill_rect(14, 282, 292, 1, UI_MUTED), TAG, "channel graph baseline");
     for (uint8_t i = 0; i < UI_WIFI_VISIBLE_ROWS; ++i) {
