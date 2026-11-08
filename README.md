@@ -29,13 +29,20 @@ reference revisions and the distinction between adapted code and independently
 implemented workflows. This acknowledgment does not change any license or
 imply upstream endorsement of Cerberus Unchained.
 
-**Local development checkpoint:** `0.1.0-dev.rev156` is installed on the
-development board with onboard C5 capability 79. It adds private journal
-continuations for long Wardriving sessions, reduces redundant SD and
-compaction work, and keeps one final CSV with strongest/weakest RSSI rows.
-All 170 host suites and five firmware targets passed; paired boot and SD
-mounting are verified. Physical long-session and save-time acceptance remain
-open. See [the rev156 checkpoint](docs/DUAL_RADIO_REV156.md) and
+**Local development checkpoint:** `0.1.0-dev.rev157` is installed on the
+development board with onboard C5 capability 80. **Tools → System health →
+DEVICE INFO** now reports each processor's application build, SDK, partition
+and memory/status information. All 171 host suites and five firmware targets
+passed. Both live build fingerprints match the package; the owner confirmed
+the S3/C5 tabs, Refresh and Back. The post-navigation heap and task counts
+returned to their idle baseline. See [Device Info](docs/DEVICE_INFO.md).
+
+The included Wardriving changes continue across private journal segments,
+reduce redundant SD writes and keep one final CSV with strongest/weakest RSSI
+rows. A short rev156 recording saved 151 final rows in 474 ms without a
+reported radio, GPS or SD error. Physical journal rollover, long-session
+save time and final CSV readback remain open. See
+[the rev156 checkpoint](docs/DUAL_RADIO_REV156.md) and
 [current Wardriving behavior](docs/WARDRIVE_DATA_QUALITY.md).
 
 Open **Scan → Wardriving** and tap **START** once. Cerberus waits for a valid

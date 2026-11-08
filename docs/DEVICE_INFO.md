@@ -72,7 +72,37 @@ clock failures, allocation/task failure, cancellation and delayed release,
 reopen/sleep/refresh, masked rendering and console output. Preview images use
 the production font, header and button code with simulated device data.
 
-This is a development checkpoint. Physical navigation, active-service
-coexistence, runtime stack/heap, actual descriptor comparison and prolonged
-use still need acceptance. Full upstream network-detail, update/OTA and CLI
-option parity remain separate work; SHOW_INFO remains partial in the ledger.
+## Installed checkpoint
+
+Rev157 is installed on the development board from source
+`9eeb75e26624a588747e8b0cd1b4b298f5e99b15`, tagged
+`checkpoint/rev157-device-info`. Package:
+`cerberus-unchained-0.1.0-dev.rev157-20261108T053334Z`.
+Manifest SHA-256:
+`79f756edc7cfec53df096bce4b7f818461b55e3f5773fffe88c954dfa824d85b`.
+
+All 171 host suites and five native targets passed against unchanged inputs.
+Fresh S3/C5 recovery backups matched the installed rev156 images. All nine
+bridge/C5/S3 image writes passed verification. The live `builds` response
+matched both packaged applications' version, project, SDK, compile time and
+full ELF fingerprint. This exercises the new metadata transfer on the device.
+
+Two paired idle snapshots about 89 seconds apart showed advancing uptimes,
+mounted SD and no reset or increase in the listed SPI error counters. Four
+initial READY timeouts/legacy fallbacks were present in both snapshots; mutex,
+READY-fall, READY-high and driver errors were zero. The saved home Wi-Fi,
+WiGLE and WDGWars configuration readiness flags load correctly. No connection
+or upload was requested for this checkpoint.
+
+The owner confirmed that both chip tabs show rev157 and that Refresh and Back
+work. A read-only capture after navigation found the same free internal heap
+(134,260 bytes), largest internal block (94,208 bytes), free PSRAM (1,426,140
+bytes) and task count (10) as the preceding idle snapshot. Listed SPI error
+counters were unchanged. These are observations from one navigation check,
+not an endurance result or a whole-program stack bound.
+
+Active-service coexistence, the temporary worker's stack headroom and
+prolonged use still need acceptance. Full upstream network-detail, update/OTA
+and CLI option parity remain separate work; SHOW_INFO remains partial in the
+ledger. This local checkpoint is not a published release or complete Marauder
+parity.
